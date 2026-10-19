@@ -6,9 +6,12 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Message
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
@@ -33,6 +36,8 @@ class MainActivity : Activity() {
     private lateinit var startingView: TextView
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var updateOffered = false
+    private var soldPricesOverlay: View? = null
+    private var soldPricesWebView: WebView? = null
 
     private val requiredKeys = listOf(
         "GEMINI_API_KEY",
@@ -147,8 +152,37 @@ class MainActivity : Activity() {
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
         webView.settings.mediaPlaybackRequiresUserGesture = false
-        webView.webViewClient = WebViewClient()
+        webView.webViewClient = object : WebViewClient() {
+            // Safety net: if a sold-search URL ever tries to load in the main
+            // WebView (instead of a new window), catch it into the pop-up so
+            // the listing draft is never lost. Everything else loads normally.
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                if (request.isForMainFrame &&
+                    SoldUrlMatcher.isSoldSearchUrl(request.url.toString())
+                ) {
+                    openSoldPricesPopupWithUrl(request.url.toString())
+                    return true
+                }
+                return false
+            }
+        }
         webView.webChromeClient = object : WebChromeClient() {
+            // The web app's only window.open() is the "Check sold prices"
+            // button (the "View your listing" links use target=_blank too).
+            // Show those in an in-app pop-up with a Back button instead of
+            // navigating the main WebView away from the draft.
+            override fun onCreateWindow(
+                view: WebView,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message
+            ): Boolean {
+                openSoldPricesPopup(resultMsg)
+                return true
+            }
             // Photo picking is the app's core input: without this, the
             // <input type="file"> button does nothing in a WebView.
             override fun onShowFileChooser(
@@ -173,6 +207,61 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Shows the eBay page from a window.open() call in a pop-up overlay.
+     * The main WebView (and the listing draft in it) is never touched.
+     * CookieManager is app-wide, so his eBay website login carries over
+     * after the first login.
+     */
+    private fun openSoldPricesPopup(resultMsg: Message) {
+        val overlay = ensureSoldPricesOverlay() ?: return
+        val popupWebView = soldPricesWebView ?: return
+        val transport = resultMsg.obj as WebView.WebViewTransport
+        transport.webView = popupWebView
+        resultMsg.sendToTarget()
+        overlay.visibility = View.VISIBLE
+    }
+
+    /** Same pop-up, but for a known URL (used by the safety net above). */
+    private fun openSoldPricesPopupWithUrl(url: String) {
+        val overlay = ensureSoldPricesOverlay() ?: return
+        val popupWebView = soldPricesWebView ?: return
+        overlay.visibility = View.VISIBLE
+        popupWebView.loadUrl(url)
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun ensureSoldPricesOverlay(): View? {
+        soldPricesOverlay?.let { return it }
+        val root = findViewById<ViewGroup>(android.R.id.content)
+        val overlay = layoutInflater.inflate(R.layout.popup_sold_prices, root, false)
+        val popupWebView = overlay.findViewById<WebView>(R.id.popup_webview)
+        popupWebView.settings.javaScriptEnabled = true
+        popupWebView.settings.domStorageEnabled = true
+        overlay.findViewById<Button>(R.id.btn_back_to_listing).setOnClickListener {
+            closeSoldPricesPopup()
+        }
+        root.addView(overlay)
+        overlay.visibility = View.GONE
+        soldPricesOverlay = overlay
+        soldPricesWebView = popupWebView
+        return overlay
+    }
+
+    private fun closeSoldPricesPopup() {
+        soldPricesWebView?.apply {
+            stopLoading()
+            loadUrl("about:blank")
+            onPause()
+            destroy()
+        }
+        soldPricesWebView = null
+        (soldPricesOverlay?.parent as? ViewGroup)?.removeView(soldPricesOverlay)
+        soldPricesOverlay = null
+    }
+
+    private fun isSoldPricesPopupOpen(): Boolean = soldPricesOverlay != null
+
     @Deprecated("Kept simple on purpose: no AndroidX needed.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -192,11 +281,20 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
+        if (isSoldPricesPopupOpen()) {
+            closeSoldPricesPopup()
+            return
+        }
         if (webView.visibility == View.VISIBLE && webView.canGoBack()) {
             webView.goBack()
         } else {
             super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        closeSoldPricesPopup()
+        super.onDestroy()
     }
 
     /** One-tap update offer. "Later" dismisses it until the next app start. */
