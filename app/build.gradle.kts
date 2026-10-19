@@ -24,10 +24,16 @@ android {
 
     signingConfigs {
         create("listingAssistant") {
-            storeFile = file("../keystore/listing-assistant-debug.keystore")
-            storePassword = "android"
-            keyAlias = "androiddebugkey"
-            keyPassword = "android"
+            // Local builds use the keystore copy in ../keystore/ (gitignored).
+            // CI (GitHub Actions) provides it via KEYSTORE_PATH from secrets.
+            // Same key, same signature, on any machine: in-app updates refuse
+            // to install if this ever changes.
+            val ksPath = System.getenv("KEYSTORE_PATH")
+                ?: "../keystore/listing-assistant-debug.keystore"
+            storeFile = file(ksPath)
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "android"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "androiddebugkey"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
         }
     }
 
