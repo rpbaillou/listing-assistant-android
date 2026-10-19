@@ -1,1 +1,1 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v3/ebay-listing-assistant-apk-v3.apk","notes":"The app now updates itself. Open it, tap Update when offered, done.","versionCode":3,"versionName":"1.2"}
+{"versionCode": 4, "versionName": "1.3", "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v4/ebay-listing-assistant-apk-v4.apk", "notes": "Sold prices now open in a pop-up inside the app. Tap Back to listing when done; your draft stays put."}
