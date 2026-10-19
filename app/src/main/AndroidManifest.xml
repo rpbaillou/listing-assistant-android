@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- INTERNET is for the Gemini and eBay cloud APIs. The app's own server
+         only ever talks to this phone (http://127.0.0.1:5050). usesCleartextTraffic
+         allows that loopback HTTP connection on Android 9+. -->
+    <application
+        android:label="Listing Assistant"
+        android:usesCleartextTraffic="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:allowBackup="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Serves downloaded update APKs to the package installer. -->
+        <provider
+            android:name=".ApkFileProvider"
+            android:authorities="${applicationId}.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

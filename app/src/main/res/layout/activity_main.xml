@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- The app itself, served from the phone. Hidden until the server is up. -->
+    <WebView
+        android:id="@+id/webview"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Shown while the Python server starts. -->
+    <TextView
+        android:id="@+id/starting_view"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="Starting Listing Assistant..."
+        android:textSize="18sp"
+        android:visibility="gone" />
+
+    <!-- First-run key entry. Shown only when no keys are saved yet. -->
+    <ScrollView
+        android:id="@+id/setup_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="One-time setup"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="16dp"
+                android:text="Enter your 7 keys once. They stay on this phone and are never sent anywhere except eBay and Google." />
+
+            <EditText
+                android:id="@+id/et_gemini"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Gemini API key (free key from Google AI Studio)"
+                android:inputType="text" />
+
+            <EditText
+                android:id="@+id/et_client_id"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="eBay App ID (from developer.ebay.com)"
+                android:inputType="text" />
+
+            <EditText
+                android:id="@+id/et_client_secret"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="eBay Cert ID (the secret one, never share it)"
+                android:inputType="textPassword" />
+
+            <EditText
+                android:id="@+id/et_runame"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="RuName (looks like Reynard_Baillou-ReynardB-Mr-PRD-...)"
+                android:inputType="text" />
+
+            <EditText
+                android:id="@+id/et_fulfillment"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="Shipping policy ID (number from Seller Hub, Business policies)"
+                android:inputType="number" />
+
+            <EditText
+                android:id="@+id/et_payment"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="Payment policy ID (number from Business policies)"
+                android:inputType="number" />
+
+            <EditText
+                android:id="@+id/et_return"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:hint="Return policy ID (number from Business policies)"
+                android:inputType="number" />
+
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:text="Save and start" />
+
+        </LinearLayout>
+    </ScrollView>
+
+</FrameLayout>
