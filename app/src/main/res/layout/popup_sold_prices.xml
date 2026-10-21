@@ -25,6 +25,21 @@
         android:text="Sold prices on eBay"
         android:textSize="14sp" />
 
+    <!-- v5: appears only on an eBay item page when a price was actually read
+         off the page. One tap fills the draft's price and closes the pop-up. -->
+    <Button
+        android:id="@+id/btn_use_price"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginLeft="12dp"
+        android:layout_marginRight="12dp"
+        android:layout_marginBottom="8dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:text="Use this price"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
     <WebView
         android:id="@+id/popup_webview"
         android:layout_width="match_parent"

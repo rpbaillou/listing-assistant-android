@@ -22,7 +22,9 @@ import android.widget.Toast
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.Socket
+import java.net.URL
 
 /**
  * Listing Assistant: the Flask app runs inside the APK (Chaquopy Python) and
@@ -38,6 +40,8 @@ class MainActivity : Activity() {
     private var updateOffered = false
     private var soldPricesOverlay: View? = null
     private var soldPricesWebView: WebView? = null
+    private var usePriceButton: Button? = null
+    private var pendingPrice: Double? = null
 
     private val requiredKeys = listOf(
         "GEMINI_API_KEY",
@@ -216,6 +220,7 @@ class MainActivity : Activity() {
     private fun openSoldPricesPopup(resultMsg: Message) {
         val overlay = ensureSoldPricesOverlay() ?: return
         val popupWebView = soldPricesWebView ?: return
+        resetUsePriceButton()
         val transport = resultMsg.obj as WebView.WebViewTransport
         transport.webView = popupWebView
         resultMsg.sendToTarget()
@@ -226,6 +231,7 @@ class MainActivity : Activity() {
     private fun openSoldPricesPopupWithUrl(url: String) {
         val overlay = ensureSoldPricesOverlay() ?: return
         val popupWebView = soldPricesWebView ?: return
+        resetUsePriceButton()
         overlay.visibility = View.VISIBLE
         popupWebView.loadUrl(url)
     }
@@ -238,14 +244,117 @@ class MainActivity : Activity() {
         val popupWebView = overlay.findViewById<WebView>(R.id.popup_webview)
         popupWebView.settings.javaScriptEnabled = true
         popupWebView.settings.domStorageEnabled = true
+        // v5: watch for eBay item pages so we can offer "Use this price".
+        popupWebView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+                maybeOfferPrice(url)
+            }
+        }
         overlay.findViewById<Button>(R.id.btn_back_to_listing).setOnClickListener {
             closeSoldPricesPopup()
         }
+        val usePrice = overlay.findViewById<Button>(R.id.btn_use_price)
+        usePrice.setOnClickListener { onUsePriceTapped() }
+        usePriceButton = usePrice
         root.addView(overlay)
         overlay.visibility = View.GONE
         soldPricesOverlay = overlay
         soldPricesWebView = popupWebView
         return overlay
+    }
+
+    private fun resetUsePriceButton() {
+        pendingPrice = null
+        usePriceButton?.visibility = View.GONE
+    }
+
+    /**
+     * v5: when an eBay item page finishes loading in the pop-up, try to read
+     * its price off the page. The button appears only if a real price was
+     * parsed — never a guess.
+     */
+    private fun maybeOfferPrice(url: String) {
+        val btn = usePriceButton ?: return
+        if (!SoldUrlMatcher.isEbayItemPage(url)) {
+            runOnUiThread { resetUsePriceButton() }
+            return
+        }
+        soldPricesWebView?.evaluateJavascript(PRICE_EXTRACT_JS) { result ->
+            val price = PriceParser.parsePrice(result)
+            runOnUiThread {
+                if (price != null) {
+                    pendingPrice = price
+                    btn.text = "Use this price: $${PriceParser.formatForDraft(price)}"
+                    btn.visibility = View.VISIBLE
+                } else {
+                    resetUsePriceButton()
+                }
+            }
+        }
+    }
+
+    /** v5: push the pop-up's price into the current draft, then go back. */
+    private fun onUsePriceTapped() {
+        val price = pendingPrice ?: return
+        // The draft ID lives in the web app's JS; the pop-up never touched
+        // the main WebView, so it is still on the draft page.
+        webView.evaluateJavascript("window.LA_getDraftId()") { result ->
+            val draftId = result?.trim()?.removeSurrounding("\"") ?: ""
+            if (draftId.isEmpty()) {
+                Toast.makeText(
+                    this,
+                    "Open the draft first, then check sold prices.",
+                    Toast.LENGTH_LONG
+                ).show()
+                return@evaluateJavascript
+            }
+            pushPriceToDraft(draftId, price)
+        }
+    }
+
+    private fun pushPriceToDraft(draftId: String, price: Double) {
+        val priceText = PriceParser.formatForDraft(price)
+        Thread {
+            val ok = try {
+                val conn = URL("http://127.0.0.1:5050/api/drafts/$draftId")
+                    .openConnection() as HttpURLConnection
+                conn.requestMethod = "PUT"
+                conn.doOutput = true
+                conn.connectTimeout = 15000
+                conn.readTimeout = 15000
+                conn.setRequestProperty("Content-Type", "application/json")
+                val body = "{\"price\":\"$priceText\"}"
+                conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+                val code = conn.responseCode
+                conn.disconnect()
+                code in 200..299
+            } catch (_: Exception) {
+                false
+            }
+            runOnUiThread {
+                if (ok) {
+                    // Re-read the draft from the server so the price field
+                    // shows the new value (server is the source of truth;
+                    // autosave kept every other field current).
+                    webView.evaluateJavascript(
+                        "window.LA_refreshDraft && window.LA_refreshDraft()",
+                        null
+                    )
+                    closeSoldPricesPopup()
+                    Toast.makeText(
+                        this,
+                        "Price set to $$priceText",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this,
+                        "Couldn't save the price. Type it in the draft instead.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }.start()
     }
 
     private fun closeSoldPricesPopup() {
@@ -313,5 +422,37 @@ class MainActivity : Activity() {
 
     companion object {
         private const val FILE_CHOOSER_REQUEST = 1001
+
+        /**
+         * v5: reads the item price off an eBay item page. Multiple fallback
+         * selectors because eBay changes its markup; returns "" when none
+         * hit. Prefers the machine-readable itemprop="price" content
+         * attribute, then the visible primary price text.
+         */
+        private const val PRICE_EXTRACT_JS = """
+            (function(){
+              function txt(sel){
+                try {
+                  var el = document.querySelector(sel);
+                  if(!el) return '';
+                  var c = el.getAttribute('content');
+                  if(c) return c.trim();
+                  return (el.innerText||'').trim();
+                } catch(e){ return ''; }
+              }
+              var sels = [
+                'span[itemprop="price"]',
+                '.x-price-primary .ux-textspans',
+                '.x-price-primary',
+                '#prcIsum',
+                '.display-price'
+              ];
+              for(var i=0;i<sels.length;i++){
+                var v = txt(sels[i]);
+                if(v) return v;
+              }
+              return '';
+            })()
+        """
     }
 }

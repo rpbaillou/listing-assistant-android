@@ -28,4 +28,23 @@ object SoldUrlMatcher {
         val query = uri.query ?: ""
         return query.contains("LH_Sold") || query.contains("LH_Complete")
     }
+
+    /**
+     * Matches an eBay item page (tapping a listing in the sold search lands
+     * here). Deliberately narrow: ebay.com host, /itm/ path. Used to offer
+     * "Use this price" in the sold-prices pop-up.
+     */
+    fun isEbayItemPage(url: String): Boolean {
+        val uri = try {
+            URI(url)
+        } catch (_: Exception) {
+            return false
+        }
+        val host = uri.host ?: return false
+        val isEbay = host.equals("ebay.com", ignoreCase = true) ||
+            host.endsWith(".ebay.com", ignoreCase = true)
+        if (!isEbay) return false
+        val path = uri.path ?: ""
+        return path.contains("/itm/")
+    }
 }

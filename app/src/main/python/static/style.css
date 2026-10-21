@@ -52,6 +52,17 @@ button:disabled { opacity: 0.45; cursor: default; }
 .thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #888; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
 .thumbs.small img { width: 72px; height: 72px; }
 
+/* v5: remove-photo X on each chosen thumbnail */
+.thumb-wrap { position: relative; width: 96px; height: 96px; }
+.thumb-wrap img { width: 96px; height: 96px; }
+.thumb-x {
+  position: absolute; top: -8px; right: -8px;
+  width: 30px; height: 30px; border-radius: 50%;
+  background: #c00; color: #fff; border: 2px solid #fff;
+  font-size: 18px; line-height: 1; padding: 0; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+
 .attr-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 .attr-row input:first-child { flex: 1; }
 .attr-row input:last-of-type { flex: 1.4; }

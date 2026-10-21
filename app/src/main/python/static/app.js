@@ -2,10 +2,15 @@
 let draft = null;
 let selectedFiles = [];
 let saveTimer = null;
+let saveDirty = false; /* v5: true while edits are waiting for the debounced save */
 
 const $ = (id) => document.getElementById(id);
 
 function show(stepId) {
+  /* v5: never switch sections with unsaved edits pending — flush first so
+     leaving the draft (My drafts, back button, sold-price pop-up) cannot
+     lose what he just typed. */
+  flushSave();
   document.querySelectorAll("main .step").forEach((s) => s.classList.add("hidden"));
   $(stepId).classList.remove("hidden");
   window.scrollTo(0, 0);
@@ -40,7 +45,6 @@ async function api(path, opts = {}) {
    JPEG q85) so 10 photos stay well under the tunnel timeout. Files the
    browser cannot decode (e.g. HEIC) are skipped with a plain-words note. */
 const MAX_EDGE = 1600;
-let previewUrls = [];
 
 function decodeFile(file) {
   if (window.createImageBitmap) {
@@ -71,43 +75,78 @@ async function downscaleFile(file, idx) {
   return { blob: blob, name: "photo" + (idx + 1) + ".jpg" };
 }
 
+/* v5: every chosen photo gets an X button so a wrong pick can be removed
+   before identifying. Each entry carries its own preview URL so removal
+   revokes exactly the right one and never disturbs the rest. */
+let skippedCount = 0;
+
 function clearPreviews() {
-  previewUrls.forEach((u) => URL.revokeObjectURL(u));
-  previewUrls = [];
+  selectedFiles.forEach((e) => { if (e.url) URL.revokeObjectURL(e.url); });
+  selectedFiles = [];
+  skippedCount = 0;
   $("thumbs").innerHTML = "";
   $("skip-note").classList.add("hidden");
+  updateAnalyzeButton();
+}
+
+function updateAnalyzeButton() {
+  $("btn-analyze").disabled = selectedFiles.length === 0;
+}
+
+function renderThumbs() {
+  const box = $("thumbs");
+  box.innerHTML = "";
+  selectedFiles.forEach((entry, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "thumb-wrap";
+    const img = document.createElement("img");
+    img.src = entry.url;
+    img.alt = "Chosen photo " + (i + 1);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "thumb-x";
+    x.textContent = "×";
+    x.setAttribute("aria-label", "Remove this photo");
+    x.addEventListener("click", () => removePhoto(i));
+    wrap.appendChild(img);
+    wrap.appendChild(x);
+    box.appendChild(wrap);
+  });
+  for (let s = 0; s < skippedCount; s++) {
+    const ph = document.createElement("div");
+    ph.className = "thumb-skip";
+    ph.textContent = "can't preview";
+    box.appendChild(ph);
+  }
+  updateAnalyzeButton();
+}
+
+function removePhoto(i) {
+  const entry = selectedFiles[i];
+  if (!entry) return;
+  if (entry.url) URL.revokeObjectURL(entry.url);
+  selectedFiles.splice(i, 1);
+  renderThumbs();
+  hideError();
 }
 
 $("photo-input").addEventListener("change", async (e) => {
   const picked = Array.from(e.target.files || []).slice(0, 10);
   clearPreviews();
-  const box = $("thumbs");
-  selectedFiles = [];
-  let skipped = 0;
+  skippedCount = 0;
   for (let i = 0; i < picked.length; i++) {
     const r = await downscaleFile(picked[i], i);
-    if (r.skipped) {
-      skipped++;
-      const ph = document.createElement("div");
-      ph.className = "thumb-skip";
-      ph.textContent = "can't preview";
-      box.appendChild(ph);
-      continue;
-    }
-    selectedFiles.push(r);
-    const img = document.createElement("img");
+    if (r.skipped) { skippedCount++; continue; }
     const u = URL.createObjectURL(r.blob);
-    previewUrls.push(u);
-    img.src = u;
-    box.appendChild(img);
+    selectedFiles.push({ blob: r.blob, name: r.name, url: u });
   }
-  if (skipped > 0) {
+  renderThumbs();
+  if (skippedCount > 0) {
     const n = $("skip-note");
-    n.textContent = skipped + (skipped === 1 ? " photo" : " photos") +
-      " couldn't be read and " + (skipped === 1 ? "was" : "were") + " skipped.";
+    n.textContent = skippedCount + (skippedCount === 1 ? " photo" : " photos") +
+      " couldn't be read and " + (skippedCount === 1 ? "was" : "were") + " skipped.";
     n.classList.remove("hidden");
   }
-  $("btn-analyze").disabled = selectedFiles.length === 0;
   hideError();
 });
 
@@ -132,6 +171,9 @@ $("btn-analyze").addEventListener("click", async () => {
 /* ---------- step 2: edit draft ---------- */
 function loadDraftIntoForm(d) {
   draft = d;
+  saveDirty = false; /* v5: a fresh load is the clean baseline */
+  clearTimeout(saveTimer);
+  saveTimer = null;
   $("f-title").value = d.title || "";
   $("f-category").value = d.category || "";
   $("f-description").value = d.description || "";
@@ -199,12 +241,15 @@ function collectForm() {
 }
 
 function scheduleSave() {
+  saveDirty = true;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveDraft, 1200);
 }
 
 async function saveDraft() {
   if (!draft) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
   try {
     const { draft: d } = await api("/api/drafts/" + draft.id, {
       method: "PUT",
@@ -212,8 +257,47 @@ async function saveDraft() {
       body: JSON.stringify(collectForm()),
     });
     draft = d;
+    saveDirty = false;
   } catch (e) { /* autosave is best-effort; the Review step saves too */ }
 }
+
+/* v5: last-chance save when the page is hidden or closed (phone back button,
+   app switch, screen off). Uses keepalive so the request survives the page
+   going away. Fire-and-forget: nothing to await here. */
+function flushSave() {
+  if (!saveDirty || !draft) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    saveDirty = false;
+    return;
+  }
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  saveDirty = false;
+  try {
+    fetch("/api/drafts/" + draft.id, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectForm()),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* best-effort */ }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushSave();
+});
+window.addEventListener("pagehide", flushSave);
+
+/* v5: hooks the native app uses (sold-price pop-up "Use this price"). */
+window.LA_getDraftId = () => (draft ? draft.id : "");
+window.LA_refreshDraft = async () => {
+  if (!draft) return;
+  try {
+    const { draft: d } = await api("/api/drafts/" + draft.id);
+    loadDraftIntoForm(d);
+  } catch (e) { /* refresh is best-effort */ }
+};
 
 ["f-title", "f-category", "f-description", "f-price"].forEach((id) => {
   $(id).addEventListener("input", () => { updateCount(); scheduleSave(); });
@@ -223,7 +307,10 @@ function updateCount() {
   $("title-count").textContent = $("f-title").value.length + "/80";
 }
 
-$("btn-solds").addEventListener("click", () => {
+/* v5: save first — the pop-up opens over the draft, and "Use this price"
+   later refreshes the form from the server, so the server must be current. */
+$("btn-solds").addEventListener("click", async () => {
+  await saveDraft();
   const q = encodeURIComponent($("f-title").value.trim() || "vintage item");
   window.open(
     "https://www.ebay.com/sch/i.html?_nkw=" + q + "&LH_Sold=1&LH_Complete=1",
@@ -304,6 +391,7 @@ $("btn-copy-desc").addEventListener("click", () => copyText($("f-description").v
 $("btn-copy-all").addEventListener("click", () => copyText(fullListingText(), "Everything copied. Paste it into eBay."));
 
 $("btn-new").addEventListener("click", () => {
+  flushSave(); /* v5: save any last-second edits before abandoning the form */
   draft = null;
   selectedFiles = [];
   $("photo-input").value = "";
@@ -350,7 +438,11 @@ $("btn-drafts").addEventListener("click", async () => {
     list.innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
   }
 });
-$("btn-close-drafts").addEventListener("click", () => show(draft ? "step-draft" : "step-photos"));
+/* v5: Back from My drafts goes to the very beginning (choose photos).
+   The "My drafts" button is always in the header, so this is the only way
+   back to the start once you are inside a draft. Pending edits are flushed
+   by show() before the switch. */
+$("btn-close-drafts").addEventListener("click", () => show("step-photos"));
 
 /* ---------- init ---------- */
 api("/api/config").then((c) => {

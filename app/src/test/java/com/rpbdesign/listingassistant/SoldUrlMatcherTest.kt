@@ -63,4 +63,53 @@ class SoldUrlMatcherTest {
         assertFalse(SoldUrlMatcher.isSoldSearchUrl("not a url"))
         assertFalse(SoldUrlMatcher.isSoldSearchUrl(""))
     }
+
+    // --- isEbayItemPage (v5: "Use this price" in the sold pop-up) ---
+
+    @Test fun itemPageMatches() {
+        assertTrue(
+            SoldUrlMatcher.isEbayItemPage("https://www.ebay.com/itm/388989123456")
+        )
+    }
+
+    @Test fun itemPageWithTitleSlugMatches() {
+        assertTrue(
+            SoldUrlMatcher.isEbayItemPage(
+                "https://www.ebay.com/itm/Vintage-Doll-12345/388989123456"
+            )
+        )
+    }
+
+    @Test fun itemPageSubdomainMatches() {
+        assertTrue(
+            SoldUrlMatcher.isEbayItemPage("https://m.ebay.com/itm/388989123456")
+        )
+    }
+
+    @Test fun itemPageRejectsSearch() {
+        assertFalse(SoldUrlMatcher.isEbayItemPage(sold))
+    }
+
+    @Test fun itemPageRejectsOAuth() {
+        assertFalse(
+            SoldUrlMatcher.isEbayItemPage(
+                "https://auth.ebay.com/oauth2/authorize?client_id=x"
+            )
+        )
+    }
+
+    @Test fun itemPageRejectsAppItself() {
+        assertFalse(SoldUrlMatcher.isEbayItemPage("http://127.0.0.1:5050/"))
+    }
+
+    @Test fun itemPageRejectsNonEbay() {
+        assertFalse(
+            SoldUrlMatcher.isEbayItemPage("https://example.com/itm/123")
+        )
+    }
+
+    @Test fun itemPageRejectsGarbage() {
+        assertFalse(SoldUrlMatcher.isEbayItemPage("not a url"))
+        assertFalse(SoldUrlMatcher.isEbayItemPage(""))
+    }
 }
