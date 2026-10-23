@@ -1,1 +1,1 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v7/ebay-listing-assistant-apk-v7.apk","notes":"The version badge at the top now shows the real version, plus everything from v6.","versionCode":7,"versionName":"1.6"}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v8/ebay-listing-assistant-apk-v8.apk","notes":"The app now checks what details eBay requires for your category and won't let you list until they're filled in; photo limit raised to 24.","versionCode":8,"versionName":"1.7"}
