@@ -31,7 +31,7 @@
   <!-- STEP 1: photos -->
   <section id="step-photos" class="step">
     <h2>1. Pick photos</h2>
-    <p class="hint">Choose up to 10 photos of one item from your photo library.</p>
+    <p class="hint">Choose up to 24 photos of one item from your photo library.</p>
     <label class="filebtn" for="photo-input">Choose photos</label>
     <input id="photo-input" type="file" accept="image/*" multiple>
     <div id="thumbs" class="thumbs"></div>
@@ -124,6 +124,7 @@
       </div>
       <div id="cat-suggestions" class="suggestbox hidden"></div>
       <p class="hint">Tap Suggest to get eBay's category numbers for your title, then tap the right one.</p>
+      <div id="required-aspects"></div>
 
       <label>Price ($)</label>
       <input id="p-price" type="number" min="0.01" step="0.01" inputmode="decimal">

@@ -97,3 +97,8 @@ button.sug { text-align: left; min-height: 44px; }
 details { margin: 1rem 0; border: 1px solid #dde3f0; border-radius: 8px; padding: 0.7rem; }
 details summary { font-weight: 700; cursor: pointer; }
 #publish-panel h3 { margin: 1.2rem 0 0.2rem 0; }
+/* v8: required item specifics in the publish panel */
+#required-aspects h4 { margin: 1.1rem 0 0.4rem 0; }
+.req-aspect { margin-bottom: 0.6rem; }
+.req-aspect label { display: block; font-weight: 600; margin-bottom: 0.2rem; }
+#required-aspects details { margin-top: 0.8rem; }

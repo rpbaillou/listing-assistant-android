@@ -104,7 +104,7 @@ EBAY_SCOPES = ("https://api.ebay.com/oauth/api_scope "
 EBAY_TRADING_API = "https://api.ebay.com/ws/api.dll"
 EBAY_TRADING_COMPAT_LEVEL = "1193"
 
-MAX_PHOTOS = 10
+MAX_PHOTOS = 24
 MAX_FILE_MB = 15
 
 app = Flask(__name__)
@@ -474,6 +474,90 @@ def _find_category_ids(node, out):
             _find_category_ids(v, out)
 
 
+# v8: cache of category_id -> (expires_at, (required, recommended)). Aspects
+# change rarely; a day-long cache keeps publish fast and avoids hammering eBay.
+_aspects_cache = {}
+
+
+def _category_aspects(category_id):
+    """Required/recommended item specifics for a category via the Taxonomy API.
+
+    Returns (required, recommended) where each is a list of
+    {"name": str, "values": [str]}. Returns (None, None) when eBay can't be
+    reached or the response is unusable — callers must fall back to sending
+    what they have instead of blocking the user.
+    """
+    cid = str(category_id).strip()
+    if not cid:
+        return None, None
+    hit = _aspects_cache.get(cid)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    try:
+        token = _app_token()
+        resp = requests.get(
+            EBAY_API + "/commerce/taxonomy/v1/category_tree/0/"
+            "get_item_aspects_for_category",
+            headers={"Authorization": "Bearer " + token},
+            params={"category_id": cid},
+            timeout=30)
+    except (requests.RequestException, RuntimeError):
+        return None, None
+    if resp.status_code != 200:
+        return None, None
+    required, recommended = [], []
+    try:
+        for a in resp.json().get("aspects", []):
+            if not isinstance(a, dict):
+                continue
+            name = str(a.get("localizedAspectName", "")).strip()
+            if not name:
+                continue
+            con = a.get("aspectConstraint") or {}
+            values = []
+            for x in (a.get("aspectValues") or []):
+                if isinstance(x, dict):
+                    v = str(x.get("localizedValue", "")).strip()
+                    if v:
+                        values.append(v)
+            item = {"name": name, "values": values[:50]}
+            if con.get("aspectRequired"):
+                required.append(item)
+            else:
+                recommended.append(item)
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+    _aspects_cache[cid] = (time.time() + 86400, (required, recommended))
+    return required, recommended
+
+
+def _clean_aspects(attributes):
+    """Drop empty and 'Unknown' aspect values before sending to eBay.
+
+    The AI is told to write "Unknown" instead of guessing; eBay gets no value
+    at all in that case rather than the literal word "Unknown".
+    """
+    out = {}
+    for k, v in (attributes or {}).items():
+        k = str(k).strip()
+        v = str(v).strip()
+        if not k or not v or v.lower() == "unknown":
+            continue
+        out[k[:40]] = [v[:500]]
+    return out
+
+
+def _missing_required_aspects(attributes, required):
+    """Names of required aspects with no real value. Pure function, tested."""
+    missing = []
+    for a in required or []:
+        name = a.get("name", "") if isinstance(a, dict) else str(a)
+        v = str((attributes or {}).get(name, "")).strip()
+        if not v or v.lower() == "unknown":
+            missing.append(name)
+    return missing
+
+
 @app.route("/api/ebay/status")
 def api_ebay_status():
     toks = _load_ebay_tokens()
@@ -579,6 +663,25 @@ def api_ebay_category_suggest():
     return jsonify({"suggestions": suggestions[:12]})
 
 
+@app.route("/api/ebay/category-aspects", methods=["POST"])
+def api_ebay_category_aspects():
+    """Item specifics eBay wants for a category (required + recommended).
+
+    Used by the publish panel to render mandatory fields. Never errors hard:
+    when eBay can't be reached the UI falls back to today's behavior.
+    """
+    body = request.get_json(force=True) or {}
+    category_id = str(body.get("category_id", "")).strip()
+    if not category_id:
+        return jsonify({"error": "Pick an eBay category first."}), 400
+    required, recommended = _category_aspects(category_id)
+    if required is None:
+        return jsonify({"required": [], "recommended": [],
+                        "unavailable": True}), 200
+    return jsonify({"required": required, "recommended": recommended,
+                    "unavailable": False})
+
+
 @app.route("/api/ebay/publish", methods=["POST"])
 def api_ebay_publish():
     body = request.get_json(force=True) or {}
@@ -608,7 +711,13 @@ def api_ebay_publish():
     fulfillment_id = str(body.get("fulfillment_policy_id") or EBAY_FULFILLMENT_POLICY_ID).strip()
     payment_id = str(body.get("payment_policy_id") or EBAY_PAYMENT_POLICY_ID).strip()
     return_id = str(body.get("return_policy_id") or EBAY_RETURN_POLICY_ID).strip()
-    attributes = d.get("attributes") or {}
+    # v8: step-4 aspect fields (required/recommended item specifics) arrive in
+    # the body and overlay the draft's attributes.
+    attributes = dict(d.get("attributes") or {})
+    body_attrs = body.get("attributes")
+    if isinstance(body_attrs, dict):
+        for k, v in body_attrs.items():
+            attributes[str(k)] = v
 
     if not title:
         return jsonify({"error": "The title is empty. Go back and write a title first."}), 400
@@ -647,7 +756,26 @@ def api_ebay_publish():
 
         # 2. inventory item
         desc_html = html.escape(description).replace("\n", "<br>")
-        aspects = {str(k)[:40]: [str(v)[:500]] for k, v in attributes.items() if str(k).strip()}
+        # v8: normalize aspect names to eBay's exact spelling (case-insensitive
+        # match) and enforce the category's required aspects. When eBay's
+        # aspects lookup fails we skip validation and send what we have —
+        # never block the user on our own API trouble.
+        required, recommended = _category_aspects(category_id)
+        if required is not None:
+            exact = {a["name"].lower(): a["name"]
+                     for a in (required + recommended)}
+            normalized = {}
+            for k, v in attributes.items():
+                ks = str(k).strip()
+                normalized[exact.get(ks.lower(), ks)] = v
+            attributes = normalized
+            missing = _missing_required_aspects(attributes, required)
+            if missing:
+                return jsonify({"error":
+                                "eBay requires " + ", ".join(missing) +
+                                " for this category. Fill them in under "
+                                "'Details eBay requires' above, then try again."}), 400
+        aspects = _clean_aspects(attributes)
         inventory_item = {
             "product": {
                 "title": title,

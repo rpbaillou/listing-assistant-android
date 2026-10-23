@@ -3,6 +3,7 @@ let draft = null;
 let selectedFiles = [];
 let saveTimer = null;
 let saveDirty = false; /* v5: true while edits are waiting for the debounced save */
+let maxPhotos = 10; /* v8: overwritten by /api/config (eBay allows 24 free) */
 
 const $ = (id) => document.getElementById(id);
 
@@ -131,7 +132,7 @@ function removePhoto(i) {
 }
 
 $("photo-input").addEventListener("change", async (e) => {
-  const picked = Array.from(e.target.files || []).slice(0, 10);
+  const picked = Array.from(e.target.files || []).slice(0, maxPhotos);
   clearPreviews();
   skippedCount = 0;
   for (let i = 0; i < picked.length; i++) {
@@ -471,6 +472,7 @@ $("btn-close-drafts").addEventListener("click", () => show("step-photos"));
 api("/api/config").then((c) => {
   if (!c.gemini_configured) $("key-warning").classList.remove("hidden");
   if (c.max_photos) {
+    maxPhotos = c.max_photos;
     document.querySelector("#step-photos .hint").textContent =
       "Choose up to " + c.max_photos + " photos of one item from your photo library.";
   }
@@ -567,6 +569,7 @@ $("btn-cat-suggest").addEventListener("click", async () => {
       b.addEventListener("click", () => {
         $("p-category").value = s.id;
         box.classList.add("hidden");
+        loadCategoryAspects(); /* v8: fetch what eBay requires for this category */
       });
       box.appendChild(b);
     });
@@ -575,9 +578,126 @@ $("btn-cat-suggest").addEventListener("click", async () => {
   }
 });
 
+/* v8: also check when a category number is typed in by hand. */
+$("p-category").addEventListener("change", loadCategoryAspects);
+
+/* ---------- v8: required item specifics ---------- */
+let categoryAspects = { required: [], recommended: [] };
+
+function draftAttrValue(name) {
+  /* Case-insensitive lookup in the draft's AI-guessed attributes so eBay's
+     exact aspect names get pre-filled where they match. */
+  const attrs = ((draft && draft.attributes) || {});
+  const lower = String(name).toLowerCase();
+  for (const k of Object.keys(attrs)) {
+    if (String(k).toLowerCase() === lower) return attrs[k];
+  }
+  return "";
+}
+
+function aspectInput(name, values, required, prefill) {
+  const wrap = document.createElement("div");
+  wrap.className = "req-aspect";
+  const label = document.createElement("label");
+  label.textContent = name + (required ? " *" : "");
+  const input = document.createElement("input");
+  input.type = "text";
+  input.dataset.aspectName = name;
+  input.value = prefill || "";
+  input.placeholder = required ? "Required by eBay" : "Optional";
+  if (values && values.length) {
+    const dl = document.createElement("datalist");
+    dl.id = "dl-" + Math.random().toString(36).slice(2);
+    values.slice(0, 30).forEach((v) => {
+      const o = document.createElement("option");
+      o.value = v;
+      dl.appendChild(o);
+    });
+    wrap.appendChild(dl);
+    input.setAttribute("list", dl.id);
+  }
+  wrap.appendChild(label);
+  wrap.appendChild(input);
+  return wrap;
+}
+
+async function loadCategoryAspects() {
+  const box = $("required-aspects");
+  const cid = $("p-category").value.trim();
+  box.innerHTML = "";
+  categoryAspects = { required: [], recommended: [] };
+  if (!cid) return;
+  box.innerHTML = "<p class='hint'>Checking what details eBay wants for this category…</p>";
+  let data;
+  try {
+    data = await api("/api/ebay/category-aspects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_id: cid }),
+    });
+  } catch (e) {
+    data = null;
+  }
+  if (!data || data.unavailable) {
+    box.innerHTML = "<p class='hint'>Could not check eBay's required details — listing with what you have.</p>";
+    return;
+  }
+  categoryAspects = data;
+  box.innerHTML = "";
+  const req = data.required || [];
+  const rec = (data.recommended || []).slice(0, 8);
+  if (!req.length && !rec.length) {
+    box.innerHTML = "<p class='hint'>eBay has no special required details for this category.</p>";
+    return;
+  }
+  if (req.length) {
+    const h = document.createElement("h4");
+    h.textContent = "Details eBay requires for this category";
+    box.appendChild(h);
+    req.forEach((a) => box.appendChild(aspectInput(a.name, a.values, true, draftAttrValue(a.name))));
+  }
+  if (rec.length) {
+    const det = document.createElement("details");
+    const sum = document.createElement("summary");
+    sum.textContent = "More details eBay suggests (optional)";
+    det.appendChild(sum);
+    rec.forEach((a) => det.appendChild(aspectInput(a.name, a.values, false, draftAttrValue(a.name))));
+    box.appendChild(det);
+  }
+}
+
+function collectAspects() {
+  /* Values from the step-4 aspect fields, keyed by eBay's exact aspect name. */
+  const out = {};
+  document.querySelectorAll("#required-aspects input[data-aspect-name]").forEach((i) => {
+    const v = i.value.trim();
+    if (v) out[i.dataset.aspectName] = v;
+  });
+  return out;
+}
+
+function validateAspects() {
+  const missing = [];
+  const vals = collectAspects();
+  (categoryAspects.required || []).forEach((a) => {
+    const v = (vals[a.name] || "").trim();
+    if (!v || v.toLowerCase() === "unknown") missing.push(a.name);
+  });
+  return missing;
+}
+
 $("btn-publish").addEventListener("click", async () => {
   hidePublishMsg();
   if (!draft) return;
+  /* v8: eBay's required item specifics must be filled before listing. */
+  const missing = validateAspects();
+  if (missing.length) {
+    const el = $("publish-error");
+    el.textContent = "eBay requires " + missing.join(", ") +
+      " for this category. Fill them in under 'Details eBay requires' above, then try again.";
+    el.classList.remove("hidden");
+    return;
+  }
   if (!confirm("Create a REAL live eBay listing for this item now?")) return;
   $("publish-spinner").classList.remove("hidden");
   $("btn-publish").disabled = true;
@@ -593,6 +713,8 @@ $("btn-publish").addEventListener("click", async () => {
       fulfillment_policy_id: $("p-fulfillment").value.trim(),
       payment_policy_id: $("p-payment").value.trim(),
       return_policy_id: $("p-return").value.trim(),
+      /* v8: step-4 aspect fields overlay the draft's attributes server-side. */
+      attributes: Object.assign({}, draft.attributes || {}, collectAspects()),
     };
     const r = await api("/api/ebay/publish", {
       method: "POST",
