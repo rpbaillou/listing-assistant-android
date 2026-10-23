@@ -55,4 +55,20 @@ class CameraCaptureTest {
         assertFalse(CameraCapture.wasUsed(listOf(galUri), camUri))
         assertFalse(CameraCapture.wasUsed(emptyList(), camUri))
     }
+
+    @Test
+    fun captureEnabledWithCameraGoesDirect() {
+        assertTrue(CameraCapture.useCameraDirect(captureEnabled = true, cameraAppAvailable = true))
+    }
+
+    @Test
+    fun captureEnabledWithoutCameraFallsBackToGallery() {
+        assertFalse(CameraCapture.useCameraDirect(captureEnabled = true, cameraAppAvailable = false))
+    }
+
+    @Test
+    fun normalPickerAlwaysUsesGallery() {
+        assertFalse(CameraCapture.useCameraDirect(captureEnabled = false, cameraAppAvailable = true))
+        assertFalse(CameraCapture.useCameraDirect(captureEnabled = false, cameraAppAvailable = false))
+    }
 }

@@ -31,4 +31,15 @@ object CameraCapture {
     /** True when the temp photo was handed to the WebView and must be kept for its async read. */
     fun wasUsed(resolved: List<String>, cameraUri: String?): Boolean =
         cameraUri != null && resolved.contains(cameraUri)
+
+    /**
+     * v12: routes the WebView file chooser. The Take photo button's input
+     * sets capture="camera", which must go straight to the camera app —
+     * his phone opens the Photos picker directly and never shows the
+     * system chooser, so a chooser-dependent camera option never appears.
+     * A capture request with no camera app installed falls back to the
+     * gallery rather than stranding the user.
+     */
+    fun useCameraDirect(captureEnabled: Boolean, cameraAppAvailable: Boolean): Boolean =
+        captureEnabled && cameraAppAvailable
 }

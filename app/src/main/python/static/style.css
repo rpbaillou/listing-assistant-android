@@ -49,6 +49,9 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: 2px dashed #9db8ee; cursor: pointer;
 }
 #photo-input { display: none; }
+#camera-input { display: none; }
+.photobtns { display: flex; gap: 0.5rem; }
+.photobtns .filebtn { flex: 1; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
 .thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }

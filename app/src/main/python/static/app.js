@@ -131,12 +131,15 @@ function removePhoto(i) {
   hideError();
 }
 
-$("photo-input").addEventListener("change", async (e) => {
-  const picked = Array.from(e.target.files || []).slice(0, maxPhotos);
-  clearPreviews();
+/* Shared photo intake: "Choose photos" replaces the set, "Take photo"
+   appends one more (so he can snap several angles in a row). */
+async function handlePickedFiles(fileList, replace) {
+  const room = replace ? maxPhotos : Math.max(0, maxPhotos - selectedFiles.length);
+  const picked = Array.from(fileList || []).slice(0, room);
+  if (replace) clearPreviews();
   skippedCount = 0;
   for (let i = 0; i < picked.length; i++) {
-    const r = await downscaleFile(picked[i], i);
+    const r = await downscaleFile(picked[i], selectedFiles.length + i);
     if (r.skipped) { skippedCount++; continue; }
     const u = URL.createObjectURL(r.blob);
     selectedFiles.push({ blob: r.blob, name: r.name, url: u });
@@ -149,6 +152,12 @@ $("photo-input").addEventListener("change", async (e) => {
     n.classList.remove("hidden");
   }
   hideError();
+}
+
+$("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.files, true); });
+$("camera-input").addEventListener("change", (e) => {
+  handlePickedFiles(e.target.files, false);
+  e.target.value = ""; /* reset so another snap fires change again */
 });
 
 $("btn-analyze").addEventListener("click", async () => {

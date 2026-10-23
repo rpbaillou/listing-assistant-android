@@ -215,51 +215,77 @@ class MainActivity : Activity() {
             ): Boolean {
                 fileCallback?.onReceiveValue(null)
                 fileCallback = callback
-                // Camera capture target: app-private temp file served through
-                // our own provider. No CAMERA permission needed — the camera
-                // app does the capturing; we only hand it a place to write.
-                val dir = CameraPhotoProvider.cameraDir(this@MainActivity)
-                // Tidy up: temp photos older than a day are never coming back.
-                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
-                dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
-                pendingCameraPhoto =
-                    File(dir, CameraCapture.tempName(System.currentTimeMillis())).apply {
-                        createNewFile()
-                    }
-                pendingCameraPhotoUri =
-                    CameraPhotoProvider.uriFor(this@MainActivity, pendingCameraPhoto!!)
-                val camIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
-                    putExtra(android.provider.MediaStore.EXTRA_OUTPUT, pendingCameraPhotoUri)
-                    addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                // v12: the Take photo button's <input> sets capture="camera".
+                // Go straight to the camera app — his phone opens the Photos
+                // picker directly and never shows the system chooser, so the
+                // v10 EXTRA_INITIAL_INTENTS camera option never appears for
+                // him. Depending on the chooser is unreliable; the button is
+                // the primary path now.
+                val camIntent = buildCameraIntent()
+                val cameraAvailable = camIntent != null
+                if (CameraCapture.useCameraDirect(params.isCaptureEnabled, cameraAvailable)) {
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(camIntent!!, FILE_CHOOSER_REQUEST)
+                    return true
                 }
-                val initialIntents = mutableListOf<Intent>()
-                if (camIntent.resolveActivity(packageManager) != null) {
-                    // Explicit per-package grants: the reliable pre-Lollipop
-                    // pattern, still the safest on modern Android too.
-                    packageManager
-                        .queryIntentActivities(camIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
-                        .forEach {
-                            grantUriPermission(
-                                it.activityInfo.packageName, pendingCameraPhotoUri,
-                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
-                            )
-                        }
-                    initialIntents += camIntent
-                }
+                // Gallery/files picker (or capture with no camera app: fall
+                // back to the gallery rather than stranding him). The camera
+                // stays in EXTRA_INITIAL_INTENTS as a bonus on phones that
+                // do show the chooser dialog.
                 val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "image/*"
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
                 val chooser = Intent.createChooser(galleryIntent, "Choose photos")
-                if (initialIntents.isNotEmpty()) {
-                    chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, initialIntents.toTypedArray())
+                if (camIntent != null) {
+                    chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(camIntent))
                 }
                 @Suppress("DEPRECATION")
                 startActivityForResult(chooser, FILE_CHOOSER_REQUEST)
                 return true
             }
         }
+    }
+
+    /**
+     * Builds the camera capture intent writing to our app-private temp
+     * photo (served through CameraPhotoProvider). No CAMERA permission
+     * needed — the camera app does the capturing; we only hand it a place
+     * to write. Returns null (after cleaning up) when no camera app exists.
+     */
+    private fun buildCameraIntent(): Intent? {
+        val dir = CameraPhotoProvider.cameraDir(this)
+        // Tidy up: temp photos older than a day are never coming back.
+        val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+        dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
+        pendingCameraPhoto =
+            File(dir, CameraCapture.tempName(System.currentTimeMillis())).apply {
+                createNewFile()
+            }
+        pendingCameraPhotoUri =
+            CameraPhotoProvider.uriFor(this, pendingCameraPhoto!!)
+        val camIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+            putExtra(android.provider.MediaStore.EXTRA_OUTPUT, pendingCameraPhotoUri)
+            addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (camIntent.resolveActivity(packageManager) == null) {
+            pendingCameraPhoto?.delete()
+            pendingCameraPhoto = null
+            pendingCameraPhotoUri = null
+            return null
+        }
+        // Explicit per-package grants: the reliable pre-Lollipop
+        // pattern, still the safest on modern Android too.
+        packageManager
+            .queryIntentActivities(camIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            .forEach {
+                grantUriPermission(
+                    it.activityInfo.packageName, pendingCameraPhotoUri,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        return camIntent
     }
 
     /**
