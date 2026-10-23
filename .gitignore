@@ -2,3 +2,5 @@ app/build/
 .gradle/
 local.properties
 keystore/
+__pycache__/
+*.pyc

@@ -126,7 +126,8 @@ IDENTIFY_PROMPT = """You are an expert eBay reseller assistant. The attached pho
 
 Rules:
 - Title: 80 characters max. Buyer search keywords first. No ALL CAPS, no hype words like RARE!!! or L@@K.
-- Description: 2 to 4 short factual sentences: what it is, condition details you can actually see, measurements only if visible. Never invent measurements, marks, or brands you cannot see. If you are unsure about the maker, say so.
+- Description: 2 to 4 short factual sentences: what it is (maker, model or pattern name, era, materials, colors, visible markings, shape). Measurements only if visible. Never invent measurements, marks, or brands you cannot see. If you are unsure about the maker, say so.
+- CONDITION RULE (strict, never break it): Do NOT describe, assess, or speculate about the item's condition in any way. Never write claims like "no chips", "no cracks", "good condition", "great shape", "mint", "appears to be in excellent condition", or anything similar. You cannot hold the item or see every angle, so any condition claim would be a guess, and a wrong guess misleads the buyer. The seller states the condition separately. Leave condition out of the description entirely.
 - Category: the most specific eBay category path you can, for example "Collectibles > Decorative Collectibles > Plates".
 - Attributes: key/value item specifics buyers filter by (Brand, Model, Era, Material, Color...). Use "Unknown" instead of guessing.
 
@@ -595,7 +596,14 @@ def api_ebay_publish():
     title = str(body.get("title", d.get("title", ""))).strip()[:80]
     description = str(body.get("description", d.get("description", ""))).strip()
     price_raw = str(body.get("price", d.get("price", ""))).strip()
-    condition = str(body.get("condition", "NEW")).strip()
+    # v6: condition comes from the step-4 dropdown, falling back to the draft's
+    # condition field (step 2). Empty means unset: we do NOT default to NEW,
+    # because silently calling a used item "new" misleads the buyer. eBay gets
+    # no condition value in that case; if the category requires one, eBay's own
+    # error message says so in plain words.
+    condition = str(body.get("condition", "") or d.get("condition", "")).strip()
+    condition_details = str(body.get("condition_details", "")
+                            or d.get("condition_details", "")).strip()[:1000]
     category_id = str(body.get("category_id", "")).strip()
     fulfillment_id = str(body.get("fulfillment_policy_id") or EBAY_FULFILLMENT_POLICY_ID).strip()
     payment_id = str(body.get("payment_policy_id") or EBAY_PAYMENT_POLICY_ID).strip()
@@ -615,7 +623,7 @@ def api_ebay_publish():
     if not (fulfillment_id and payment_id and return_id):
         return jsonify({"error": "The three policy numbers are missing. Add them in .env "
                                  "or type them in the boxes (setup guide: Connect eBay)."}), 400
-    if condition not in {v for v, _ in CONDITIONS}:
+    if condition and condition not in {v for v, _ in CONDITIONS}:
         return jsonify({"error": "Pick a condition from the list."}), 400
     photos = d.get("photos") or []
     if not photos:
@@ -640,16 +648,21 @@ def api_ebay_publish():
         # 2. inventory item
         desc_html = html.escape(description).replace("\n", "<br>")
         aspects = {str(k)[:40]: [str(v)[:500]] for k, v in attributes.items() if str(k).strip()}
-        _ebay_call("PUT", f"/sell/inventory/v1/inventory_item/{sku}", token, {
+        inventory_item = {
             "product": {
                 "title": title,
                 "description": desc_html or title,
                 "imageUrls": image_urls,
                 **({"aspects": aspects} if aspects else {}),
             },
-            "condition": condition,
             "availability": {"shipToLocationAvailability": {"quantity": 1}},
-        })
+        }
+        if condition:
+            inventory_item["condition"] = condition
+        if condition_details:
+            inventory_item["conditionDescription"] = condition_details
+        _ebay_call("PUT", f"/sell/inventory/v1/inventory_item/{sku}", token,
+                   inventory_item)
 
         # 3. offer (reuse if one was already made for this draft)
         offer_id = d.get("ebay_offer_id")
@@ -748,6 +761,7 @@ def api_analyze():
         return jsonify({"error": str(exc)}), 502
     now = datetime.now().isoformat(timespec="seconds")
     draft = {"id": draft_id, "created": now, "photos": rels, "price": "",
+             "condition": "", "condition_details": "",
              **identified}
     _save_draft(draft)
     return jsonify({"draft": draft})
@@ -785,9 +799,17 @@ def api_draft_save(draft_id):
     if d is None:
         return jsonify({"error": "Draft not found."}), 404
     body = request.get_json(force=True) or {}
-    for key in ("title", "description", "category", "price", "identification_notes"):
+    for key in ("title", "description", "category", "price", "identification_notes",
+                "condition_details"):
         if key in body:
             d[key] = str(body[key])[:5000]
+    # v6: condition must be one of eBay's condition values (or empty = unset).
+    # Invalid values are ignored rather than saved, so a bad write can never
+    # corrupt the draft; the publish step validates again.
+    if "condition" in body:
+        c = str(body["condition"]).strip()
+        if not c or c in {v for v, _ in CONDITIONS}:
+            d["condition"] = c
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)

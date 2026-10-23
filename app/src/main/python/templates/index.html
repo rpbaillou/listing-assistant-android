@@ -56,6 +56,21 @@
     <label>Description</label>
     <textarea id="f-description" rows="6"></textarea>
 
+    <label>Condition</label>
+    <select id="f-condition">
+      <option value="">— Pick one —</option>
+      <option value="NEW">New</option>
+      <option value="USED_EXCELLENT">Used - like new</option>
+      <option value="USED_VERY_GOOD">Used - very good</option>
+      <option value="USED_GOOD">Used - good</option>
+      <option value="USED_ACCEPTABLE">Used - fair</option>
+      <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
+    </select>
+    <p class="hint">You state the condition — the AI no longer guesses about it. Pick what fits, then spell out the specifics below.</p>
+
+    <label>Condition details</label>
+    <textarea id="f-condition-details" rows="3" placeholder="e.g. small chips on the base, wear on the glaze — be honest, it protects you from returns"></textarea>
+
     <label>Item specifics</label>
     <div id="attrs"></div>
     <button id="btn-add-attr" class="ghost" type="button">+ Add a row</button>
@@ -100,6 +115,7 @@
 
       <label>Condition</label>
       <select id="p-condition"></select>
+      <p id="condition-reminder" class="hint hidden">You haven't set a condition yet — add it in step 2 so buyers know exactly what they're getting.</p>
 
       <label>eBay category number</label>
       <div class="pricerow">

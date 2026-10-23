@@ -177,6 +177,8 @@ function loadDraftIntoForm(d) {
   $("f-title").value = d.title || "";
   $("f-category").value = d.category || "";
   $("f-description").value = d.description || "";
+  $("f-condition").value = d.condition || "";
+  $("f-condition-details").value = d.condition_details || "";
   $("f-price").value = d.price || "";
   updateCount();
   const box = $("draft-photos");
@@ -235,9 +237,18 @@ function collectForm() {
     title: $("f-title").value.trim(),
     category: $("f-category").value.trim(),
     description: $("f-description").value.trim(),
+    condition: $("f-condition").value,
+    condition_details: $("f-condition-details").value.trim(),
     price: $("f-price").value.trim(),
     attributes: attrs,
   };
+}
+
+/* v6: plain-words label for a condition value (reads the step-2 dropdown). */
+function conditionLabel(value) {
+  if (!value) return "";
+  const o = $("f-condition").querySelector('option[value="' + value + '"]');
+  return o ? o.textContent : value;
 }
 
 function scheduleSave() {
@@ -302,6 +313,13 @@ window.LA_refreshDraft = async () => {
 ["f-title", "f-category", "f-description", "f-price"].forEach((id) => {
   $(id).addEventListener("input", () => { updateCount(); scheduleSave(); });
 });
+/* v6: condition fields join the autosave. The select fires "change"
+   reliably; "input" covers the textarea. Double-firing is harmless
+   (scheduleSave is debounced). */
+["f-condition", "f-condition-details"].forEach((id) => {
+  $(id).addEventListener("input", scheduleSave);
+  $(id).addEventListener("change", scheduleSave);
+});
 
 function updateCount() {
   $("title-count").textContent = $("f-title").value.length + "/80";
@@ -348,6 +366,8 @@ function renderReview() {
     "<h3>" + esc(d.title || "(no title)") + "</h3>" +
     "<p><b>Price:</b> " + (d.price ? "$" + esc(d.price) : "(not set)") + "</p>" +
     "<p><b>Category:</b> " + esc(d.category || "(not set)") + "</p>" +
+    "<p><b>Condition:</b> " + esc(conditionLabel(d.condition) || "(not set)") + "</p>" +
+    (d.condition_details ? "<p><b>Condition details:</b> " + esc(d.condition_details).replace(/\n/g, "<br>") + "</p>" : "") +
     "<p>" + esc(d.description).replace(/\n/g, "<br>") + "</p>" +
     (attrs ? "<dl>" + attrs + "</dl>" : "") +
     "<p><b>Photos:</b> " + (d.photos || []).length + "</p>";
@@ -377,6 +397,9 @@ async function copyText(text, okMsg) {
 function fullListingText() {
   const d = Object.assign({}, draft, collectForm());
   let t = d.title + "\n\n" + d.description;
+  const cond = conditionLabel(d.condition);
+  if (cond) t += "\n\nCondition: " + cond;
+  if (d.condition_details) t += "\nCondition details: " + d.condition_details;
   const keys = Object.keys(d.attributes || {});
   if (keys.length) {
     t += "\n\nItem specifics:\n";
@@ -500,11 +523,18 @@ async function renderEbayStep() {
   // prefill the publish panel
   const sel = $("p-condition");
   sel.innerHTML = "";
+  const pick = document.createElement("option");
+  pick.value = ""; pick.textContent = "— Pick one —";
+  sel.appendChild(pick);
   (ebayStatus.conditions || []).forEach((c) => {
     const o = document.createElement("option");
     o.value = c.value; o.textContent = c.label;
     sel.appendChild(o);
   });
+  // v6: carry the draft's condition over; gentle reminder (not a block) if unset
+  const cur = collectForm();
+  sel.value = cur.condition || "";
+  $("condition-reminder").classList.toggle("hidden", !!cur.condition);
   $("p-price").value = $("f-price").value || "";
   $("p-category").value = "";
   $("cat-suggestions").classList.add("hidden");
@@ -558,6 +588,7 @@ $("btn-publish").addEventListener("click", async () => {
       description: $("f-description").value.trim(),
       price: $("p-price").value.trim(),
       condition: $("p-condition").value,
+      condition_details: $("f-condition-details").value.trim(),
       category_id: $("p-category").value.trim(),
       fulfillment_policy_id: $("p-fulfillment").value.trim(),
       payment_policy_id: $("p-payment").value.trim(),
