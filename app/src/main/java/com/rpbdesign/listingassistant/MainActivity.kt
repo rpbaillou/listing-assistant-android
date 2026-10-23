@@ -39,7 +39,8 @@ class MainActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraPhoto: File? = null
     private var pendingCameraPhotoUri: Uri? = null
-    private var updateOffered = false
+    private var lastOfferedVersionCode = 0
+    private var updateDialog: AlertDialog? = null
     private var soldPricesOverlay: View? = null
     private var soldPricesWebView: WebView? = null
     private var usePriceButton: Button? = null
@@ -515,18 +516,30 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    /** One-tap update offer. "Later" dismisses it until the next app start. */
+    /** One-tap update offer. "Later" dismisses it for this version only —
+     *  a newer version will always be offered again. */
     private fun showUpdateDialog(info: UpdateInfo) {
-        if (updateOffered) return
-        updateOffered = true
+        if (!Updater.shouldOfferUpdate(info.versionCode, lastOfferedVersionCode)) return
+        if (updateDialog?.isShowing == true) return
+        lastOfferedVersionCode = info.versionCode
         val notes = if (info.notes.isNotEmpty()) "\n\n${info.notes}" else ""
-        AlertDialog.Builder(this)
+        updateDialog = AlertDialog.Builder(this)
             .setTitle("A new version is ready")
             .setMessage("Version ${info.versionName.ifEmpty { "#${info.versionCode}" }} " +
                 "is available.$notes")
             .setPositiveButton("Update") { _, _ -> Updater.downloadAndInstall(this, info) }
             .setNegativeButton("Later", null)
+            .setOnDismissListener { updateDialog = null }
             .show()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-check for updates every time the app comes to the foreground:
+        // the old code only checked once per process, so "Later" (or a
+        // Home-button round-trip that didn't destroy the Activity) could
+        // suppress the offer forever.
+        Updater.check(this) { info -> showUpdateDialog(info) }
     }
 
     companion object {

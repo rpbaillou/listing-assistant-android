@@ -66,6 +66,12 @@ object Updater {
     fun canInstall(activity: Activity): Boolean =
         Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()
 
+    /** Pure offer decision, unit-tested: offer iff this versionCode was
+     *  never offered before. Tapping "Later" records the versionCode, so the
+     *  same version is never re-offered, but any newer one always is. */
+    fun shouldOfferUpdate(infoVersionCode: Int, lastOfferedVersionCode: Int): Boolean =
+        infoVersionCode > lastOfferedVersionCode
+
     /**
      * Download the APK, then install it — even if the app is closed meanwhile.
      * The manifest-registered UpdateDownloadReceiver fires the installer when
