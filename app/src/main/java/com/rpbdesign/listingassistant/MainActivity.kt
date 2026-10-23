@@ -154,6 +154,9 @@ class MainActivity : Activity() {
                         webView.loadUrl("http://127.0.0.1:5050/")
                         // Self-update check: silent unless a newer build exists.
                         Updater.check(this@MainActivity) { info -> showUpdateDialog(info) }
+                        // If a previous update download already finished (e.g.
+                        // the app was force-stopped), install it now.
+                        Updater.resumePendingInstall(this@MainActivity)
                     }
                     return@Thread
                 } catch (_: Exception) {

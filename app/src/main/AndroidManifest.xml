@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets the app install its own updates. The matching "Allow from this
+         source" toggle is per-app: granting it for Chrome does NOT grant it
+         for us, so the updater checks canRequestPackageInstalls() up front. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- INTERNET is for the Gemini and eBay cloud APIs. The app's own server
          only ever talks to this phone (http://127.0.0.1:5050). usesCleartextTraffic
@@ -34,5 +38,15 @@
             android:authorities="${applicationId}.cameraprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
+        <!-- Fires when an update APK finishes downloading, even if the app
+             was closed or swiped away. Matches the download by the ID saved
+             when Update was tapped; anything else is ignored. -->
+        <receiver
+            android:name=".UpdateDownloadReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
