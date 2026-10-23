@@ -1,1 +1,1 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v8/ebay-listing-assistant-apk-v8.apk","notes":"The app now checks what details eBay requires for your category and won't let you list until they're filled in; photo limit raised to 24.","versionCode":8,"versionName":"1.7"}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v9/ebay-listing-assistant-apk-v9.apk","notes":"You can now allow Best Offer on a listing, with optional auto-decline and auto-accept prices.","versionCode":9,"versionName":"1.8"}
