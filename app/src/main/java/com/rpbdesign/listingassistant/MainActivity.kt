@@ -37,6 +37,8 @@ class MainActivity : Activity() {
     private lateinit var setupView: ScrollView
     private lateinit var startingView: TextView
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingCameraPhoto: File? = null
+    private var pendingCameraPhotoUri: Uri? = null
     private var updateOffered = false
     private var soldPricesOverlay: View? = null
     private var soldPricesWebView: WebView? = null
@@ -210,16 +212,48 @@ class MainActivity : Activity() {
             ): Boolean {
                 fileCallback?.onReceiveValue(null)
                 fileCallback = callback
-                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                // Camera capture target: app-private temp file served through
+                // our own provider. No CAMERA permission needed — the camera
+                // app does the capturing; we only hand it a place to write.
+                val dir = CameraPhotoProvider.cameraDir(this@MainActivity)
+                // Tidy up: temp photos older than a day are never coming back.
+                val cutoff = System.currentTimeMillis() - 24L * 60 * 60 * 1000
+                dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
+                pendingCameraPhoto =
+                    File(dir, CameraCapture.tempName(System.currentTimeMillis())).apply {
+                        createNewFile()
+                    }
+                pendingCameraPhotoUri =
+                    CameraPhotoProvider.uriFor(this@MainActivity, pendingCameraPhoto!!)
+                val camIntent = Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                    putExtra(android.provider.MediaStore.EXTRA_OUTPUT, pendingCameraPhotoUri)
+                    addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val initialIntents = mutableListOf<Intent>()
+                if (camIntent.resolveActivity(packageManager) != null) {
+                    // Explicit per-package grants: the reliable pre-Lollipop
+                    // pattern, still the safest on modern Android too.
+                    packageManager
+                        .queryIntentActivities(camIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+                        .forEach {
+                            grantUriPermission(
+                                it.activityInfo.packageName, pendingCameraPhotoUri,
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            )
+                        }
+                    initialIntents += camIntent
+                }
+                val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE)
                     type = "image/*"
                     putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                 }
+                val chooser = Intent.createChooser(galleryIntent, "Choose photos")
+                if (initialIntents.isNotEmpty()) {
+                    chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, initialIntents.toTypedArray())
+                }
                 @Suppress("DEPRECATION")
-                startActivityForResult(
-                    Intent.createChooser(intent, "Choose photos"),
-                    FILE_CHOOSER_REQUEST
-                )
+                startActivityForResult(chooser, FILE_CHOOSER_REQUEST)
                 return true
             }
         }
@@ -389,15 +423,47 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == FILE_CHOOSER_REQUEST) {
-            val uris = mutableListOf<Uri>()
+            val galleryUris = mutableListOf<Uri>()
             if (resultCode == Activity.RESULT_OK && data != null) {
                 val clip = data.clipData
                 if (clip != null) {
-                    for (i in 0 until clip.itemCount) uris += clip.getItemAt(i).uri
+                    for (i in 0 until clip.itemCount) galleryUris += clip.getItemAt(i).uri
                 } else {
-                    data.data?.let { uris += it }
+                    data.data?.let { galleryUris += it }
                 }
             }
+            val photo = pendingCameraPhoto
+            val photoUri = pendingCameraPhotoUri
+            // Some camera apps ignore EXTRA_OUTPUT and return only a thumbnail
+            // bitmap: save it into our temp file so the pipeline still works.
+            if (galleryUris.isEmpty() && resultCode == Activity.RESULT_OK && photo != null &&
+                photo.length() == 0L
+            ) {
+                val thumb = data?.extras?.get("data") as? android.graphics.Bitmap
+                if (thumb != null) {
+                    try {
+                        java.io.FileOutputStream(photo).use {
+                            thumb.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)
+                        }
+                    } catch (_: Exception) { /* fall through: no usable photo */ }
+                }
+            }
+            val uris = CameraCapture.resolveUris(
+                galleryUris.map { it.toString() },
+                photoUri?.toString(),
+                photo?.length() ?: 0L
+            ).map { android.net.Uri.parse(it) }
+            // Cleanup: revoke the camera app's grants; delete the temp photo
+            // unless we just handed it to the WebView (it reads async).
+            photoUri?.let {
+                revokeUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            if (!CameraCapture.wasUsed(uris.map { it.toString() }, photoUri?.toString())) photo?.delete()
+            pendingCameraPhoto = null
+            pendingCameraPhotoUri = null
             fileCallback?.onReceiveValue(uris.toTypedArray())
             fileCallback = null
         }

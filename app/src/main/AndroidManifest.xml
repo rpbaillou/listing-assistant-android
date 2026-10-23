@@ -26,5 +26,13 @@
             android:authorities="${applicationId}.apkprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
+        <!-- Serves the in-app camera's temp photo to the camera app (write)
+             and back to our WebView file picker (read). No CAMERA permission
+             needed: the camera app does the capturing. -->
+        <provider
+            android:name=".CameraPhotoProvider"
+            android:authorities="${applicationId}.cameraprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
