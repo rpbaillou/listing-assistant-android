@@ -26,7 +26,7 @@ def _load_env(path):
             os.environ[key] = value
 
 
-def start(files_dir):
+def start(files_dir, app_version=""):
     # User data (drafts, photos, eBay tokens) belongs in private storage, not
     # next to the extracted code: Chaquopy may wipe the code dir on upgrade.
     data_dir = os.path.join(files_dir, "appdata")
@@ -38,7 +38,14 @@ def start(files_dir):
     # The eBay RuName's auth accepted URL is http://localhost:5050/... and must
     # match exactly, so the APK always listens on 5050.
     os.environ["PORT"] = "5050"
-    os.environ["APP_VERSION"] = "apk-v1"
+    # v6: the header version badge comes from the Android versionName, passed
+    # in by MainActivity, so it is correct automatically on every release.
+    # No hardcoded version string lives here anymore: the old literal kept
+    # showing v1 on his phone long after v5 was installed, which made him
+    # think the update didn't take.
+    if app_version:
+        v = app_version if app_version.startswith("v") else "v" + app_version
+        os.environ["APP_VERSION"] = v
 
     import app
     app.app.run(host="127.0.0.1", port=5050, threaded=True)

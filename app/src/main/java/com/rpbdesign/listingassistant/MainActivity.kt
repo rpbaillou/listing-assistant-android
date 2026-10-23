@@ -116,8 +116,22 @@ class MainActivity : Activity() {
                 }
                 // Flask's app.run() blocks, so it gets its own daemon thread.
                 val serverThread = Thread {
+                    // v6: pass the real versionName so the header badge in the
+                    // web UI is correct automatically on every release. (The
+                    // old hardcoded "apk-v1" made his phone show v1 long after
+                    // v5 was installed, so he thought the update didn't take.)
+                    val versionName = try {
+                        val pi = if (android.os.Build.VERSION.SDK_INT >= 33)
+                            packageManager.getPackageInfo(
+                                packageName,
+                                android.content.pm.PackageManager.PackageInfoFlags.of(0))
+                        else
+                            @Suppress("DEPRECATION")
+                            packageManager.getPackageInfo(packageName, 0)
+                        pi.versionName ?: ""
+                    } catch (_: Exception) { "" }
                     Python.getInstance().getModule("apprunner")
-                        .callAttr("start", filesDir.absolutePath)
+                        .callAttr("start", filesDir.absolutePath, versionName)
                 }
                 serverThread.isDaemon = true
                 serverThread.start()
