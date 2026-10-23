@@ -18,6 +18,9 @@ main { max-width: 640px; margin: 0 auto; padding: 0 1rem; }
 .hidden { display: none !important; }
 
 label { display: block; font-weight: 600; margin: 1rem 0 0.35rem 0; }
+/* v9: checkbox row for the Best Offer toggle. */
+.checkline { display: flex; align-items: center; gap: 0.6rem; font-weight: 600; }
+.checkline input[type=checkbox] { width: 1.4rem; height: 1.4rem; }
 input[type=text], input[type=number], textarea, select {
   width: 100%; padding: 0.7rem; font-size: 1rem;
   border: 1px solid #c9c9ce; border-radius: 8px; background: #fff;

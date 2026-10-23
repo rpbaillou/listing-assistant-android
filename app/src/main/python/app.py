@@ -558,6 +558,63 @@ def _missing_required_aspects(attributes, required):
     return missing
 
 
+def _parse_money(raw):
+    """Parse a price string to a rounded float, or None if blank/invalid.
+
+    Pure function, tested. Accepts "$25", "25.00", "1,299.99".
+    """
+    s = str(raw or "").strip().replace("$", "").replace(",", "")
+    if not s:
+        return None
+    try:
+        v = round(float(s), 2)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def _best_offer_terms(enabled, decline_raw, accept_raw, price_val):
+    """Build listingPolicies.bestOfferTerms, or (None, error) on bad input.
+
+    Pure function, tested. Field placement verified against eBay's Sell
+    Inventory docs (via the Microsoft eBay connector reference, since
+    developer.ebay.com is unreachable from here): bestOfferTerms lives
+    INSIDE listingPolicies, with bestOfferEnabled / autoDeclinePrice /
+    autoAcceptPrice. eBay requires auto-accept to be strictly greater than
+    auto-decline, and both below the listing price. Toggle off (or all blank)
+    returns (None, None): today's behavior, unchanged.
+    """
+    if not enabled:
+        return None, None
+    has_decline = bool(str(decline_raw or "").strip())
+    has_accept = bool(str(accept_raw or "").strip())
+    decline = _parse_money(decline_raw)
+    accept = _parse_money(accept_raw)
+    if has_decline and decline is None:
+        return None, ("The auto-decline price isn't a valid amount. "
+                      "Clear it or type a number like 25.00.")
+    if has_accept and accept is None:
+        return None, ("The auto-accept price isn't a valid amount. "
+                      "Clear it or type a number like 40.00.")
+    if decline is not None and decline >= price_val:
+        return None, ("The auto-decline price has to be below your listing "
+                      "price, or eBay will reject the listing.")
+    if accept is not None and accept >= price_val:
+        return None, ("The auto-accept price has to be below your listing "
+                      "price, or eBay will reject the listing.")
+    if decline is not None and accept is not None and accept <= decline:
+        return None, ("The auto-accept price has to be higher than the "
+                      "auto-decline price.")
+    terms = {"bestOfferEnabled": True}
+    if decline is not None:
+        terms["autoDeclinePrice"] = {"currency": "USD",
+                                     "value": f"{decline:.2f}"}
+    if accept is not None:
+        terms["autoAcceptPrice"] = {"currency": "USD",
+                                    "value": f"{accept:.2f}"}
+    return terms, None
+
+
 @app.route("/api/ebay/status")
 def api_ebay_status():
     toks = _load_ebay_tokens()
@@ -732,6 +789,18 @@ def api_ebay_publish():
     if not (fulfillment_id and payment_id and return_id):
         return jsonify({"error": "The three policy numbers are missing. Add them in .env "
                                  "or type them in the boxes (setup guide: Connect eBay)."}), 400
+    # v9: best offer. The toggle and optional auto prices come from the
+    # publish panel, falling back to the draft's saved values. Toggle off =
+    # today's behavior, unchanged (no bestOfferTerms sent).
+    best_offer = bool(body.get("best_offer", d.get("best_offer", False)))
+    decline_raw = str(body.get("best_offer_auto_decline",
+                               d.get("best_offer_auto_decline", "")) or "")
+    accept_raw = str(body.get("best_offer_auto_accept",
+                              d.get("best_offer_auto_accept", "")) or "")
+    best_offer_terms, bo_error = _best_offer_terms(best_offer, decline_raw,
+                                                   accept_raw, price_val)
+    if bo_error:
+        return jsonify({"error": bo_error}), 400
     if condition and condition not in {v for v, _ in CONDITIONS}:
         return jsonify({"error": "Pick a condition from the list."}), 400
     photos = d.get("photos") or []
@@ -806,6 +875,10 @@ def api_ebay_publish():
                     "fulfillmentPolicyId": fulfillment_id,
                     "paymentPolicyId": payment_id,
                     "returnPolicyId": return_id,
+                    # v9: bestOfferTerms lives INSIDE listingPolicies per
+                    # eBay's Sell Inventory docs. Omitted entirely when off.
+                    **({"bestOfferTerms": best_offer_terms}
+                       if best_offer_terms else {}),
                 },
                 "pricingSummary": {"price": {"currency": "USD",
                                              "value": f"{price_val:.2f}"}},
@@ -890,6 +963,10 @@ def api_analyze():
     now = datetime.now().isoformat(timespec="seconds")
     draft = {"id": draft_id, "created": now, "photos": rels, "price": "",
              "condition": "", "condition_details": "",
+             # v9: best offer settings. Toggle is a bool; auto prices are kept
+             # as raw strings in the draft and validated as money at publish.
+             "best_offer": False, "best_offer_auto_decline": "",
+             "best_offer_auto_accept": "",
              **identified}
     _save_draft(draft)
     return jsonify({"draft": draft})
@@ -938,6 +1015,13 @@ def api_draft_save(draft_id):
         c = str(body["condition"]).strip()
         if not c or c in {v for v, _ in CONDITIONS}:
             d["condition"] = c
+    # v9: best offer settings. The toggle is stored as a bool; the auto
+    # prices as short raw strings (validated as money at publish time).
+    if "best_offer" in body:
+        d["best_offer"] = bool(body["best_offer"])
+    for key in ("best_offer_auto_decline", "best_offer_auto_accept"):
+        if key in body:
+            d[key] = str(body[key])[:20]
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)

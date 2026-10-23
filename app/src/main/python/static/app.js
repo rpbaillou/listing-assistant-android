@@ -242,6 +242,11 @@ function collectForm() {
     condition_details: $("f-condition-details").value.trim(),
     price: $("f-price").value.trim(),
     attributes: attrs,
+    /* v9: best offer lives in step 4 (p- ids) but joins the same autosave —
+       the elements always exist in the DOM, visible or not. */
+    best_offer: $("p-best-offer").checked,
+    best_offer_auto_decline: $("p-bo-decline").value.trim(),
+    best_offer_auto_accept: $("p-bo-accept").value.trim(),
   };
 }
 
@@ -369,6 +374,11 @@ function renderReview() {
     "<p><b>Category:</b> " + esc(d.category || "(not set)") + "</p>" +
     "<p><b>Condition:</b> " + esc(conditionLabel(d.condition) || "(not set)") + "</p>" +
     (d.condition_details ? "<p><b>Condition details:</b> " + esc(d.condition_details).replace(/\n/g, "<br>") + "</p>" : "") +
+    /* v9: show best offer status in the review so it's confirmed before step 4. */
+    (d.best_offer ? "<p><b>Best Offer:</b> on" +
+      (d.best_offer_auto_decline ? " (auto-decline under $" + esc(d.best_offer_auto_decline) + ")" : "") +
+      (d.best_offer_auto_accept ? " (auto-accept $" + esc(d.best_offer_auto_accept) + "+)" : "") +
+      "</p>" : "") +
     "<p>" + esc(d.description).replace(/\n/g, "<br>") + "</p>" +
     (attrs ? "<dl>" + attrs + "</dl>" : "") +
     "<p><b>Photos:</b> " + (d.photos || []).length + "</p>";
@@ -538,6 +548,11 @@ async function renderEbayStep() {
   sel.value = cur.condition || "";
   $("condition-reminder").classList.toggle("hidden", !!cur.condition);
   $("p-price").value = $("f-price").value || "";
+  /* v9: best offer settings carry over from the draft. */
+  $("p-best-offer").checked = !!draft.best_offer;
+  $("p-bo-decline").value = draft.best_offer_auto_decline || "";
+  $("p-bo-accept").value = draft.best_offer_auto_accept || "";
+  $("best-offer-fields").classList.toggle("hidden", !$("p-best-offer").checked);
   $("p-category").value = "";
   $("cat-suggestions").classList.add("hidden");
   const pd = ebayStatus.policy_defaults || {};
@@ -580,6 +595,41 @@ $("btn-cat-suggest").addEventListener("click", async () => {
 
 /* v8: also check when a category number is typed in by hand. */
 $("p-category").addEventListener("change", loadCategoryAspects);
+
+/* v9: best offer toggle shows/hides the auto-price fields; all three join
+   the draft autosave (checkbox fires "change", prices fire "input"). */
+$("p-best-offer").addEventListener("change", () => {
+  $("best-offer-fields").classList.toggle("hidden", !$("p-best-offer").checked);
+  scheduleSave();
+});
+["p-bo-decline", "p-bo-accept"].forEach((id) => {
+  $(id).addEventListener("input", scheduleSave);
+});
+
+/* v9: client-side mirror of the server's best-offer rules. Returns a
+   plain-words error or "". The server validates again at publish. */
+function parseMoney(s) {
+  s = String(s || "").trim().replace(/[$,]/g, "");
+  if (!s) return null;
+  const v = Math.round(parseFloat(s) * 100) / 100;
+  return (isNaN(v) || v <= 0) ? null : v;
+}
+function checkBestOffer(on, declineRaw, acceptRaw, price) {
+  if (!on) return "";
+  const decline = parseMoney(declineRaw);
+  const accept = parseMoney(acceptRaw);
+  if (declineRaw.trim() && decline === null)
+    return "The auto-decline price isn't a valid amount. Clear it or type a number like 25.00.";
+  if (acceptRaw.trim() && accept === null)
+    return "The auto-accept price isn't a valid amount. Clear it or type a number like 40.00.";
+  if (decline !== null && decline >= price)
+    return "The auto-decline price has to be below your listing price.";
+  if (accept !== null && accept >= price)
+    return "The auto-accept price has to be below your listing price.";
+  if (decline !== null && accept !== null && accept <= decline)
+    return "The auto-accept price has to be higher than the auto-decline price.";
+  return "";
+}
 
 /* ---------- v8: required item specifics ---------- */
 let categoryAspects = { required: [], recommended: [] };
@@ -698,6 +748,17 @@ $("btn-publish").addEventListener("click", async () => {
     el.classList.remove("hidden");
     return;
   }
+  /* v9: best offer sanity checks, plain words, before the confirm dialog. */
+  const boErr = checkBestOffer($("p-best-offer").checked,
+                               $("p-bo-decline").value,
+                               $("p-bo-accept").value,
+                               parseFloat($("p-price").value));
+  if (boErr) {
+    const el = $("publish-error");
+    el.textContent = boErr;
+    el.classList.remove("hidden");
+    return;
+  }
   if (!confirm("Create a REAL live eBay listing for this item now?")) return;
   $("publish-spinner").classList.remove("hidden");
   $("btn-publish").disabled = true;
@@ -715,6 +776,10 @@ $("btn-publish").addEventListener("click", async () => {
       return_policy_id: $("p-return").value.trim(),
       /* v8: step-4 aspect fields overlay the draft's attributes server-side. */
       attributes: Object.assign({}, draft.attributes || {}, collectAspects()),
+      /* v9: best offer settings. */
+      best_offer: $("p-best-offer").checked,
+      best_offer_auto_decline: $("p-bo-decline").value.trim(),
+      best_offer_auto_accept: $("p-bo-accept").value.trim(),
     };
     const r = await api("/api/ebay/publish", {
       method: "POST",

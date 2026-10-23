@@ -129,6 +129,16 @@
       <label>Price ($)</label>
       <input id="p-price" type="number" min="0.01" step="0.01" inputmode="decimal">
 
+      <label class="checkline"><input id="p-best-offer" type="checkbox"> Let buyers make offers (Best Offer)</label>
+      <div id="best-offer-fields" class="hidden">
+        <p class="hint">eBay handles the haggling for you. Leave both blank to review every offer yourself.</p>
+        <label>Automatically say no to offers under ($)</label>
+        <input id="p-bo-decline" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 20.00">
+        <label>Automatically say yes to offers of ($) and up</label>
+        <input id="p-bo-accept" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
+        <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
+      </div>
+
       <details>
         <summary>Shop policy numbers (usually set once)</summary>
         <label>Shipping policy number</label>
