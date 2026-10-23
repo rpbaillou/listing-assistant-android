@@ -7,8 +7,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Message
+import android.util.Base64
 import android.view.View
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -176,6 +178,10 @@ class MainActivity : Activity() {
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
         webView.settings.mediaPlaybackRequiresUserGesture = false
+        // v14: the Take photo button calls Android.openCamera() directly.
+        // @JavascriptInterface methods run on a background thread, so the
+        // bridge posts to the UI thread itself.
+        webView.addJavascriptInterface(CameraJsBridge(), "Android")
         webView.webViewClient = object : WebViewClient() {
             // Safety net: if a sold-search URL ever tries to load in the main
             // WebView (instead of a new window), catch it into the pop-up so
@@ -246,6 +252,82 @@ class MainActivity : Activity() {
                 startActivityForResult(chooser, FILE_CHOOSER_REQUEST)
                 return true
             }
+        }
+    }
+
+    /**
+     * v14: JS bridge for the Take photo button. His phone's WebView ignores
+     * the <input capture="camera"> attribute (isCaptureEnabled() is false),
+     * so v12's button opened the gallery. Calling the camera directly
+     * bypasses the WebView entirely — no attribute to ignore.
+     */
+    inner class CameraJsBridge {
+        @JavascriptInterface
+        fun openCamera() {
+            runOnUiThread { launchCameraForJs() }
+        }
+    }
+
+    /** Launches the camera app for the JS-interface path (no chooser). */
+    private fun launchCameraForJs() {
+        val camIntent = buildCameraIntent()
+        if (camIntent == null) {
+            Toast.makeText(this, "No camera app found.", Toast.LENGTH_LONG).show()
+            return
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(camIntent, CAMERA_JS_REQUEST)
+    }
+
+    /**
+     * Handles the JS-interface camera result: downscales natively to 1600px,
+     * base64-encodes, and hands the data URL to JS. On cancel, just cleans up.
+     * Runs on the UI thread (onActivityResult), so evaluateJavascript is safe.
+     */
+    private fun handleCameraJsResult(resultCode: Int, data: Intent?) {
+        val photo = pendingCameraPhoto
+        val photoUri = pendingCameraPhotoUri
+        try {
+            if (resultCode == Activity.RESULT_OK && photo != null) {
+                // Same thumbnail fallback as the file-chooser path: some
+                // camera apps ignore EXTRA_OUTPUT and return only a bitmap.
+                if (photo.length() == 0L) {
+                    val thumb = data?.extras?.get("data") as? android.graphics.Bitmap
+                    if (thumb != null) {
+                        try {
+                            java.io.FileOutputStream(photo).use {
+                                thumb.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it)
+                            }
+                        } catch (_: Exception) { /* fall through: no usable photo */ }
+                    }
+                }
+                if (photo.length() > 0L) {
+                    val jpeg = CameraDownscale.downscale(photo)
+                    if (jpeg != null) {
+                        val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
+                        // Base64.NO_WRAP alphabet is JS-string-safe (unit-tested);
+                        // no escaping needed inside the single quotes.
+                        webView.evaluateJavascript(
+                            "onCameraPhoto('data:image/jpeg;base64,$b64')", null
+                        )
+                    } else {
+                        Toast.makeText(this, "Couldn't read that photo.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            // Cancel: do nothing (temp file is deleted in finally).
+        } finally {
+            photoUri?.let {
+                revokeUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            // Unlike the file-chooser path (which hands the URI to the WebView
+            // for async reading), here the bytes are already inlined above.
+            photo?.delete()
+            pendingCameraPhoto = null
+            pendingCameraPhotoUri = null
         }
     }
 
@@ -452,6 +534,11 @@ class MainActivity : Activity() {
     @Deprecated("Kept simple on purpose: no AndroidX needed.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        // v14: Take photo button -> Android.openCamera() (JS interface).
+        if (requestCode == CAMERA_JS_REQUEST) {
+            handleCameraJsResult(resultCode, data)
+            return
+        }
         if (requestCode == FILE_CHOOSER_REQUEST) {
             val galleryUris = mutableListOf<Uri>()
             if (resultCode == Activity.RESULT_OK && data != null) {
@@ -544,6 +631,11 @@ class MainActivity : Activity() {
 
     companion object {
         private const val FILE_CHOOSER_REQUEST = 1001
+        /** v14: Take photo button -> Android.openCamera() (JS interface), bypassing
+         *  the WebView file chooser entirely — his phone's WebView ignores the
+         *  capture attribute, so isCaptureEnabled() is false and v12 fell back
+         *  to the gallery. */
+        private const val CAMERA_JS_REQUEST = 1002
 
         /**
          * v5: reads the item price off an eBay item page. Multiple fallback

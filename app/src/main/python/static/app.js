@@ -155,10 +155,30 @@ async function handlePickedFiles(fileList, replace) {
 }
 
 $("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.files, true); });
-$("camera-input").addEventListener("change", (e) => {
-  handlePickedFiles(e.target.files, false);
-  e.target.value = ""; /* reset so another snap fires change again */
+
+/* v14: Take photo calls the camera directly through the app's JS interface.
+   v12 used <input capture="camera">, but his phone's WebView ignores the
+   capture attribute, so both buttons opened the gallery. This bypasses the
+   WebView file picker entirely. */
+$("btn-take-photo").addEventListener("click", () => {
+  if (window.Android && typeof window.Android.openCamera === "function") {
+    window.Android.openCamera();
+  } else {
+    showError("The camera needs the app — please use Choose photos instead.");
+  }
 });
+
+/* Called by native code after a camera snap. dataUrl is a natively
+   downscaled JPEG (1600px, q85). Appends, so he can snap several angles. */
+async function onCameraPhoto(dataUrl) {
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const file = new File([blob], "camera-" + Date.now() + ".jpg", { type: "image/jpeg" });
+    handlePickedFiles([file], false);
+  } catch (e) {
+    showError("Couldn't read that photo.");
+  }
+}
 
 $("btn-analyze").addEventListener("click", async () => {
   hideError();
