@@ -30,8 +30,20 @@ object Updater {
     const val VERSION_URL =
         "https://raw.githubusercontent.com/rpbaillou/listing-assistant-android/main/version.json"
 
-    /** Check in the background; calls back on the UI thread only when an update exists. */
-    fun check(activity: Activity, onUpdate: (UpdateInfo) -> Unit) {
+    /**
+     * Check in the background. Calls back on the UI thread with exactly one
+     * outcome: onUpdate when a newer build exists, onUpToDate when the
+     * installed build is current, onError when the check itself could not
+     * complete (offline, non-200, malformed file). onUpToDate/onError are
+     * optional: automatic checks pass only onError (toast), manual checks
+     * pass both so the user always gets an answer.
+     */
+    fun check(
+        activity: Activity,
+        onUpdate: (UpdateInfo) -> Unit,
+        onUpToDate: (() -> Unit)? = null,
+        onError: (() -> Unit)? = null
+    ) {
         Thread {
             try {
                 val installedCode = installedVersionCode(activity)
@@ -39,17 +51,29 @@ object Updater {
                 conn.connectTimeout = 15000
                 conn.readTimeout = 15000
                 try {
-                    if (conn.responseCode != 200) return@Thread
+                    if (conn.responseCode != 200) {
+                        onError?.let { activity.runOnUiThread { it() } }
+                        return@Thread
+                    }
                     val json = conn.inputStream.bufferedReader().readText()
-                    val info = parseVersionJson(json) ?: return@Thread
+                    val info = parseVersionJson(json)
+                    if (info == null) {
+                        onError?.let { activity.runOnUiThread { it() } }
+                        return@Thread
+                    }
                     if (isUpdateAvailable(installedCode, info)) {
                         activity.runOnUiThread { onUpdate(info) }
+                    } else {
+                        onUpToDate?.let { activity.runOnUiThread { it() } }
                     }
                 } finally {
                     conn.disconnect()
                 }
             } catch (_: Exception) {
-                // Offline, DNS trouble, malformed file: stay silent, try next launch.
+                // Offline, DNS trouble: report it instead of staying silent
+                // (the v13 check swallowed this, so a failed check looked
+                // exactly like "no update available").
+                onError?.let { activity.runOnUiThread { it() } }
             }
         }.start()
     }
@@ -66,11 +90,14 @@ object Updater {
     fun canInstall(activity: Activity): Boolean =
         Build.VERSION.SDK_INT < 26 || activity.packageManager.canRequestPackageInstalls()
 
-    /** Pure offer decision, unit-tested: offer iff this versionCode was
-     *  never offered before. Tapping "Later" records the versionCode, so the
-     *  same version is never re-offered, but any newer one always is. */
-    fun shouldOfferUpdate(infoVersionCode: Int, lastOfferedVersionCode: Int): Boolean =
-        infoVersionCode > lastOfferedVersionCode
+    /** Pure offer decision, unit-tested: the ONLY thing that suppresses an
+     *  update offer is a dialog already on screen (no stacking). There is
+     *  deliberately no per-version "Later" memory any more: v13 recorded the
+     *  dismissed versionCode, so tapping "Later" once meant that version was
+     *  never offered again — and with no manual check, Reynard got stuck on
+     *  v13 with v14 live. "Later" now just dismisses this dialog; the next
+     *  check offers again. */
+    fun shouldShowUpdateDialog(dialogShowing: Boolean): Boolean = !dialogShowing
 
     /**
      * Download the APK, then install it — even if the app is closed meanwhile.

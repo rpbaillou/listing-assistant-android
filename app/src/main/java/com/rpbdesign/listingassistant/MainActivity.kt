@@ -41,7 +41,6 @@ class MainActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraPhoto: File? = null
     private var pendingCameraPhotoUri: Uri? = null
-    private var lastOfferedVersionCode = 0
     private var updateDialog: AlertDialog? = null
     private var soldPricesOverlay: View? = null
     private var soldPricesWebView: WebView? = null
@@ -155,8 +154,13 @@ class MainActivity : Activity() {
                         startingView.visibility = View.GONE
                         webView.visibility = View.VISIBLE
                         webView.loadUrl("http://127.0.0.1:5050/")
-                        // Self-update check: silent unless a newer build exists.
-                        Updater.check(this@MainActivity) { info -> showUpdateDialog(info) }
+                        // Self-update check: offers when a newer build exists;
+                        // a failed check shows a toast (never silent again).
+                        Updater.check(
+                            this@MainActivity,
+                            { info -> showUpdateDialog(info) },
+                            onError = { showUpdateCheckFailedToast() }
+                        )
                         // If a previous update download already finished (e.g.
                         // the app was force-stopped), install it now.
                         Updater.resumePendingInstall(this@MainActivity)
@@ -265,6 +269,32 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun openCamera() {
             runOnUiThread { launchCameraForJs() }
+        }
+
+        /** v15: manual update check from the "Check for updates" button.
+         *  Always answers: dialog when an update exists, toast when current,
+         *  toast when the check itself fails. Runs on the JS-interface
+         *  thread; Updater.check moves all callbacks to the UI thread. */
+        @JavascriptInterface
+        fun checkForUpdates() {
+            Updater.check(
+                this@MainActivity,
+                { info -> showUpdateDialog(info) },
+                onUpToDate = {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "You're on the latest version.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                onError = {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Could not check for updates. Check your connection and try again.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            )
         }
     }
 
@@ -603,12 +633,12 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    /** One-tap update offer. "Later" dismisses it for this version only —
-     *  a newer version will always be offered again. */
+    /** One-tap update offer. "Later" only dismisses this dialog — the next
+     *  check offers again (v15: no per-version suppression, so tapping
+     *  "Later" can never strand the user on an old build). The only guard
+     *  is against stacking a second dialog while one is showing. */
     private fun showUpdateDialog(info: UpdateInfo) {
-        if (!Updater.shouldOfferUpdate(info.versionCode, lastOfferedVersionCode)) return
-        if (updateDialog?.isShowing == true) return
-        lastOfferedVersionCode = info.versionCode
+        if (!Updater.shouldShowUpdateDialog(updateDialog?.isShowing == true)) return
         val notes = if (info.notes.isNotEmpty()) "\n\n${info.notes}" else ""
         updateDialog = AlertDialog.Builder(this)
             .setTitle("A new version is ready")
@@ -622,11 +652,25 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        // Re-check for updates every time the app comes to the foreground:
-        // the old code only checked once per process, so "Later" (or a
-        // Home-button round-trip that didn't destroy the Activity) could
-        // suppress the offer forever.
-        Updater.check(this) { info -> showUpdateDialog(info) }
+        // Re-check for updates every time the app comes to the foreground.
+        // v15: "Later" no longer suppresses anything, so every check that
+        // finds a newer build offers it again.
+        Updater.check(
+            this,
+            { info -> showUpdateDialog(info) },
+            onError = { showUpdateCheckFailedToast() }
+        )
+    }
+
+    /** Toast only, never a dialog: a failed automatic check must not
+     *  interrupt his work, but must not be silent either (v13 silence hid
+     *  failed checks entirely). One toast per failed check. */
+    private fun showUpdateCheckFailedToast() {
+        Toast.makeText(
+            this,
+            "Update check failed — tap Check for updates to retry.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     companion object {

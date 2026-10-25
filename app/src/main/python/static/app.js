@@ -154,6 +154,17 @@ async function handlePickedFiles(fileList, replace) {
   hideError();
 }
 
+/* v15: manual update check. The app answers all three ways: an update
+   dialog when one exists, a "latest version" toast when current, an error
+   toast when the check itself fails. */
+$("btn-check-updates").addEventListener("click", () => {
+  if (window.Android && typeof window.Android.checkForUpdates === "function") {
+    window.Android.checkForUpdates();
+  } else {
+    showError("Update check needs the app — please reopen the app and try again.");
+  }
+});
+
 $("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.files, true); });
 
 /* v14: Take photo calls the camera directly through the app's JS interface.
