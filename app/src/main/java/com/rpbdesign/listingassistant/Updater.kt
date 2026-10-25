@@ -9,10 +9,20 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
+import java.net.UnknownHostException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Self-updater. On launch (non-blocking) it asks GitHub what the newest
@@ -24,6 +34,17 @@ import java.net.URL
  * mid-download no longer kills the install. The phone must also allow
  * THIS app to install packages — checked up front with plain-words
  * guidance to Settings when it isn't.
+ *
+ * v16 rework (Oct 25, 2026): the DownloadManager path is GONE from the
+ * main flow. Tapping UPDATE on v13/v15 produced no download, no
+ * notification, no error — nothing — and the cause could not be diagnosed
+ * remotely (permission confirmed ON, toasts missed or suppressed,
+ * DownloadManager possibly failing silently on the GitHub redirect).
+ * v16 downloads with a plain HttpURLConnection in a background thread and
+ * shows a real progress dialog with MB/percentage, so there is never any
+ * "did it start?" ambiguity. Any failure shows an AlertDialog with the
+ * real error plus Retry/Cancel — never a toast, never silent. The old
+ * manifest receiver + resumePendingInstall stay as a harmless backup only.
  */
 object Updater {
 
@@ -100,9 +121,11 @@ object Updater {
     fun shouldShowUpdateDialog(dialogShowing: Boolean): Boolean = !dialogShowing
 
     /**
-     * Download the APK, then install it — even if the app is closed meanwhile.
-     * The manifest-registered UpdateDownloadReceiver fires the installer when
-     * the download completes; nothing here depends on the Activity surviving.
+     * Download the APK with a plain HttpURLConnection (v16: no
+     * DownloadManager anywhere in this path) and install it when done.
+     * Shows a non-cancelable progress dialog with real MB/percentage while
+     * downloading, and an AlertDialog with the real error + Retry/Cancel
+     * on any failure. Never silent, never toast-only.
      */
     fun downloadAndInstall(activity: Activity, info: UpdateInfo) {
         // The "install unknown apps" grant is per-app: Chrome having it does
@@ -124,40 +147,165 @@ object Updater {
                 .show()
             return
         }
-        try {
-            val dm = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            val prefs = activity.getSharedPreferences(
-                UpdateDownloadReceiver.PREFS_NAME, Context.MODE_PRIVATE)
-            // Drop any previous half-finished update before starting a new one.
-            val oldId = prefs.getLong(UpdateDownloadReceiver.KEY_DOWNLOAD_ID, -1L)
-            if (oldId != -1L) {
-                try { dm.remove(oldId) } catch (_: Exception) { }
+        val fileName = "listing-assistant-v${info.versionName.ifEmpty { info.versionCode }}.apk"
+        val target = apkFile(activity, fileName)
+        val cancelled = AtomicBoolean(false)
+        val connRef = AtomicReference<HttpURLConnection?>(null)
+
+        // Progress UI: built in code (no XML layout) so this stays
+        // self-contained. Non-cancelable via back press; the Cancel button
+        // is the only way out mid-download, and it cleans up.
+        val progressBar = ProgressBar(
+            activity, null, android.R.attr.progressBarStyleHorizontal
+        ).apply {
+            max = 100
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val statusText = TextView(activity).apply { text = "Starting download…" }
+        val layout = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = (16 * resources.displayMetrics.density).toInt()
+            setPadding(pad, pad, pad, pad)
+            addView(statusText)
+            addView(progressBar)
+        }
+        val progressDialog = AlertDialog.Builder(activity)
+            .setTitle("Downloading update ${info.versionName.ifEmpty { "" }}")
+            .setView(layout)
+            .setCancelable(false)
+            .setNegativeButton("Cancel") { _, _ ->
+                // Flag + disconnect: the blocked read aborts promptly
+                // instead of hanging until the read timeout.
+                cancelled.set(true)
+                try { connRef.get()?.disconnect() } catch (_: Exception) { }
             }
-            val fileName = "listing-assistant-v${info.versionName.ifEmpty { info.versionCode }}.apk"
-            val req = DownloadManager.Request(Uri.parse(info.apkUrl)).apply {
-                setTitle("Listing Assistant update")
-                setDescription("Downloading version ${info.versionName.ifEmpty { "new" }}")
-                setNotificationVisibility(
-                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalFilesDir(
-                    activity, Environment.DIRECTORY_DOWNLOADS, fileName)
-                setMimeType("application/vnd.android.package-archive")
+            .show()
+
+        Thread {
+            var failure: String? = null
+            var httpCode = -1
+            try {
+                val dir = target.parentFile
+                if (dir != null && !dir.exists()) dir.mkdirs()
+                val conn = URL(info.apkUrl).openConnection() as HttpURLConnection
+                connRef.set(conn)
+                conn.instanceFollowRedirects = true // GitHub 302s to release-assets
+                conn.connectTimeout = 30000
+                conn.readTimeout = 30000
+                conn.connect()
+                httpCode = conn.responseCode
+                if (httpCode != HttpURLConnection.HTTP_OK) {
+                    failure = plainDownloadError(null, httpCode)
+                } else {
+                    val total = conn.contentLengthLong // -1 when unknown
+                    var downloaded = 0L
+                    var lastUiUpdate = 0L
+                    conn.inputStream.use { input ->
+                        FileOutputStream(target).use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                if (cancelled.get()) break
+                                val read = input.read(buf)
+                                if (read == -1) break
+                                output.write(buf, 0, read)
+                                downloaded += read
+                                val now = System.currentTimeMillis()
+                                if (now - lastUiUpdate >= 200) {
+                                    lastUiUpdate = now
+                                    val d = downloaded
+                                    val t = total
+                                    activity.runOnUiThread {
+                                        if (t > 0) {
+                                            progressBar.isIndeterminate = false
+                                            progressBar.progress = progressPercent(d, t)
+                                            statusText.text =
+                                                "${formatMb(d)} / ${formatMb(t)} " +
+                                                "(${progressPercent(d, t)}%)"
+                                        } else {
+                                            progressBar.isIndeterminate = true
+                                            statusText.text = "${formatMb(d)} downloaded"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (!cancelled.get() && failure == null) {
+                        // Final progress paint, then install on the UI thread.
+                        val d = downloaded
+                        val t = total
+                        activity.runOnUiThread {
+                            if (t > 0) {
+                                progressBar.progress = 100
+                                statusText.text =
+                                    "${formatMb(d)} / ${formatMb(t)} (100%)"
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (!cancelled.get()) failure = plainDownloadError(e, httpCode)
+            } finally {
+                try { connRef.get()?.disconnect() } catch (_: Exception) { }
             }
-            val downloadId = dm.enqueue(req)
-            // The manifest receiver matches on this ID, so persist it.
-            prefs.edit()
-                .putLong(UpdateDownloadReceiver.KEY_DOWNLOAD_ID, downloadId)
-                .putString(UpdateDownloadReceiver.KEY_FILE_NAME, fileName)
-                .putInt(UpdateDownloadReceiver.KEY_VERSION_CODE, info.versionCode)
-                .apply()
-            Toast.makeText(
-                activity,
-                "Downloading the update — you can close the app; it will " +
-                "install when the download finishes.",
-                Toast.LENGTH_LONG
-            ).show()
-        } catch (e: Exception) {
-            Toast.makeText(activity, "Could not start the download.", Toast.LENGTH_LONG).show()
+            val wasCancelled = cancelled.get()
+            val failMessage = failure
+            activity.runOnUiThread {
+                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                try { progressDialog.dismiss() } catch (_: Exception) { }
+                when {
+                    wasCancelled -> {
+                        // Clean cancel: drop the partial file, say nothing.
+                        try { if (target.exists()) target.delete() } catch (_: Exception) { }
+                    }
+                    failMessage != null -> {
+                        try { if (target.exists()) target.delete() } catch (_: Exception) { }
+                        AlertDialog.Builder(activity)
+                            .setTitle("Update download failed")
+                            .setMessage(
+                                "The update could not be downloaded: $failMessage.\n\n" +
+                                "You can try again, or cancel and use the " +
+                                "\"Check for updates\" button later."
+                            )
+                            .setPositiveButton("Retry") { _, _ ->
+                                downloadAndInstall(activity, info)
+                            }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                    else -> installApk(activity, fileName)
+                }
+            }
+        }.start()
+    }
+
+    /** Percent 0-100, or -1 when the total size is unknown. Pure, tested. */
+    fun progressPercent(downloaded: Long, total: Long): Int {
+        if (total <= 0) return -1
+        val pct = (downloaded * 100 / total).toInt()
+        return pct.coerceIn(0, 100)
+    }
+
+    /** "44.0 MB" style, one decimal. Pure, tested. */
+    fun formatMb(bytes: Long): String {
+        val mb = bytes / 1048576.0
+        return "%.1f MB".format(mb)
+    }
+
+    /** Plain-words download failure, never a raw stack trace. Pure, tested. */
+    fun plainDownloadError(e: Exception?, httpCode: Int): String {
+        if (httpCode != -1 && httpCode != HttpURLConnection.HTTP_OK) {
+            return "the server answered HTTP $httpCode"
+        }
+        return when (e) {
+            is UnknownHostException -> "no connection (the phone could not reach the server)"
+            is SocketTimeoutException -> "the connection timed out"
+            is IOException -> "a network error (${e.message ?: "unknown"})"
+            null -> "an unknown error"
+            else -> e.message ?: "an unknown error"
         }
     }
 
