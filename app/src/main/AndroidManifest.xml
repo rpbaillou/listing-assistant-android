@@ -7,6 +7,16 @@
          for us, so the updater checks canRequestPackageInstalls() up front. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Android 11+ package visibility: without this, resolveActivity() /
+         queryIntentActivities() for other apps return null/empty, so the
+         in-app camera could never find a camera app ("No camera app found.")
+         even though the phone has one. -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
     <!-- INTERNET is for the Gemini and eBay cloud APIs. The app's own server
          only ever talks to this phone (http://127.0.0.1:5050). usesCleartextTraffic
          allows that loopback HTTP connection on Android 9+. -->
