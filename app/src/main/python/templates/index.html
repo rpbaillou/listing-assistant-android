@@ -179,6 +179,23 @@
   </section>
 </main>
 
+<!-- v18: photo editor (crop + rotate) -->
+<div id="editor" class="editor hidden">
+  <div class="editor-box">
+    <h3>Edit photo</h3>
+    <p class="hint">Drag a corner to crop. Drag inside the box to move it. Rotate first, then crop.</p>
+    <canvas id="editor-canvas"></canvas>
+    <div class="btnrow wrap">
+      <button id="btn-edit-rotl" class="secondary" type="button">↺ Rotate left</button>
+      <button id="btn-edit-rotr" class="secondary" type="button">↻ Rotate right</button>
+    </div>
+    <div class="btnrow">
+      <button id="btn-edit-cancel" class="ghost" type="button">Cancel</button>
+      <button id="btn-edit-save" class="primary" type="button">Save</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

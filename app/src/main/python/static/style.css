@@ -68,6 +68,30 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 18px; line-height: 1; padding: 0; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
+/* v18: Edit button on each chosen thumbnail (bottom-left, clear of the X) */
+.thumb-edit {
+  position: absolute; bottom: -8px; left: -8px;
+  min-height: 30px; padding: 0.2rem 0.55rem; border-radius: 15px;
+  background: #2f6fed; color: #fff; border: 2px solid #fff;
+  font-size: 13px; cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+}
+/* v18: photo editor modal. touch-action:none on the canvas keeps touch
+   drags on the crop box instead of scrolling the page. */
+.editor {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0,0,0,0.75);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem; box-sizing: border-box; overflow-y: auto;
+}
+.editor-box {
+  background: #fff; border-radius: 12px; padding: 1rem;
+  max-width: 96vw; box-sizing: border-box;
+}
+#editor-canvas {
+  display: block; max-width: 100%; height: auto;
+  touch-action: none; background: #222; border-radius: 8px;
+}
 
 .attr-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
 .attr-row input:first-child { flex: 1; }

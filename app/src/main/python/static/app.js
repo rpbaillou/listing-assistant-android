@@ -109,8 +109,16 @@ function renderThumbs() {
     x.textContent = "×";
     x.setAttribute("aria-label", "Remove this photo");
     x.addEventListener("click", () => removePhoto(i));
+    /* v18: Edit opens the crop/rotate editor for this photo. */
+    const e = document.createElement("button");
+    e.type = "button";
+    e.className = "thumb-edit";
+    e.textContent = "Edit";
+    e.setAttribute("aria-label", "Edit this photo");
+    e.addEventListener("click", () => openEditor(i));
     wrap.appendChild(img);
     wrap.appendChild(x);
+    wrap.appendChild(e);
     box.appendChild(wrap);
   });
   for (let s = 0; s < skippedCount; s++) {
@@ -130,6 +138,237 @@ function removePhoto(i) {
   renderThumbs();
   hideError();
 }
+
+/* ---------- v18: photo editor (crop + rotate) ---------- */
+/* Photos arrive here already downscaled to 1600px (intake), so canvas
+   work stays small. The editor works on the entry's current blob, so
+   tapping Edit again on an already-edited photo re-edits that version.
+   Save replaces the entry's blob, so Identify uploads the edited photo
+   through the existing pipeline. No original-restore stack in v18: if he
+   over-crops, he removes the photo and re-picks or re-takes it. */
+
+/* Pure helpers, unit-tested in tests/editor-math.test.js. */
+function rotatedDims(w, h, rot) {
+  const r = ((rot % 360) + 360) % 360;
+  return (r === 90 || r === 270) ? { w: h, h: w } : { w: w, h: h };
+}
+function clampCropRect(rect, bw, bh, minSize) {
+  const w = Math.max(minSize, Math.min(rect.w, bw));
+  const h = Math.max(minSize, Math.min(rect.h, bh));
+  const x = Math.max(0, Math.min(rect.x, bw - w));
+  const y = Math.max(0, Math.min(rect.y, bh - h));
+  return { x: x, y: y, w: w, h: h };
+}
+
+let editIndex = -1;
+let editImg = null;      /* full-res source image (<=1600px) */
+let editImgUrl = null;   /* object URL for editImg, revoked on close */
+let editRot = 0;         /* 0/90/180/270, clockwise */
+let editCrop = null;     /* {x,y,w,h} in ROTATED image coordinates */
+let editScale = 1;       /* display px per rotated-image px */
+let editDrag = null;     /* {mode, startX, startY, crop} in canvas px */
+const EDIT_MIN_CROP = 50; /* min crop edge, rotated-image px */
+
+function editorDisplaySize(rw, rh) {
+  const maxEdge = Math.min(900, Math.max(280, window.innerWidth - 64));
+  const scale = Math.min(1, maxEdge / Math.max(rw, rh));
+  return { w: Math.max(1, Math.round(rw * scale)),
+           h: Math.max(1, Math.round(rh * scale)), scale: scale };
+}
+
+function drawEditor() {
+  if (!editImg) return;
+  const canvas = $("editor-canvas");
+  const ctx = canvas.getContext("2d");
+  const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
+  const dims = rotatedDims(srcW, srcH, editRot);
+  const disp = editorDisplaySize(dims.w, dims.h);
+  editScale = disp.scale;
+  canvas.width = disp.w;
+  canvas.height = disp.h;
+  ctx.save();
+  ctx.clearRect(0, 0, disp.w, disp.h);
+  ctx.translate(disp.w / 2, disp.h / 2);
+  ctx.rotate(editRot * Math.PI / 180);
+  ctx.drawImage(editImg, -srcW * disp.scale / 2, -srcH * disp.scale / 2,
+                 srcW * disp.scale, srcH * disp.scale);
+  ctx.restore();
+  /* Dim everything outside the crop box, then outline it + handles. */
+  const s = disp.scale, c = editCrop;
+  const dx = c.x * s, dy = c.y * s, dw = c.w * s, dh = c.h * s;
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, disp.w, dy);
+  ctx.fillRect(0, dy + dh, disp.w, disp.h - dy - dh);
+  ctx.fillRect(0, dy, dx, dh);
+  ctx.fillRect(dx + dw, dy, disp.w - dx - dw, dh);
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(dx, dy, dw, dh);
+  const hs = 14;
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#2f6fed";
+  [[dx, dy], [dx + dw, dy], [dx, dy + dh], [dx + dw, dy + dh]].forEach(([hx, hy]) => {
+    ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+    ctx.strokeRect(hx - hs, hy - hs, hs * 2, hs * 2);
+  });
+}
+
+function editorCanvasPos(e) {
+  const canvas = $("editor-canvas");
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * canvas.width / r.width,
+    y: (e.clientY - r.top) * canvas.height / r.height
+  };
+}
+
+function editorHitTest(px, py) {
+  const canvas = $("editor-canvas");
+  const r = canvas.getBoundingClientRect();
+  const tol = 28 * canvas.width / r.width; /* ~28px touch target */
+  const s = editScale, c = editCrop;
+  const corners = { nw: [c.x * s, c.y * s], ne: [(c.x + c.w) * s, c.y * s],
+                    sw: [c.x * s, (c.y + c.h) * s], se: [(c.x + c.w) * s, (c.y + c.h) * s] };
+  for (const k of Object.keys(corners)) {
+    const [hx, hy] = corners[k];
+    if (Math.abs(px - hx) <= tol && Math.abs(py - hy) <= tol) return k;
+  }
+  if (px >= c.x * s && px <= (c.x + c.w) * s &&
+      py >= c.y * s && py <= (c.y + c.h) * s) return "move";
+  return null;
+}
+
+$("editor-canvas").addEventListener("pointerdown", (e) => {
+  if (!editImg) return;
+  const p = editorCanvasPos(e);
+  const mode = editorHitTest(p.x, p.y);
+  if (!mode) return;
+  e.preventDefault();
+  try { $("editor-canvas").setPointerCapture(e.pointerId); } catch (_e) {}
+  editDrag = { mode: mode, startX: p.x, startY: p.y,
+               crop: Object.assign({}, editCrop) };
+});
+
+$("editor-canvas").addEventListener("pointermove", (e) => {
+  if (!editDrag || !editImg) return;
+  const p = editorCanvasPos(e);
+  const dx = (p.x - editDrag.startX) / editScale;
+  const dy = (p.y - editDrag.startY) / editScale;
+  const dims = rotatedDims(editImg.naturalWidth, editImg.naturalHeight, editRot);
+  const s0 = editDrag.crop, MIN = EDIT_MIN_CROP;
+  let next;
+  if (editDrag.mode === "move") {
+    next = { x: s0.x + dx, y: s0.y + dy, w: s0.w, h: s0.h };
+  } else {
+    /* Corner drags anchor the opposite corner; the dragged corner may
+       not cross the anchor minus the minimum size (no inversion). */
+    const ax = s0.x + s0.w, ay = s0.y + s0.h;
+    next = { x: s0.x, y: s0.y, w: s0.w, h: s0.h };
+    if (editDrag.mode === "nw") {
+      next.x = Math.min(s0.x + dx, ax - MIN);
+      next.y = Math.min(s0.y + dy, ay - MIN);
+      next.w = ax - next.x; next.h = ay - next.y;
+    } else if (editDrag.mode === "ne") {
+      next.y = Math.min(s0.y + dy, ay - MIN);
+      next.w = Math.max(MIN, s0.w + dx); next.h = ay - next.y;
+    } else if (editDrag.mode === "sw") {
+      next.x = Math.min(s0.x + dx, ax - MIN);
+      next.w = ax - next.x; next.h = Math.max(MIN, s0.h + dy);
+    } else { /* se */
+      next.w = Math.max(MIN, s0.w + dx); next.h = Math.max(MIN, s0.h + dy);
+    }
+  }
+  editCrop = clampCropRect(next, dims.w, dims.h, MIN);
+  drawEditor();
+});
+
+["pointerup", "pointercancel"].forEach((t) =>
+  $("editor-canvas").addEventListener(t, () => { editDrag = null; }));
+
+function rotateEditor(delta) {
+  if (!editImg) return;
+  editRot = (((editRot + delta) % 360) + 360) % 360;
+  /* Rotating resets the crop to the full rotated frame: simpler and
+     predictable than remapping a rect across a dimension swap. */
+  const dims = rotatedDims(editImg.naturalWidth, editImg.naturalHeight, editRot);
+  editCrop = { x: 0, y: 0, w: dims.w, h: dims.h };
+  drawEditor();
+}
+$("btn-edit-rotl").addEventListener("click", () => rotateEditor(-90));
+$("btn-edit-rotr").addEventListener("click", () => rotateEditor(90));
+
+function openEditor(i) {
+  const entry = selectedFiles[i];
+  if (!entry) return;
+  editIndex = i;
+  editRot = 0;
+  editDrag = null;
+  const url = URL.createObjectURL(entry.blob);
+  const img = new Image();
+  img.onload = () => {
+    editImg = img;
+    editImgUrl = url;
+    editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+    $("editor").classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    drawEditor();
+  };
+  img.onerror = () => {
+    URL.revokeObjectURL(url);
+    showError("Couldn't open that photo for editing.");
+  };
+  img.src = url;
+}
+
+function closeEditor() {
+  $("editor").classList.add("hidden");
+  document.body.style.overflow = "";
+  if (editImgUrl) URL.revokeObjectURL(editImgUrl);
+  editImg = null;
+  editImgUrl = null;
+  editIndex = -1;
+  editDrag = null;
+}
+$("btn-edit-cancel").addEventListener("click", closeEditor);
+
+$("btn-edit-save").addEventListener("click", async () => {
+  if (!editImg || editIndex < 0) return;
+  const btn = $("btn-edit-save");
+  btn.disabled = true;
+  try {
+    /* Step 1: rotate the full-res source onto an offscreen canvas.
+       Step 2: cut the crop rect out of it. Two steps keeps the math
+       simple and correct across dimension swaps. */
+    const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
+    const dims = rotatedDims(srcW, srcH, editRot);
+    const rc = document.createElement("canvas");
+    rc.width = dims.w; rc.height = dims.h;
+    const rctx = rc.getContext("2d");
+    rctx.save();
+    rctx.translate(dims.w / 2, dims.h / 2);
+    rctx.rotate(editRot * Math.PI / 180);
+    rctx.drawImage(editImg, -srcW / 2, -srcH / 2, srcW, srcH);
+    rctx.restore();
+    const cx = Math.round(editCrop.x), cy = Math.round(editCrop.y);
+    const cw = Math.max(1, Math.round(editCrop.w)), ch = Math.max(1, Math.round(editCrop.h));
+    const oc = document.createElement("canvas");
+    oc.width = cw; oc.height = ch;
+    oc.getContext("2d").drawImage(rc, cx, cy, cw, ch, 0, 0, cw, ch);
+    const blob = await new Promise((res) => oc.toBlob(res, "image/jpeg", 0.85));
+    if (!blob) throw new Error("save failed");
+    const entry = selectedFiles[editIndex];
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    entry.blob = blob;
+    entry.url = URL.createObjectURL(blob);
+    renderThumbs();
+    closeEditor();
+    hideError();
+  } catch (e) {
+    showError("Couldn't save that edit. Try again.");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 /* Shared photo intake: "Choose photos" replaces the set, "Take photo"
    appends one more (so he can snap several angles in a row). */
