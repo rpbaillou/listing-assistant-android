@@ -46,6 +46,10 @@ class MainActivity : Activity() {
     private var soldPricesWebView: WebView? = null
     private var usePriceButton: Button? = null
     private var pendingPrice: Double? = null
+    /** v19: true while the keys form is open for editing saved keys (as
+     *  opposed to first run). Save then restarts the app so Python re-reads
+     *  the .env; Cancel just closes the form back to the running app. */
+    private var editingKeys = false
 
     private val requiredKeys = listOf(
         "GEMINI_API_KEY",
@@ -68,8 +72,11 @@ class MainActivity : Activity() {
             startServer()
         } else {
             setupView.visibility = View.VISIBLE
-            findViewById<Button>(R.id.btn_save).setOnClickListener { saveKeys() }
         }
+        // Wired unconditionally: the form is first-run setup when no keys
+        // exist, and the v19 Edit keys screen once the app is running.
+        findViewById<Button>(R.id.btn_save).setOnClickListener { saveKeys() }
+        findViewById<Button>(R.id.btn_cancel).setOnClickListener { cancelEditKeys() }
     }
 
     /** True when a .env with all 7 real keys is saved in private storage. */
@@ -105,7 +112,77 @@ class MainActivity : Activity() {
         }
         File(filesDir, ".env").writeText(env)
         Toast.makeText(this, "Keys saved.", Toast.LENGTH_SHORT).show()
-        startServer()
+        if (editingKeys) {
+            // v19: Python reads .env once at start, so edited keys only
+            // take effect in a fresh process. Restart the app; on relaunch
+            // hasKeys() is true and the server starts with the new keys.
+            restartApp()
+        } else {
+            startServer()
+        }
+    }
+
+    /** Reads the saved .env into a map (same quote-stripping as Python's
+     *  _load_env, so pre-filled fields show exactly what will be used). */
+    private fun readEnvValues(): Map<String, String> {
+        val f = File(filesDir, ".env")
+        if (!f.exists()) return emptyMap()
+        val out = mutableMapOf<String, String>()
+        for (raw in f.readText().lines()) {
+            val line = raw.trim()
+            if (line.isEmpty() || line.startsWith("#") || "=" !in line) continue
+            val (k, v) = line.split("=", limit = 2)
+            var value = v.trim()
+            if (value.length >= 2 && value.first() == value.last() &&
+                (value.first() == '"' || value.first() == '\'')
+            ) value = value.substring(1, value.length - 1)
+            if (k.trim().isNotEmpty()) out[k.trim()] = value
+        }
+        return out
+    }
+
+    /**
+     * v19: opens the keys form pre-filled with the saved values, so he can
+     * change just one key (e.g. the RuName) without retyping the rest or
+     * clearing app data. Called from the web header's "Edit keys" button
+     * through the JS bridge (which runs on a background thread).
+     */
+    private fun showEditKeysForm() {
+        val values = readEnvValues()
+        findViewById<EditText>(R.id.et_gemini).setText(values["GEMINI_API_KEY"] ?: "")
+        findViewById<EditText>(R.id.et_client_id).setText(values["EBAY_CLIENT_ID"] ?: "")
+        findViewById<EditText>(R.id.et_client_secret).setText(values["EBAY_CLIENT_SECRET"] ?: "")
+        findViewById<EditText>(R.id.et_runame).setText(values["EBAY_RUNAME"] ?: "")
+        findViewById<EditText>(R.id.et_fulfillment).setText(values["EBAY_FULFILLMENT_POLICY_ID"] ?: "")
+        findViewById<EditText>(R.id.et_payment).setText(values["EBAY_PAYMENT_POLICY_ID"] ?: "")
+        findViewById<EditText>(R.id.et_return).setText(values["EBAY_RETURN_POLICY_ID"] ?: "")
+        findViewById<TextView>(R.id.setup_title).text = "Edit your keys"
+        findViewById<TextView>(R.id.setup_subtitle).text =
+            "Change only what you need. Keys stay on this phone."
+        findViewById<Button>(R.id.btn_save).text = "Save keys"
+        findViewById<Button>(R.id.btn_cancel).visibility = View.VISIBLE
+        editingKeys = true
+        webView.visibility = View.GONE
+        setupView.visibility = View.VISIBLE
+    }
+
+    /** v19: closes the edit form without saving, back to the running app. */
+    private fun cancelEditKeys() {
+        editingKeys = false
+        setupView.visibility = View.GONE
+        webView.visibility = View.VISIBLE
+    }
+
+    /** Relaunches the launcher activity in a fresh task and exits this
+     *  process, so the Python server restarts and re-reads the .env. */
+    private fun restartApp() {
+        val intent = packageManager.getLaunchIntentForPackage(packageName)
+        if (intent != null) {
+            startActivity(Intent.makeRestartActivityTask(intent.component))
+        } else {
+            finish()
+        }
+        Runtime.getRuntime().exit(0)
     }
 
     private fun startServer() {
@@ -194,11 +271,26 @@ class MainActivity : Activity() {
                 view: WebView,
                 request: WebResourceRequest
             ): Boolean {
-                if (request.isForMainFrame &&
-                    SoldUrlMatcher.isSoldSearchUrl(request.url.toString())
-                ) {
-                    openSoldPricesPopupWithUrl(request.url.toString())
-                    return true
+                if (request.isForMainFrame) {
+                    // v19: eBay signs him in, then sends the browser back to
+                    // the RuName's callback URL — which eBay's portal forces
+                    // to https. Flask is HTTP-only, so an https navigation
+                    // would die in a TLS handshake before Flask ever sees
+                    // the code. Rewrite it to http first (path and query,
+                    // including code and state, are preserved) so the
+                    // callback reaches the app. Only localhost:5050 is ever
+                    // rewritten; eBay and every other host load untouched.
+                    val rewritten = LocalhostRewrite.rewriteHttpsLocalhostToHttp(
+                        request.url.toString()
+                    )
+                    if (rewritten != null) {
+                        view.loadUrl(rewritten)
+                        return true
+                    }
+                    if (SoldUrlMatcher.isSoldSearchUrl(request.url.toString())) {
+                        openSoldPricesPopupWithUrl(request.url.toString())
+                        return true
+                    }
                 }
                 return false
             }
@@ -295,6 +387,15 @@ class MainActivity : Activity() {
                     ).show()
                 }
             )
+        }
+
+        /** v19: "Edit keys" button in the web header. Shows the native keys
+         *  form pre-filled with the saved values. Like checkForUpdates,
+         *  this runs on the JS-interface thread, so it posts to the UI
+         *  thread itself. */
+        @JavascriptInterface
+        fun editKeys() {
+            runOnUiThread { showEditKeysForm() }
         }
     }
 
@@ -617,6 +718,13 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
+        // v19: Back from the Edit keys form just closes it (no save), back
+        // to the running app. First-run setup keeps the old behavior: Back
+        // exits the app, since there is no app to go back to yet.
+        if (setupView.visibility == View.VISIBLE && editingKeys) {
+            cancelEditKeys()
+            return
+        }
         if (isSoldPricesPopupOpen()) {
             closeSoldPricesPopup()
             return

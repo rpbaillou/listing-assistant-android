@@ -84,9 +84,11 @@ EBAY_REDIRECT_URI = os.environ.get(
     "EBAY_REDIRECT_URI", "http://localhost:5050/api/ebay/callback").strip()
 EBAY_RUNAME = os.environ.get("EBAY_RUNAME", "").strip()
 # v2.5: eBay's OAuth authorize endpoint requires the RuName (eBay Redirect URL
-# name, e.g. Reynard_Baillou-ReynardB-Mr-PRD-mwokavhzz) as the redirect_uri
-# value -- NOT the raw URL. The RuName itself must have the URL above
-# attached to it in the developer portal (User Tokens page).
+# name, e.g. Reynard_Baillou-ReynardB-Mr-PRD-...) as the redirect_uri
+# value -- NOT the raw URL. The RuName itself must have the callback URL
+# attached to it in the developer portal (User Tokens page). v19: eBay's
+# portal forces https on that URL, so it is registered as https; the app's
+# WebView rewrites the https callback to http so Flask receives it.
 EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID", "").strip()
 EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID", "").strip()
 EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID", "").strip()
@@ -635,7 +637,8 @@ def api_ebay_status():
 @app.route("/api/ebay/connect")
 def api_ebay_connect():
     # The eBay sign-in must finish in the browser on the device running the app
-    # (the RuName's auth accepted URL is http://localhost:5050/...). Refuse
+    # (the RuName's auth accepted URL is the https localhost callback; the
+    # app's WebView rewrites it to http so Flask receives it). Refuse
     # other hosts in plain words.
     host = (request.host or "").split(":")[0].strip().lower()
     if host not in ("localhost", "127.0.0.1", "::1"):

@@ -35,8 +35,10 @@ def start(files_dir, app_version=""):
 
     _load_env(os.path.join(files_dir, ".env"))
 
-    # The eBay RuName's auth accepted URL is http://localhost:5050/... and must
-    # match exactly, so the APK always listens on 5050.
+    # The eBay RuName's auth accepted URL is registered as
+    # https://localhost:5050/api/ebay/callback (eBay's portal forces https),
+    # and the app's WebView rewrites that callback to http — so the APK
+    # always listens on 5050.
     os.environ["PORT"] = "5050"
     # v6: the header version badge comes from the Android versionName, passed
     # in by MainActivity, so it is correct automatically on every release.

@@ -404,6 +404,17 @@ $("btn-check-updates").addEventListener("click", () => {
   }
 });
 
+/* v19: Edit keys opens the app's native keys form, pre-filled with the
+   saved values, so one key (e.g. the RuName) can change without retyping
+   the rest or clearing app data. */
+$("btn-edit-keys").addEventListener("click", () => {
+  if (window.Android && typeof window.Android.editKeys === "function") {
+    window.Android.editKeys();
+  } else {
+    showError("Edit keys needs the app — please reopen the app and try again.");
+  }
+});
+
 $("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.files, true); });
 
 /* v14: Take photo calls the camera directly through the app's JS interface.
