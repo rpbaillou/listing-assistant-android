@@ -107,7 +107,7 @@ EBAY_SCOPES = ("https://api.ebay.com/oauth/api_scope "
 
 # eBay's own picture hosting lives in the classic Trading API (XML).
 EBAY_TRADING_API = "https://api.ebay.com/ws/api.dll"
-EBAY_TRADING_COMPAT_LEVEL = "1193"
+EBAY_TRADING_COMPAT_LEVEL = "1451"
 
 MAX_PHOTOS = 24
 MAX_FILE_MB = 15
