@@ -1,1 +1,1 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v25/ebay-listing-assistant-apk-v25.apk","notes":"Photo upload fixed: the app now reads eBay's reply correctly and shows what eBay actually said if it fails.","versionCode":25,"versionName":"1.24"}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v26/ebay-listing-assistant-apk-v26.apk","notes":"Photo upload fixed: the app now speaks eBay's current picture-hosting version.","versionCode":26,"versionName":"1.25"}
