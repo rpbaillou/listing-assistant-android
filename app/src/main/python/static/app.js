@@ -576,6 +576,21 @@ async function saveDraft() {
    app switch, screen off). Uses keepalive so the request survives the page
    going away. Fire-and-forget: nothing to await here. */
 function flushSave() {
+  /* v27: flush a pending panel save too, but only if the panel was
+     actually shown this session — never from unopened defaults. */
+  if (publishDirty && ebayPanelShown && draft) {
+    publishDirty = false;
+    clearTimeout(publishTimer);
+    publishTimer = null;
+    try {
+      fetch("/api/drafts/" + draft.id + "/publish-fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectPublishFields()),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (e) { /* best-effort */ }
+  }
   if (!saveDirty || !draft) {
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -1002,6 +1017,113 @@ let ebayStatus = null;
 // appears in this file.
 const WORKING_RUNAME = "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz";
 
+/* v27: pure publish-panel prefill. Precedence is draft first, then the
+   "usual settings" preset, then .env defaults — so a category number or
+   policy number saved into the draft survives an app restart or update,
+   and the preset only fills fields the draft lacks (the "applied" list
+   names exactly what the preset filled, never what the draft supplied).
+   form carries the step-2 DOM values (condition, price): a keystroke
+   typed moments before opening step 4 is newer than the last autosave,
+   so it wins over the draft for those two fields. Pure on purpose:
+   node tests pin this precedence without a DOM. */
+function panelPrefill(draftObj, preset, defaults, form) {
+  const d = draftObj || {};
+  const p = preset || {};
+  const def = defaults || {};
+  const f = form || {};
+  const nonEmpty = (v) => String(v == null ? "" : v).trim() !== "";
+  const applied = [];
+  const out = {};
+  out.condition = nonEmpty(f.condition) ? f.condition
+    : nonEmpty(d.condition) ? d.condition
+    : nonEmpty(p.condition) ? (applied.push("condition"), p.condition) : "";
+  out.category_id = nonEmpty(d.category_id) ? String(d.category_id).trim()
+    : nonEmpty(p.category_id) ? (applied.push("category"), String(p.category_id).trim()) : "";
+  out.category_name = nonEmpty(d.category_id) ? String(d.category_name || "").trim() : "";
+  out.price = nonEmpty(f.price) ? f.price : String(d.price == null ? "" : d.price);
+  const draftBO = !!d.best_offer || nonEmpty(d.best_offer_auto_decline) ||
+    nonEmpty(d.best_offer_auto_accept);
+  out.best_offer = draftBO ? !!d.best_offer : !!p.best_offer;
+  out.best_offer_auto_decline = draftBO ? String(d.best_offer_auto_decline || "")
+    : String(p.best_offer_auto_decline || "");
+  out.best_offer_auto_accept = draftBO ? String(d.best_offer_auto_accept || "")
+    : String(p.best_offer_auto_accept || "");
+  if (draftBO === false && p.best_offer) applied.push("Best Offer");
+  let policiesFromPreset = false;
+  [["fulfillment", "fulfillment_policy_id"], ["payment", "payment_policy_id"],
+   ["return", "return_policy_id"]].forEach(([outKey, presetKey]) => {
+    if (nonEmpty(d[presetKey])) {
+      out[outKey] = String(d[presetKey]).trim();
+    } else if (nonEmpty(p[presetKey])) {
+      out[outKey] = String(p[presetKey]).trim();
+      policiesFromPreset = true;
+    } else {
+      out[outKey] = String(def[outKey] || "");
+    }
+  });
+  if (policiesFromPreset) applied.push("policies");
+  out.applied = applied;
+  return out;
+}
+
+/* v27: publish-panel persistence state. pickedCat tracks the last
+   Suggest pick (or restored saved pair) so the display name survives
+   re-saves when the number is untouched; the name is only sent when the
+   input still equals the picked number, so a hand-typed number never
+   inherits a stale name. ebayPanelShown guards the page-hide flush:
+   panel fields must only ever save after the panel has actually been
+   shown in this session, never from their unopened defaults. */
+let pickedCat = { id: "", name: "" };
+let ebayPanelShown = false;
+let publishDirty = false;
+let publishTimer = null;
+
+function collectPublishFields() {
+  const cid = $("p-category").value.trim();
+  return {
+    category_id: cid,
+    category_name: cid && cid === pickedCat.id ? pickedCat.name : "",
+    condition: $("p-condition").value,
+    price: $("p-price").value.trim(),
+    fulfillment_policy_id: $("p-fulfillment").value.trim(),
+    payment_policy_id: $("p-payment").value.trim(),
+    return_policy_id: $("p-return").value.trim(),
+    best_offer: $("p-best-offer").checked,
+    best_offer_auto_decline: $("p-bo-decline").value.trim(),
+    best_offer_auto_accept: $("p-bo-accept").value.trim(),
+    attributes: collectAspects(),
+  };
+}
+
+async function savePublishFields() {
+  if (!draft || !ebayPanelShown) return;
+  clearTimeout(publishTimer);
+  publishTimer = null;
+  try {
+    const { draft: d } = await api("/api/drafts/" + draft.id + "/publish-fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectPublishFields()),
+    });
+    draft = d;
+    publishDirty = false;
+    /* Keep the step-2 form in sync so a later step-2 autosave cannot
+       resurrect the pre-panel condition or price. */
+    const fc = $("f-condition");
+    if (fc &&
+        Array.from(fc.options || []).some((o) => o.value === $("p-condition").value)) {
+      fc.value = $("p-condition").value;
+    }
+    if ($("f-price")) $("f-price").value = $("p-price").value;
+  } catch (e) { /* panel saves are best-effort; List still sends everything */ }
+}
+
+function schedulePublishSave() {
+  publishDirty = true;
+  clearTimeout(publishTimer);
+  publishTimer = setTimeout(savePublishFields, 1200);
+}
+
 async function renderEbayStep() {
   const box = $("ebay-status");
   $("publish-panel").classList.add("hidden");
@@ -1082,69 +1204,53 @@ async function renderEbayStep() {
     o.value = c.value; o.textContent = c.label;
     sel.appendChild(o);
   });
-  // v6: carry the draft's condition over; gentle reminder (not a block) if unset
+  // v27: draft first, preset second, .env defaults last (panelPrefill).
+  // A category number saved into the draft is restored here, so List
+  // works straight away after an update or restart — no re-pick.
   const cur = collectForm();
-  sel.value = cur.condition || "";
-  $("condition-reminder").classList.toggle("hidden", !!cur.condition);
-  $("p-price").value = $("f-price").value || "";
-  /* v9: best offer settings carry over from the draft. */
-  $("p-best-offer").checked = !!draft.best_offer;
-  $("p-bo-decline").value = draft.best_offer_auto_decline || "";
-  $("p-bo-accept").value = draft.best_offer_auto_accept || "";
-  $("best-offer-fields").classList.toggle("hidden", !$("p-best-offer").checked);
-  $("p-category").value = "";
-  $("cat-suggestions").classList.add("hidden");
-  const pd = ebayStatus.policy_defaults || {};
-  $("p-fulfillment").value = pd.fulfillment || "";
-  $("p-payment").value = pd.payment || "";
-  $("p-return").value = pd.return || "";
-  /* v24: apply the saved usual settings, but only where the draft has
-     nothing of its own — a draft's own values always win, except
-     policies and the category number, which drafts never store (the
-     category number always starts blank; policies fall back to .env
-     above, and an explicit preset beats that default). */
   let preset = null;
   try {
     const r = await api("/api/preset");
     preset = r.preset;
   } catch (e) { preset = null; }
-  const applied = [];
+  const pre = panelPrefill(draft || {}, preset, ebayStatus.policy_defaults || {},
+    { condition: cur.condition, price: $("f-price").value || "" });
+  sel.value = pre.condition;
+  $("condition-reminder").classList.toggle("hidden", !!pre.condition);
+  $("p-price").value = pre.price;
+  $("p-best-offer").checked = pre.best_offer;
+  $("p-bo-decline").value = pre.best_offer_auto_decline;
+  $("p-bo-accept").value = pre.best_offer_auto_accept;
+  $("best-offer-fields").classList.toggle("hidden", !pre.best_offer);
+  $("p-category").value = pre.category_id;
+  $("cat-suggestions").classList.add("hidden");
+  $("p-fulfillment").value = pre.fulfillment;
+  $("p-payment").value = pre.payment;
+  $("p-return").value = pre.return;
+  /* v27: remember the restored category pair so later panel saves keep
+     its display name when the number is untouched. */
+  pickedCat = pre.category_id
+    ? { id: pre.category_id, name: pre.category_name } : { id: "", name: "" };
+  const catSaved = $("cat-saved");
+  if (pre.category_name) {
+    catSaved.textContent = "Saved category: " + pre.category_name;
+    catSaved.classList.remove("hidden");
+  } else {
+    catSaved.classList.add("hidden");
+  }
   const note = $("preset-note");
   note.classList.add("hidden");
-  if (preset) {
-    if (!cur.condition && preset.condition) {
-      sel.value = preset.condition;
-      applied.push("condition");
-    }
-    if (preset.category_id) {
-      $("p-category").value = preset.category_id;
-      applied.push("category");
-    }
-    if (preset.fulfillment_policy_id) {
-      $("p-fulfillment").value = preset.fulfillment_policy_id;
-      applied.push("policies");
-    }
-    if (preset.payment_policy_id) $("p-payment").value = preset.payment_policy_id;
-    if (preset.return_policy_id) $("p-return").value = preset.return_policy_id;
-    const draftBO = !!draft.best_offer ||
-      String(draft.best_offer_auto_decline || "").trim() ||
-      String(draft.best_offer_auto_accept || "").trim();
-    if (!draftBO && preset.best_offer) {
-      $("p-best-offer").checked = true;
-      $("p-bo-decline").value = preset.best_offer_auto_decline || "";
-      $("p-bo-accept").value = preset.best_offer_auto_accept || "";
-      $("best-offer-fields").classList.remove("hidden");
-      applied.push("Best Offer");
-    }
-    /* A preset-filled condition clears the reminder, same as a typed one. */
-    $("condition-reminder").classList.toggle("hidden", !!sel.value);
-  }
-  if (applied.length) {
-    note.textContent = "Usual settings applied (" + applied.join(", ") +
+  if (pre.applied.length) {
+    note.textContent = "Usual settings applied (" + pre.applied.join(", ") +
       ") — change anything before listing.";
     note.classList.remove("hidden");
   }
+  ebayPanelShown = true;
+  publishDirty = false;
   $("publish-panel").classList.remove("hidden");
+  /* v27: a restored category number also restores its required-details
+     section (prefilled from the draft's saved specifics). */
+  if (pre.category_id) loadCategoryAspects();
 }
 
 /* v24: save the current publish-panel values as the one usual-settings
@@ -1195,8 +1301,13 @@ $("btn-cat-suggest").addEventListener("click", async () => {
       b.textContent = s.name + " (" + s.id + ")";
       b.addEventListener("click", () => {
         $("p-category").value = s.id;
+        pickedCat = { id: s.id, name: s.name };
+        const cs = $("cat-saved");
+        cs.textContent = "Saved category: " + s.name;
+        cs.classList.remove("hidden");
         box.classList.add("hidden");
         loadCategoryAspects(); /* v8: fetch what eBay requires for this category */
+        savePublishFields(); /* v27: a Suggest pick saves immediately */
       });
       box.appendChild(b);
     });
@@ -1206,16 +1317,38 @@ $("btn-cat-suggest").addEventListener("click", async () => {
 });
 
 /* v8: also check when a category number is typed in by hand. */
-$("p-category").addEventListener("change", loadCategoryAspects);
+/* v27: a hand-edited number hides the saved-name line (the name belongs
+   to the old number); the save itself only sends a name when the input
+   still equals the picked number, so a typed number never inherits one. */
+function onCategoryEdited() {
+  if ($("p-category").value.trim() !== pickedCat.id) {
+    $("cat-saved").classList.add("hidden");
+  }
+  schedulePublishSave();
+}
+$("p-category").addEventListener("change", () => {
+  onCategoryEdited();
+  loadCategoryAspects();
+});
+$("p-category").addEventListener("input", onCategoryEdited);
+
+/* v27: every other panel field persists into the draft on change. */
+$("p-condition").addEventListener("change", schedulePublishSave);
+$("p-price").addEventListener("input", schedulePublishSave);
+["p-fulfillment", "p-payment", "p-return"].forEach((id) => {
+  $(id).addEventListener("input", schedulePublishSave);
+});
+$("required-aspects").addEventListener("input", schedulePublishSave);
 
 /* v9: best offer toggle shows/hides the auto-price fields; all three join
    the draft autosave (checkbox fires "change", prices fire "input"). */
 $("p-best-offer").addEventListener("change", () => {
   $("best-offer-fields").classList.toggle("hidden", !$("p-best-offer").checked);
   scheduleSave();
+  schedulePublishSave();
 });
 ["p-bo-decline", "p-bo-accept"].forEach((id) => {
-  $(id).addEventListener("input", scheduleSave);
+  $(id).addEventListener("input", () => { scheduleSave(); schedulePublishSave(); });
 });
 
 /* v9: client-side mirror of the server's best-offer rules. Returns a
@@ -1351,6 +1484,9 @@ function validateAspects() {
 $("btn-publish").addEventListener("click", async () => {
   hidePublishMsg();
   if (!draft) return;
+  /* v27: persist the panel first, fire-and-forget — List never waits
+     for the save (its payload already carries every panel value). */
+  savePublishFields();
   /* v8: eBay's required item specifics must be filled before listing. */
   const missing = validateAspects();
   if (missing.length) {

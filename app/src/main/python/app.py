@@ -1030,10 +1030,16 @@ def api_ebay_publish():
     condition = str(body.get("condition", "") or d.get("condition", "")).strip()
     condition_details = str(body.get("condition_details", "")
                             or d.get("condition_details", "")).strip()[:1000]
-    category_id = str(body.get("category_id", "")).strip()
-    fulfillment_id = str(body.get("fulfillment_policy_id") or EBAY_FULFILLMENT_POLICY_ID).strip()
-    payment_id = str(body.get("payment_policy_id") or EBAY_PAYMENT_POLICY_ID).strip()
-    return_id = str(body.get("return_policy_id") or EBAY_RETURN_POLICY_ID).strip()
+    category_id = str(body.get("category_id", "") or d.get("category_id", "")).strip()
+    fulfillment_id = str(body.get("fulfillment_policy_id")
+                         or d.get("fulfillment_policy_id")
+                         or EBAY_FULFILLMENT_POLICY_ID).strip()
+    payment_id = str(body.get("payment_policy_id")
+                     or d.get("payment_policy_id")
+                     or EBAY_PAYMENT_POLICY_ID).strip()
+    return_id = str(body.get("return_policy_id")
+                    or d.get("return_policy_id")
+                    or EBAY_RETURN_POLICY_ID).strip()
     # v8: step-4 aspect fields (required/recommended item specifics) arrive in
     # the body and overlay the draft's attributes.
     attributes = dict(d.get("attributes") or {})
@@ -1103,8 +1109,10 @@ def api_ebay_batch_publish():
     The confirmation screen in the app is the review: this endpoint only
     ever publishes drafts the user confirmed there. One draft failing
     never stops the rest. The category comes from the batch screen
-    (drafts never store a category number); policies come from the saved
-    preset when one exists, otherwise .env (via the helper's fallback).
+    (v27: drafts may now carry a saved category number, but batch still
+    uses the one number entered for the whole batch); policies come from
+    the saved preset when one exists, otherwise .env (via the helper's
+    fallback).
     """
     body = request.get_json(force=True) or {}
     ids = body.get("draft_ids") or []
@@ -1306,6 +1314,59 @@ def api_draft_save(draft_id):
             d[key] = str(body[key])[:20]
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
+    _save_draft(d)
+    return jsonify({"draft": d})
+
+
+@app.route("/api/drafts/<draft_id>/publish-fields", methods=["POST"])
+def api_draft_publish_fields(draft_id):
+    """v27: save the publish panel's fields into the draft, so a category
+    number, policy number, or other panel choice survives an app restart
+    or update. The panel is session-only otherwise: a Suggest pick lived
+    only in the page, and an update wiped it, so the next List tap failed
+    with 'Pick an eBay category first' even though he had picked one.
+
+    Merge-only, whitelisted: only keys present in the body are touched,
+    and only listing settings — never photos, title, description, live
+    listing state, or any credential/token. Present-but-empty clears a
+    scalar field; for attributes it removes that key. Invalid conditions
+    are ignored, mirroring the draft PUT handler, so a bad write can
+    never corrupt the draft. Failures here must never block listing:
+    the client saves best-effort and the publish payload always carries
+    the panel's current values anyway."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    body = request.get_json(force=True) or {}
+    cat = str(body.get("category_id", "") or "").strip()
+    if "category_id" in body:
+        d["category_id"] = cat[:20]
+    if "category_name" in body:
+        d["category_name"] = str(body.get("category_name", "") or "").strip()[:200]
+    if "condition" in body:
+        c = str(body["condition"]).strip()
+        if not c or c in {v for v, _ in CONDITIONS}:
+            d["condition"] = c
+    if "price" in body:
+        d["price"] = str(body["price"])[:20]
+    for key in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id"):
+        if key in body:
+            d[key] = str(body[key])[:30]
+    if "best_offer" in body:
+        d["best_offer"] = bool(body["best_offer"])
+    for key in ("best_offer_auto_decline", "best_offer_auto_accept"):
+        if key in body:
+            d[key] = str(body[key])[:20]
+    if "attributes" in body and isinstance(body["attributes"], dict):
+        attrs = dict(d.get("attributes") or {})
+        for k, v in body["attributes"].items():
+            k = str(k)[:80]
+            v = str(v).strip()
+            if v:
+                attrs[k] = v[:200]
+            else:
+                attrs.pop(k, None)
+        d["attributes"] = attrs
     _save_draft(d)
     return jsonify({"draft": d})
 
