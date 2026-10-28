@@ -19,6 +19,10 @@ main { max-width: 640px; margin: 0 auto; padding: 0 1rem; }
 .step { background: #fff; border-radius: 12px; padding: 1.1rem; margin-top: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .step h2 { margin: 0 0 0.4rem 0; font-size: 1.25rem; }
 .hint { color: #555; font-size: 0.92rem; margin: 0.3rem 0 0.8rem 0; }
+/* v22: the sign-in name line on the eBay connect area. The name itself
+   breaks at its hyphens; break-word is only the safety net so a long
+   unbroken stretch can never push the card wider than the screen. */
+.runame-line { overflow-wrap: break-word; }
 .hidden { display: none !important; }
 
 label { display: block; font-weight: 600; margin: 1rem 0 0.35rem 0; }

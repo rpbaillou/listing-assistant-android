@@ -623,6 +623,11 @@ def api_ebay_status():
     return jsonify({
         "ebay_configured": _ebay_configured(),
         "connected": bool(toks and toks.get("refresh_token")),
+        # v22: the sign-in name (RuName) currently in use, shown on the
+        # connect area so it is never hidden again. A RuName is a public
+        # identifier (it appears in every authorize URL), not a secret;
+        # the Client Secret is never exposed here.
+        "runame": EBAY_RUNAME,
         "policies_configured": bool(EBAY_FULFILLMENT_POLICY_ID and EBAY_PAYMENT_POLICY_ID
                                     and EBAY_RETURN_POLICY_ID),
         "policy_defaults": {

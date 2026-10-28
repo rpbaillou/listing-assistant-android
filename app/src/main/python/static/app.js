@@ -772,6 +772,12 @@ api("/api/config").then((c) => {
 /* ---------- v2: eBay one-tap listing ---------- */
 let ebayStatus = null;
 
+// v22: the OAuth-enabled sign-in name eBay accepts. A RuName is a public
+// identifier (it appears in every authorize URL), not a secret — showing
+// it and comparing against it here is safe. The Client Secret never
+// appears in this file.
+const WORKING_RUNAME = "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz";
+
 async function renderEbayStep() {
   const box = $("ebay-status");
   $("publish-panel").classList.add("hidden");
@@ -790,13 +796,40 @@ async function renderEbayStep() {
     return;
   }
   if (!ebayStatus.connected) {
-    box.innerHTML = "<p style='margin:0'><b>eBay is not connected.</b></p>" +
+    // v22: the sign-in name in use is always shown here, so a wrong one
+    // can never hide again. When it is anything but the working name,
+    // offer the one-tap fix instead of a text field: the button rewrites
+    // the saved name, restarts the app, and starts the connect flow.
+    // The buttons live in a wrapping row (v21 narrow-safe rule) so they
+    // can never clip off a narrow phone screen.
+    const runame = (ebayStatus.runame || "").trim();
+    let html = "<p style='margin:0'><b>eBay is not connected.</b></p>" +
       "<p class='hint'>Tap the button below in this browser, sign in to eBay, " +
       "and approve access. You only do this once.</p>" +
+      "<p class='hint runame-line'>Sign-in name in use: " + esc(runame) + "</p>" +
+      "<div class='btnrow wrap'>" +
       "<button id='btn-ebay-connect' class='primary' type='button'>Connect eBay</button>";
+    if (runame && runame !== WORKING_RUNAME) {
+      html += "<button id='btn-use-working-runame' class='secondary' type='button'>Use the working name</button>";
+    }
+    html += "</div>";
+    box.innerHTML = html;
     $("btn-ebay-connect").addEventListener("click", () => {
       window.location.href = "/api/ebay/connect";
     });
+    const fixBtn = $("btn-use-working-runame");
+    if (fixBtn) {
+      fixBtn.addEventListener("click", () => {
+        if (window.Android && Android.fixRunameAndConnect) {
+          Android.fixRunameAndConnect();
+        } else {
+          // Off the APK (plain browser run): no bridge to restart through,
+          // so say exactly what to change instead of a dead button.
+          fixBtn.outerHTML = "<p class='hint'>On this device, use Edit keys " +
+            "in the menu and set the sign-in name to " + esc(WORKING_RUNAME) + ".</p>";
+        }
+      });
+    }
     return;
   }
   if (draft && draft.ebay_listing_id) {
@@ -812,7 +845,8 @@ async function renderEbayStep() {
       esc(missing.join(" and ")) + ". See the setup guide (Connect eBay).</p>";
     return;
   }
-  box.innerHTML = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>";
+  box.innerHTML = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
+    "<p class='hint runame-line'>Sign-in name in use: " + esc((ebayStatus.runame || "").trim()) + "</p>";
   // prefill the publish panel
   const sel = $("p-condition");
   sel.innerHTML = "";
@@ -1092,16 +1126,27 @@ function hidePublishMsg() {
 /* ---------- v2: eBay connect banner ---------- */
 (function () {
   const q = new URLSearchParams(window.location.search);
-  const flag = q.get("ebay");
-  if (!flag) return;
   const el = $("ebay-banner");
-  if (flag === "connected") {
-    el.textContent = "eBay is connected. You can now list straight from step 4.";
-  } else {
-    el.textContent = "eBay connection did not finish. Try Connect eBay again in this browser.";
-    el.className = "banner";
-    el.style.margin = "0.8rem 1rem 0 1rem";
+  let shown = false;
+  // v22: the launch-time auto-fix flag (MainActivity appends it when it
+  // replaced the known-bad sign-in name). Brief note on the main screen,
+  // then the flag is cleared so it shows exactly once.
+  if (q.get("runame_fixed") === "1") {
+    el.textContent = "Sign-in name updated to the working one.";
+    el.classList.remove("hidden");
+    shown = true;
   }
-  el.classList.remove("hidden");
-  window.history.replaceState({}, "", window.location.pathname);
+  const flag = q.get("ebay");
+  if (flag) {
+    if (flag === "connected") {
+      el.textContent = "eBay is connected. You can now list straight from step 4.";
+    } else {
+      el.textContent = "eBay connection did not finish. Try Connect eBay again in this browser.";
+      el.className = "banner";
+      el.style.margin = "0.8rem 1rem 0 1rem";
+    }
+    el.classList.remove("hidden");
+    shown = true;
+  }
+  if (shown) window.history.replaceState({}, "", window.location.pathname);
 })();

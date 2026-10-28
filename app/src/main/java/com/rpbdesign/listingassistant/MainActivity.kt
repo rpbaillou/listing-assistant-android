@@ -53,6 +53,35 @@ class MainActivity : Activity() {
      *  the .env; Cancel just closes the form back to the running app. */
     private var editingKeys = false
 
+    /** v22: marker file requesting the eBay connect flow right after a
+     *  restart (set by the "Use the working name" button, consumed on
+     *  relaunch once the server is confirmed listening). */
+    private fun connectAfterRestartFile(): File =
+        File(filesDir, ".connect_after_restart")
+
+    /**
+     * v22: zero-typing fix, part 1. If the saved RuName is exactly the
+     * known-bad, never-registered value, replace it with the working
+     * RuName in the .env file (all other lines untouched) BEFORE Python
+     * starts, so the server reads the good value on this very launch.
+     * Returns true when a fix happened, so the main screen can show the
+     * note. Any other stored value is left alone here — a wrong value
+     * that is not the known-bad one gets the one-tap button instead
+     * (see fixRunameAndConnect). A failed write returns false and never
+     * crashes the launch; the 400 then remains visible, not hidden.
+     */
+    private fun maybeAutoFixRuname(): Boolean {
+        val f = File(filesDir, ".env")
+        if (!f.exists()) return false
+        if (!RunameFix.needsAutoFix(readEnvValues()["EBAY_RUNAME"])) return false
+        return try {
+            f.writeText(RunameFix.rewriteEnvText(f.readText(), RunameFix.WORKING_RUNAME))
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private val requiredKeys = listOf(
         "GEMINI_API_KEY",
         "EBAY_CLIENT_ID",
@@ -217,6 +246,10 @@ class MainActivity : Activity() {
     }
 
     private fun startServer() {
+        // v22: auto-fix the known-bad RuName before Python reads .env,
+        // so a launch that would have 400'd now starts with the working
+        // name. The flag is captured for the first page load below.
+        val runameFixed = maybeAutoFixRuname()
         setupView.visibility = View.GONE
         startingView.visibility = View.VISIBLE
         setupWebView()
@@ -261,7 +294,28 @@ class MainActivity : Activity() {
                     runOnUiThread {
                         startingView.visibility = View.GONE
                         webView.visibility = View.VISIBLE
-                        webView.loadUrl("http://127.0.0.1:5050/")
+                        // v22: after the "Use the working name" button's
+                        // restart, go straight into the eBay connect flow
+                        // instead of the main screen. The marker is only
+                        // consumed once the server is confirmed listening,
+                        // so a failed start never eats it. After an
+                        // auto-fix launch, the main screen gets the note
+                        // flag instead (?runame_fixed=1).
+                        val marker = connectAfterRestartFile()
+                        val connectAfterRestart = if (marker.exists()) {
+                            marker.delete()
+                            true
+                        } else {
+                            false
+                        }
+                        val initialUrl = when {
+                            connectAfterRestart ->
+                                "http://127.0.0.1:5050/api/ebay/connect"
+                            runameFixed ->
+                                "http://127.0.0.1:5050/?runame_fixed=1"
+                            else -> "http://127.0.0.1:5050/"
+                        }
+                        webView.loadUrl(initialUrl)
                         // Self-update check: offers when a newer build exists;
                         // a failed check shows a toast (never silent again).
                         Updater.check(
@@ -409,6 +463,46 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun editKeys() {
             runOnUiThread { showEditKeysForm() }
+        }
+
+        /**
+         * v22: zero-typing fix, part 2. The web "Use the working name"
+         * button calls this: rewrite .env so the RuName is the working
+         * one (every other key untouched), leave a marker so the relaunch
+         * goes straight into the eBay connect flow, then restart. This
+         * runs on the JS-interface thread, so it posts to the UI thread
+         * itself. If the rewrite fails, it says so and does NOT restart
+         * — restarting with an unchanged .env would loop him back to
+         * the same 400. If no .env exists at all, there is nothing to
+         * fix; the menu's Edit keys form is the right path then.
+         */
+        @JavascriptInterface
+        fun fixRunameAndConnect() {
+            runOnUiThread {
+                val f = File(filesDir, ".env")
+                if (!f.exists()) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "No saved keys found. Use Edit keys in the menu first.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+                try {
+                    f.writeText(
+                        RunameFix.rewriteEnvText(f.readText(), RunameFix.WORKING_RUNAME)
+                    )
+                    connectAfterRestartFile().createNewFile()
+                } catch (_: Exception) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Couldn't update the sign-in name. Try Edit keys in the menu.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+                restartApp()
+            }
         }
     }
 
