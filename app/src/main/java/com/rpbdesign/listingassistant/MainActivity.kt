@@ -21,6 +21,7 @@ import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import android.widget.Toolbar
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
@@ -67,6 +68,27 @@ class MainActivity : Activity() {
         webView = findViewById(R.id.webview)
         setupView = findViewById(R.id.setup_view)
         startingView = findViewById(R.id.starting_view)
+
+        // v20: native overflow menu (three dots, top right). Both items are
+        // showAsAction="never", so the Toolbar renders the overflow button
+        // itself — no wide buttons to get cut off. Each item calls the exact
+        // same handler the old web header button used.
+        findViewById<Toolbar>(R.id.toolbar).apply {
+            inflateMenu(R.menu.main_menu)
+            setOnMenuItemClickListener { item ->
+                when (item.itemId) {
+                    R.id.menu_check_updates -> {
+                        runUpdateCheck()
+                        true
+                    }
+                    R.id.menu_edit_keys -> {
+                        showEditKeysForm()
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
 
         if (hasKeys()) {
             startServer()
@@ -144,8 +166,9 @@ class MainActivity : Activity() {
     /**
      * v19: opens the keys form pre-filled with the saved values, so he can
      * change just one key (e.g. the RuName) without retyping the rest or
-     * clearing app data. Called from the web header's "Edit keys" button
-     * through the JS bridge (which runs on a background thread).
+     * clearing app data. v20: called from the native overflow menu item
+     * (the old web header button is gone); the JS bridge below also calls
+     * it. The bridge runs on a background thread, the menu on the UI thread.
      */
     private fun showEditKeysForm() {
         val values = readEnvValues()
@@ -363,40 +386,50 @@ class MainActivity : Activity() {
             runOnUiThread { launchCameraForJs() }
         }
 
-        /** v15: manual update check from the "Check for updates" button.
-         *  Always answers: dialog when an update exists, toast when current,
-         *  toast when the check itself fails. Runs on the JS-interface
-         *  thread; Updater.check moves all callbacks to the UI thread. */
+        /** v15: JS bridge entry for the update check, kept so any page
+         *  still calling it works. Delegates to the shared MainActivity
+         *  handler that the v20 native menu item calls too. */
         @JavascriptInterface
         fun checkForUpdates() {
-            Updater.check(
-                this@MainActivity,
-                { info -> showUpdateDialog(info) },
-                onUpToDate = {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "You're on the latest version.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                },
-                onError = {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Could not check for updates. Check your connection and try again.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            )
+            runUpdateCheck()
         }
 
-        /** v19: "Edit keys" button in the web header. Shows the native keys
-         *  form pre-filled with the saved values. Like checkForUpdates,
-         *  this runs on the JS-interface thread, so it posts to the UI
-         *  thread itself. */
+        /** v19: shows the native keys form pre-filled with the saved
+         *  values. v20: kept for compatibility; the native overflow menu
+         *  calls showEditKeysForm() directly. This runs on the JS-interface
+         *  thread, so it posts to the UI thread itself. */
         @JavascriptInterface
         fun editKeys() {
             runOnUiThread { showEditKeysForm() }
         }
+    }
+
+    /**
+     * v15: manual update check. Always answers: dialog when an update
+     * exists, toast when current, toast when the check itself fails.
+     * v20: the single handler shared by the native overflow menu item
+     * and the JS bridge above — no duplicated logic. Updater.check moves
+     * all callbacks to the UI thread, so it is safe from either thread.
+     */
+    private fun runUpdateCheck() {
+        Updater.check(
+            this@MainActivity,
+            { info -> showUpdateDialog(info) },
+            onUpToDate = {
+                Toast.makeText(
+                    this@MainActivity,
+                    "You're on the latest version.",
+                    Toast.LENGTH_LONG
+                ).show()
+            },
+            onError = {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Could not check for updates. Check your connection and try again.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        )
     }
 
     /** Launches the camera app for the JS-interface path (no chooser). */
@@ -776,7 +809,7 @@ class MainActivity : Activity() {
     private fun showUpdateCheckFailedToast() {
         Toast.makeText(
             this,
-            "Update check failed — tap Check for updates to retry.",
+            "Update check failed — tap the menu (top right), then Check for updates to retry.",
             Toast.LENGTH_LONG
         ).show()
     }

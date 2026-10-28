@@ -9,9 +9,6 @@
 <body>
 <header>
   <h1>Listing Assistant <span class="vtag">{{ app_version }}</span></h1>
-  <button id="btn-drafts" class="ghost" type="button">My drafts</button>
-  <button id="btn-check-updates" class="ghost" type="button">Check for updates</button>
-  <button id="btn-edit-keys" class="ghost" type="button">Edit keys</button>
 </header>
 
 {% if show_qr %}
@@ -30,6 +27,9 @@
 <div id="ebay-banner" class="ok hidden" style="margin:0.8rem 1rem 0 1rem;"></div>
 
 <main>
+  <!-- v20: drafts live here as a quiet link, not a header button, so the
+       header stays a plain title bar and nothing gets cut off. -->
+  <p class="drafts-link"><a id="btn-drafts" href="#">My drafts</a></p>
   <!-- STEP 1: photos -->
   <section id="step-photos" class="step">
     <h2>1. Pick photos</h2>

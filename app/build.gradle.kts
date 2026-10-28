@@ -13,8 +13,8 @@ android {
         applicationId = "com.rpbdesign.listingassistant"
         minSdk = 24
         targetSdk = 34
-        versionCode = 19
-        versionName = "1.18"
+        versionCode = 20
+        versionName = "1.19"
 
         ndk {
             // Chaquopy Python 3.12 is 64-bit only.

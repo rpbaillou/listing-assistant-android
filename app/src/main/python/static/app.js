@@ -393,27 +393,9 @@ async function handlePickedFiles(fileList, replace) {
   hideError();
 }
 
-/* v15: manual update check. The app answers all three ways: an update
-   dialog when one exists, a "latest version" toast when current, an error
-   toast when the check itself fails. */
-$("btn-check-updates").addEventListener("click", () => {
-  if (window.Android && typeof window.Android.checkForUpdates === "function") {
-    window.Android.checkForUpdates();
-  } else {
-    showError("Update check needs the app — please reopen the app and try again.");
-  }
-});
-
-/* v19: Edit keys opens the app's native keys form, pre-filled with the
-   saved values, so one key (e.g. the RuName) can change without retyping
-   the rest or clearing app data. */
-$("btn-edit-keys").addEventListener("click", () => {
-  if (window.Android && typeof window.Android.editKeys === "function") {
-    window.Android.editKeys();
-  } else {
-    showError("Edit keys needs the app — please reopen the app and try again.");
-  }
-});
+/* v20: update check and Edit keys moved to the app's native top-right
+   menu (three dots). The web header is a plain title bar now, so these
+   listeners are gone — the native menu calls the same Android handlers. */
 
 $("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.files, true); });
 
@@ -726,7 +708,11 @@ $("btn-new").addEventListener("click", () => {
 });
 
 /* ---------- drafts panel ---------- */
-$("btn-drafts").addEventListener("click", async () => {
+/* v20: "My drafts" is a quiet link above step 1 now, not a header button.
+   Same panel, same handler; preventDefault keeps the "#" link from
+   touching the URL. */
+$("btn-drafts").addEventListener("click", async (e) => {
+  e.preventDefault();
   const list = $("drafts-list");
   list.innerHTML = "<p class='hint'>Loading…</p>";
   show("drafts-panel");
@@ -763,7 +749,7 @@ $("btn-drafts").addEventListener("click", async () => {
   }
 });
 /* v5: Back from My drafts goes to the very beginning (choose photos).
-   The "My drafts" button is always in the header, so this is the only way
+   The "My drafts" link sits above step 1, so this is the only way
    back to the start once you are inside a draft. Pending edits are flushed
    by show() before the switch. */
 $("btn-close-drafts").addEventListener("click", () => show("step-photos"));

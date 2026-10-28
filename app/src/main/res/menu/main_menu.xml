@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v20: overflow menu for the native top bar. Both items use
+     showAsAction="never", so they live under the three-dot overflow button
+     at the top right — never as wide buttons that can get cut off. -->
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/menu_check_updates"
+        android:title="Check for updates"
+        android:showAsAction="never" />
+    <item
+        android:id="@+id/menu_edit_keys"
+        android:title="Edit keys"
+        android:showAsAction="never" />
+</menu>
