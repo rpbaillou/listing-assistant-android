@@ -726,12 +726,17 @@ $("btn-drafts").addEventListener("click", async (e) => {
     drafts.forEach((d) => {
       const row = document.createElement("div");
       row.className = "draft-item";
+      /* v21: buttons live in one .draft-actions unit so they wrap below the
+         text together instead of one clipping off the right edge. The date
+         is its own nowrap span (never breaks mid-string); "Listed on eBay"
+         is a separate span so it can wrap to the next line cleanly. */
       row.innerHTML =
         (d.thumb ? '<img src="/photos/' + d.thumb + '">' : "") +
-        '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b><span>" +
-        esc(d.updated || "") + (d.listed ? " · <b>Listed on eBay</b>" : "") + "</span></div>" +
-        '<button type="button" class="secondary">Open</button>' +
-        '<button type="button" class="del">Delete</button>';
+        '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b><span class=\"d-date\">" +
+        esc(d.updated || "") + "</span>" +
+        (d.listed ? ' <span class="d-listed">· Listed on eBay</span>' : "") + "</div>" +
+        '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
+        '<button type="button" class="del">Delete</button></div>';
       row.querySelector(".secondary").addEventListener("click", async () => {
         const { draft: full } = await api("/api/drafts/" + d.id);
         loadDraftIntoForm(full);

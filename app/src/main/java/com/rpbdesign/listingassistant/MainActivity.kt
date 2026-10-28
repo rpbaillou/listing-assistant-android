@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Message
@@ -73,8 +74,15 @@ class MainActivity : Activity() {
         // showAsAction="never", so the Toolbar renders the overflow button
         // itself — no wide buttons to get cut off. Each item calls the exact
         // same handler the old web header button used.
+        // v21: the light activity theme tints the overflow icon dark, which
+        // is invisible on the dark toolbar (he could not find the menu).
+        // Force it white so the three dots always stand out. The popup menu
+        // itself stays light-background with dark text (good contrast).
         findViewById<Toolbar>(R.id.toolbar).apply {
             inflateMenu(R.menu.main_menu)
+            overflowIcon?.let { icon ->
+                overflowIcon = icon.mutate().apply { setTint(Color.WHITE) }
+            }
             setOnMenuItemClickListener { item ->
                 when (item.itemId) {
                     R.id.menu_check_updates -> {

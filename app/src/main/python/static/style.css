@@ -5,7 +5,7 @@ body {
   background: #f4f4f5; color: #1c1c1e; font-size: 17px; line-height: 1.45;
 }
 header {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center;
   padding: 0.9rem 1rem; background: #0f2a44; color: #fff;
   position: sticky; top: 0; z-index: 10;
 }
@@ -13,8 +13,8 @@ header h1 { font-size: 1.15rem; margin: 0; }
 /* v20: quiet "My drafts" link above step 1 (was a header button). Small,
    right-aligned, never a big button, always reachable. */
 .drafts-link { text-align: right; margin: 0.7rem 0 0 0; }
-.drafts-link a { color: #2f6fed; font-size: 0.95rem; }
-.vtag { font-size: 0.7rem; background: #2f6fed; border-radius: 4px; padding: 2px 6px; vertical-align: middle; }
+.drafts-link a { color: #2a63d8; font-size: 0.95rem; }
+.vtag { font-size: 0.7rem; background: #2a63d8; border-radius: 4px; padding: 2px 6px; vertical-align: middle; }
 main { max-width: 640px; margin: 0 auto; padding: 0 1rem; }
 .step { background: #fff; border-radius: 12px; padding: 1.1rem; margin-top: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .step h2 { margin: 0 0 0.4rem 0; font-size: 1.25rem; }
@@ -30,22 +30,27 @@ input[type=text], input[type=number], textarea, select {
   border: 1px solid #c9c9ce; border-radius: 8px; background: #fff;
 }
 textarea { resize: vertical; }
-.count { font-weight: 400; color: #777; font-size: 0.85rem; }
+.count { font-weight: 400; color: #666; font-size: 0.85rem; }
 
 button, .btnlink {
   font-size: 1rem; border-radius: 10px; padding: 0.75rem 1.1rem;
   border: none; cursor: pointer; text-decoration: none; display: inline-block;
   text-align: center; min-height: 48px;
 }
-button.primary, .btnlink.primary { background: #2f6fed; color: #fff; }
+button.primary, .btnlink.primary { background: #2a63d8; color: #fff; }
 button.primary.big { width: 100%; margin-top: 1rem; font-size: 1.1rem; }
 button.secondary, .btnlink.secondary { background: #e8eefc; color: #123a7d; }
-button.ghost { background: transparent; color: #2f6fed; border: 1px solid #bcd0f7; min-height: 40px; padding: 0.5rem 0.9rem; }
+button.ghost { background: transparent; color: #2a63d8; border: 1px solid #bcd0f7; min-height: 40px; padding: 0.5rem 0.9rem; }
 header button.ghost { color: #fff; border-color: rgba(255,255,255,.5); }
 button:disabled { opacity: 0.45; cursor: default; }
-.btnrow { display: flex; gap: 0.6rem; margin-top: 1.2rem; }
+/* v21: rows wrap instead of overflowing a narrow phone; children get
+   min-width:0 so text/input columns can actually shrink (without it, an
+   unbreakable token forces the row wider than the screen and clips
+   whatever sits on the right). */
+.btnrow { display: flex; gap: 0.6rem; margin-top: 1.2rem; flex-wrap: wrap; }
 .btnrow.wrap { flex-wrap: wrap; }
 .btnrow .primary { flex: 1; }
+.btnrow > * { min-width: 0; }
 
 .filebtn {
   display: block; text-align: center; background: #e8eefc; color: #123a7d;
@@ -54,12 +59,12 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 #photo-input { display: none; }
 #camera-input { display: none; }
-.photobtns { display: flex; gap: 0.5rem; }
-.photobtns .filebtn { flex: 1; }
+.photobtns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.photobtns .filebtn { flex: 1; min-width: 0; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
 .thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
-.thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #888; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
+.thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
 .thumbs.small img { width: 72px; height: 72px; }
 
 /* v5: remove-photo X on each chosen thumbnail */
@@ -76,7 +81,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .thumb-edit {
   position: absolute; bottom: -8px; left: -8px;
   min-height: 30px; padding: 0.2rem 0.55rem; border-radius: 15px;
-  background: #2f6fed; color: #fff; border: 2px solid #fff;
+  background: #2a63d8; color: #fff; border: 2px solid #fff;
   font-size: 13px; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
@@ -97,14 +102,18 @@ button:disabled { opacity: 0.45; cursor: default; }
   touch-action: none; background: #222; border-radius: 8px;
 }
 
-.attr-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; }
+.attr-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+.attr-row input { min-width: 0; }
 .attr-row input:first-child { flex: 1; }
 .attr-row input:last-of-type { flex: 1.4; }
-.attr-row button { background: #fde8e8; color: #a00; min-height: 40px; padding: 0.4rem 0.7rem; }
+.attr-row button { background: #fde8e8; color: #a00; min-height: 40px; padding: 0.4rem 0.7rem; flex-shrink: 0; }
 
-.pricerow { display: flex; gap: 0.6rem; }
-.pricerow input { flex: 1; }
-.pricerow button { flex: 1.4; }
+.pricerow { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.pricerow input { flex: 1; min-width: 0; }
+.pricerow button { flex: 1.4; min-width: 0; }
+
+/* v21: QR image never exceeds the screen width. */
+#step-qrcode img { max-width: 100%; height: auto; }
 
 .card { background: #f8f9fc; border: 1px solid #dde3f0; border-radius: 10px; padding: 1rem; margin: 0.8rem 0; }
 .card h3 { margin: 0 0 0.4rem 0; }
@@ -113,17 +122,23 @@ button:disabled { opacity: 0.45; cursor: default; }
 .card dd { margin: 0 0 0.5rem 0; }
 .v2note { background: #fff8e6; border-color: #ecd27a; }
 
-.note { background: #f2f6ff; border-left: 4px solid #2f6fed; padding: 0.7rem; border-radius: 0 8px 8px 0; margin: 0.9rem 0; font-size: 0.93rem; }
+.note { background: #f2f6ff; border-left: 4px solid #2a63d8; padding: 0.7rem; border-radius: 0 8px 8px 0; margin: 0.9rem 0; font-size: 0.93rem; }
 .banner { background: #fde8e8; color: #7a1010; padding: 0.8rem 1rem; font-size: 0.95rem; }
 .error { background: #fde8e8; color: #7a1010; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; }
 .ok { background: #e6f7e6; color: #145214; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; }
-.spinner { padding: 1rem; text-align: center; color: #2f6fed; font-weight: 600; }
+.spinner { padding: 1rem; text-align: center; color: #2a63d8; font-weight: 600; }
 
-.draft-item { display: flex; gap: 0.7rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.7rem 0; }
-.draft-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; }
-.draft-item .t { flex: 1; }
-.draft-item .t b { display: block; }
-.draft-item .t span { color: #777; font-size: 0.85rem; }
+.draft-item { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.7rem 0; }
+.draft-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.draft-item .t { flex: 1 1 10rem; min-width: 0; }
+.draft-item .t b { display: block; overflow-wrap: break-word; }
+.draft-item .t span { color: #666; font-size: 0.85rem; }
+/* v21: the date stays whole on one line (never breaks mid-string). The row
+   wraps instead, so the Open/Delete buttons drop below the text rather
+   than clipping off the right edge. Buttons move as one unit. */
+.draft-item .t .d-date { white-space: nowrap; }
+.draft-actions { display: flex; gap: 0.6rem; flex-shrink: 0; }
+.draft-actions button { flex-shrink: 0; }
 .draft-item .del { background: #fde8e8; color: #a00; }
 
 .suggestbox { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.5rem 0; }
