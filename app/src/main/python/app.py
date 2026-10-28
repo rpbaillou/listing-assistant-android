@@ -435,6 +435,32 @@ def _ebay_call(method, path, token, payload=None):
         return {}
 
 
+def _resp_bytes(resp):
+    """Raw reply body as bytes. ElementTree parses bytes correctly even
+    with a BOM or an encoding declaration; parsing str can fail on
+    exactly those quirks, which is what hid eBay's real reply here."""
+    raw = resp.content
+    if isinstance(raw, (bytes, bytearray)):
+        return bytes(raw)
+    if isinstance(raw, str):
+        return raw.encode("utf-8", "replace")
+    return b""
+
+
+def _picture_hosting_error(resp, token):
+    """Error text that never discards what eBay sent: HTTP status plus the
+    first ~300 characters of eBay's reply body. The reply never contains
+    our token or photo data (those went in the request, not the reply),
+    but the token is redacted from the snippet anyway so it can never
+    leak into a surfaced message."""
+    text = _resp_bytes(resp).decode("utf-8", "replace").strip()
+    if token:
+        text = text.replace(token, "[removed]")
+    snippet = (": " + text[:300]) if text else ""
+    return (f"eBay picture hosting answered with error {resp.status_code}"
+            f"{snippet}.")
+
+
 def _ebay_upload_picture(photo_path, token, picture_name):
     """Upload one photo to eBay's own picture hosting (Trading API
     UploadSiteHostedPictures, authorized with the OAuth user token in the
@@ -450,23 +476,51 @@ def _ebay_upload_picture(photo_path, token, picture_name):
         f"<PictureData>{b64}</PictureData>"
         "</UploadSiteHostedPicturesRequest>"
     )
-    try:
-        resp = requests.post(
-            EBAY_TRADING_API,
-            headers={"X-EBAY-API-CALL-NAME": "UploadSiteHostedPictures",
-                     "X-EBAY-API-SITEID": "0",
-                     "X-EBAY-API-COMPATIBILITY-LEVEL": EBAY_TRADING_COMPAT_LEVEL,
-                     "X-EBAY-API-IAF-TOKEN": token,
-                     "Content-Type": "text/xml"},
-            data=xml.encode("utf-8"),
-            timeout=120)
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Could not reach eBay picture hosting: {exc}")
-    try:
-        root = ET.fromstring(resp.text)
-    except ET.ParseError:
-        raise RuntimeError(
-            "eBay picture hosting sent back something unreadable. Try again.")
+    # One automatic retry (same photo, same request) when the failure is
+    # transient: HTTP 5xx, an empty body, or a garbled reply at HTTP 200.
+    # No hosted URL was returned on those failures, so nothing can be
+    # duplicated in the listing. Never retried: 4xx rejections and
+    # parsed Ack=Failure (real rejections, handled below as before).
+    root = None
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                EBAY_TRADING_API,
+                headers={"X-EBAY-API-CALL-NAME": "UploadSiteHostedPictures",
+                         "X-EBAY-API-SITEID": "0",
+                         "X-EBAY-API-COMPATIBILITY-LEVEL": EBAY_TRADING_COMPAT_LEVEL,
+                         "X-EBAY-API-IAF-TOKEN": token,
+                         "Content-Type": "text/xml"},
+                data=xml.encode("utf-8"),
+                timeout=120)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Could not reach eBay picture hosting: {exc}")
+        if resp.status_code >= 500:
+            if attempt == 0:
+                continue
+            raise RuntimeError(_picture_hosting_error(resp, token))
+        body = _resp_bytes(resp)
+        if not body.strip():
+            if resp.status_code == 200 and attempt == 0:
+                continue
+            if resp.status_code in (401, 403):
+                _clear_ebay_tokens()
+                raise RuntimeError(
+                    "Your eBay sign-in stopped working (or is missing the new picture "
+                    "permission). Tap Connect eBay again in this browser.")
+            raise RuntimeError(_picture_hosting_error(resp, token))
+        try:
+            root = ET.fromstring(body)
+        except ET.ParseError:
+            if resp.status_code == 200 and attempt == 0:
+                continue
+            if resp.status_code in (401, 403):
+                _clear_ebay_tokens()
+                raise RuntimeError(
+                    "Your eBay sign-in stopped working (or is missing the new picture "
+                    "permission). Tap Connect eBay again in this browser.")
+            raise RuntimeError(_picture_hosting_error(resp, token))
+        break
     ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
     ack = (root.findtext("e:Ack", default="", namespaces=ns) or "").lower()
     if ack not in ("success", "warning"):
