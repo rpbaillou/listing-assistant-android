@@ -1,1 +1,1 @@
-{"versionCode": 19, "versionName": "1.18", "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v19/ebay-listing-assistant-apk-v19.apk", "notes": "eBay sign-in now works, and you can edit your saved keys."}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v20/ebay-listing-assistant-apk-v20.apk","notes":"Cleaner top bar: settings moved into a menu button.","versionCode":20,"versionName":"1.19"}
