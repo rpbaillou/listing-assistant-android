@@ -708,11 +708,10 @@ def api_ebay_category_suggest():
         return jsonify({"error": "Type a few words of the title first."}), 400
     try:
         token = _app_token()
-        resp = requests.post(
+        resp = requests.get(
             EBAY_API + "/commerce/taxonomy/v1/category_tree/0/get_category_suggestions",
-            headers={"Authorization": "Bearer " + token,
-                     "Content-Type": "application/json"},
-            json={"q": q[:100]},
+            headers={"Authorization": "Bearer " + token},
+            params={"q": q[:100]},
             timeout=30)
     except requests.RequestException as exc:
         return jsonify({"error": f"Could not reach eBay: {exc}"}), 502
