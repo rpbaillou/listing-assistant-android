@@ -43,6 +43,8 @@
     <div id="skip-note" class="hint hidden"></div>
     <div id="analyze-error" class="error hidden"></div>
     <button id="btn-analyze" class="primary big" type="button" disabled>Identify item with AI</button>
+    <button id="btn-quick-post" class="secondary big" type="button" disabled>Quick post (skip AI)</button>
+    <p class="hint">Quick post skips the AI wait: your photos go straight to a blank draft you fill in yourself.</p>
     <div id="spinner" class="spinner hidden">Asking the AI to look at your photos… this takes about 20 seconds.</div>
   </section>
 
@@ -117,6 +119,7 @@
     <div id="publish-panel" class="hidden">
       <h3>One-tap listing</h3>
       <p class="hint">This creates a <b>real, live</b> fixed-price listing on eBay. Double-check everything above first.</p>
+      <div id="preset-note" class="note hidden"></div>
 
       <label>Condition</label>
       <select id="p-condition"></select>
@@ -155,6 +158,9 @@
         <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
       </details>
 
+      <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
+      <p class="hint">Saves the condition, category, policy numbers, and Best Offer settings above as your usual settings. Next time they fill in by themselves; re-saving replaces them.</p>
+
       <div id="publish-error" class="error hidden"></div>
       <div id="publish-ok" class="ok hidden"></div>
       <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
@@ -176,7 +182,35 @@
   <section id="drafts-panel" class="step hidden">
     <h2>My drafts</h2>
     <div id="drafts-list"></div>
-    <button id="btn-close-drafts" class="ghost" type="button">← Back to start</button>
+    <div class="btnrow wrap">
+      <button id="btn-batch-open" class="primary" type="button">Post selected</button>
+      <button id="btn-close-drafts" class="ghost" type="button">← Back to start</button>
+    </div>
+    <p class="hint">Tick drafts, then Post selected to list several at once. Or tap Post on one draft to jump straight to its review.</p>
+  </section>
+
+  <!-- v24: batch posting — one confirmation list is the review -->
+  <section id="batch-panel" class="step hidden">
+    <h2>Post several drafts</h2>
+    <p class="hint">One category applies to the whole batch. Drafts without a price, or already live, are skipped below.</p>
+    <label>Category number for these listings</label>
+    <div class="pricerow">
+      <input id="b-category" type="text" inputmode="numeric" placeholder="e.g. 178893">
+      <button id="btn-batch-suggest" class="secondary" type="button">Suggest</button>
+    </div>
+    <label>Category keywords (for Suggest)</label>
+    <input id="b-keywords" type="text" placeholder="e.g. Royal Doulton figurine">
+    <div id="batch-suggestions" class="suggestbox hidden"></div>
+    <div id="batch-review-list"></div>
+    <div id="batch-excluded"></div>
+    <div id="batch-note" class="note hidden"></div>
+    <div class="btnrow wrap">
+      <button id="btn-batch-cancel" class="ghost" type="button">← Back to drafts</button>
+      <button id="btn-batch-confirm" class="primary" type="button" disabled>Post these now</button>
+    </div>
+    <div id="batch-progress" class="spinner hidden">Posting… about a minute per item. Leave the app open.</div>
+    <div id="batch-results"></div>
+    <button id="btn-batch-done" class="primary hidden" type="button">Back to drafts</button>
   </section>
 </main>
 

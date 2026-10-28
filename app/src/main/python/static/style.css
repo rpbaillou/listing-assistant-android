@@ -139,11 +139,23 @@ button:disabled { opacity: 0.45; cursor: default; }
 .draft-item .t span { color: #666; font-size: 0.85rem; }
 /* v21: the date stays whole on one line (never breaks mid-string). The row
    wraps instead, so the Open/Delete buttons drop below the text rather
-   than clipping off the right edge. Buttons move as one unit. */
+   than clipping off the right edge. Buttons move as one unit.
+   v24: the date is two nowrap spans (date, time) so the row can break
+   cleanly BETWEEN them on a narrow phone — still never mid-string. */
 .draft-item .t .d-date { white-space: nowrap; }
-.draft-actions { display: flex; gap: 0.6rem; flex-shrink: 0; }
+.draft-actions { display: flex; gap: 0.6rem; flex-shrink: 0; flex-wrap: wrap; }
 .draft-actions button { flex-shrink: 0; }
 .draft-item .del { background: #fde8e8; color: #a00; }
+
+/* v24: fast-post pack. Quick-post button is full width like Identify;
+   batch tick boxes are finger-sized; batch rows wrap like draft rows
+   and reuse only verified color pairs (no new colors). */
+button.secondary.big { width: 100%; margin-top: 0.6rem; }
+.draft-check { width: 1.4rem; height: 1.4rem; flex-shrink: 0; align-self: center; }
+.batch-row { display: flex; gap: 0.6rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid #eee; min-width: 0; flex-wrap: wrap; }
+.batch-row .bt { flex: 1 1 10rem; min-width: 0; overflow-wrap: break-word; }
+.batch-row .bp { flex-shrink: 0; min-width: 0; overflow-wrap: break-word; color: #666; }
+.batch-row .bp.batch-skip { color: #a00; }
 
 .suggestbox { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.5rem 0; }
 button.sug { text-align: left; min-height: 44px; }

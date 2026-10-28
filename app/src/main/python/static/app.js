@@ -92,6 +92,8 @@ function clearPreviews() {
 
 function updateAnalyzeButton() {
   $("btn-analyze").disabled = selectedFiles.length === 0;
+  /* v24: quick post needs photos too, same rule. */
+  $("btn-quick-post").disabled = selectedFiles.length === 0;
 }
 
 function renderThumbs() {
@@ -441,6 +443,26 @@ $("btn-analyze").addEventListener("click", async () => {
   }
 });
 
+/* ---------- v24: quick post (skip AI) ---------- */
+/* Same photo upload as Identify, but the server starts a BLANK draft —
+   no Gemini call, no AI wait. He types the title himself in step 2,
+   then the normal Review → step 4 flow takes over. */
+$("btn-quick-post").addEventListener("click", async () => {
+  hideError();
+  $("btn-quick-post").disabled = true;
+  try {
+    const fd = new FormData();
+    selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
+    const { draft: d } = await api("/api/quick-post", { method: "POST", body: fd });
+    loadDraftIntoForm(d);
+    show("step-draft");
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    $("btn-quick-post").disabled = selectedFiles.length === 0;
+  }
+});
+
 /* ---------- step 2: edit draft ---------- */
 function loadDraftIntoForm(d) {
   draft = d;
@@ -707,6 +729,17 @@ $("btn-new").addEventListener("click", () => {
   show("step-photos");
 });
 
+/* v24: render an ISO timestamp as two nowrap spans (date, time) so a
+   narrow row can break cleanly BETWEEN them, never mid-string. The
+   v21 rule stands: no mid-string break, ever. */
+function dateHtml(iso) {
+  const s = String(iso || "");
+  const t = s.indexOf("T");
+  if (t < 0) return '<span class="d-date">' + esc(s) + "</span>";
+  return '<span class="d-date">' + esc(s.slice(0, t)) + "</span> " +
+    '<span class="d-date">' + esc(s.slice(t + 1)) + "</span>";
+}
+
 /* ---------- drafts panel ---------- */
 /* v20: "My drafts" is a quiet link above step 1 now, not a header button.
    Same panel, same handler; preventDefault keeps the "#" link from
@@ -728,20 +761,51 @@ $("btn-drafts").addEventListener("click", async (e) => {
       row.className = "draft-item";
       /* v21: buttons live in one .draft-actions unit so they wrap below the
          text together instead of one clipping off the right edge. The date
-         is its own nowrap span (never breaks mid-string); "Listed on eBay"
-         is a separate span so it can wrap to the next line cleanly. */
+         renders as two nowrap spans (dateHtml: date, time) so the row can
+         break cleanly between them, never mid-string. "Listed on eBay"
+         is a separate span so it can wrap to the next line cleanly.
+         v24: a tick box (batch posting) and a Post button (straight to
+         review) join the row. Listed drafts get no Post button — they are
+         already live, and the publish step refuses them anyway. */
       row.innerHTML =
+        '<input type="checkbox" class="draft-check" data-id="' + d.id +
+        '" aria-label="Select for batch posting">' +
         (d.thumb ? '<img src="/photos/' + d.thumb + '">' : "") +
-        '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b><span class=\"d-date\">" +
-        esc(d.updated || "") + "</span>" +
+        '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated) +
         (d.listed ? ' <span class="d-listed">· Listed on eBay</span>' : "") + "</div>" +
         '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
+        (d.listed ? "" : '<button type="button" class="primary post">Post</button>') +
         '<button type="button" class="del">Delete</button></div>';
       row.querySelector(".secondary").addEventListener("click", async () => {
         const { draft: full } = await api("/api/drafts/" + d.id);
         loadDraftIntoForm(full);
         show("step-draft");
       });
+      const postBtn = row.querySelector(".post");
+      if (postBtn) {
+        postBtn.addEventListener("click", async () => {
+          /* v24: straight to the Review screen — photos, title, price and
+             everything else come from the draft, no re-picking, no AI.
+             Nothing goes live from here: Review → step 4 → List button
+             still stand between him and a live listing. */
+          const { draft: full } = await api("/api/drafts/" + d.id);
+          loadDraftIntoForm(full);
+          renderReview();
+          const notes = [];
+          if (!String(full.price || "").trim())
+            notes.push("Price is not set — add it before listing.");
+          if (!String(full.category || "").trim())
+            notes.push("Category is not set — pick one with Suggest in step 4.");
+          if (notes.length) {
+            const card = $("review-card");
+            const note = document.createElement("div");
+            note.className = "note";
+            note.textContent = notes.join(" ");
+            card.insertBefore(note, card.firstChild);
+          }
+          show("step-review");
+        });
+      }
       row.querySelector(".del").addEventListener("click", async () => {
         if (!confirm("Delete this draft and its photos?")) return;
         await api("/api/drafts/" + d.id, { method: "DELETE" });
@@ -758,6 +822,166 @@ $("btn-drafts").addEventListener("click", async (e) => {
    back to the start once you are inside a draft. Pending edits are flushed
    by show() before the switch. */
 $("btn-close-drafts").addEventListener("click", () => show("step-photos"));
+
+/* ---------- v24: batch posting ---------- */
+/* One confirmation list IS the review for the batch: nothing posts
+   without it. Drafts without a price, or already live, are excluded
+   with a plain reason. One category number applies to the whole batch
+   (drafts never store a category number, so it is picked here). */
+let batchIncluded = [];
+
+function updateBatchConfirm() {
+  $("btn-batch-confirm").disabled =
+    batchIncluded.length === 0 || !$("b-category").value.trim();
+}
+
+function openBatchPanel(fulls) {
+  batchIncluded = [];
+  const excluded = [];
+  fulls.forEach((d) => {
+    if (d.ebay_listing_id) {
+      excluded.push({ d: d, reason: "Already live on eBay." });
+    } else if (parseMoney(d.price) === null) {
+      excluded.push({ d: d, reason: "No price set." });
+    } else {
+      batchIncluded.push(d);
+    }
+  });
+  const list = $("batch-review-list");
+  list.innerHTML = "";
+  if (batchIncluded.length) {
+    const h = document.createElement("h4");
+    h.textContent = "Ready to post (" + batchIncluded.length + ")";
+    list.appendChild(h);
+    batchIncluded.forEach((d) => {
+      const row = document.createElement("div");
+      row.className = "batch-row";
+      row.innerHTML = '<div class="bt">' + esc(d.title || "(untitled)") + "</div>" +
+        '<div class="bp">$' + esc(String(d.price)) + "</div>";
+      list.appendChild(row);
+    });
+  } else {
+    list.innerHTML = "<p class='hint'>Nothing ready to post. Fix the skipped drafts below first.</p>";
+  }
+  const exc = $("batch-excluded");
+  exc.innerHTML = "";
+  excluded.forEach(({ d, reason }) => {
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    row.innerHTML = '<div class="bt">' + esc(d.title || "(untitled)") + "</div>" +
+      '<div class="bp batch-skip">Skipped: ' + esc(reason) + "</div>";
+    exc.appendChild(row);
+  });
+  $("b-keywords").value = batchIncluded.length ? (batchIncluded[0].title || "") : "";
+  $("b-category").value = "";
+  $("batch-suggestions").classList.add("hidden");
+  $("batch-note").classList.add("hidden");
+  $("batch-results").innerHTML = "";
+  $("batch-progress").classList.add("hidden");
+  $("btn-batch-confirm").classList.remove("hidden");
+  $("btn-batch-cancel").classList.remove("hidden");
+  $("btn-batch-done").classList.add("hidden");
+  updateBatchConfirm();
+  show("batch-panel");
+}
+
+$("btn-batch-open").addEventListener("click", async () => {
+  const ids = Array.from(document.querySelectorAll(".draft-check:checked"))
+    .map((c) => c.dataset.id);
+  if (!ids.length) {
+    alert("Tick at least one draft first.");
+    return;
+  }
+  const fulls = [];
+  for (const id of ids) {
+    try {
+      const { draft: d } = await api("/api/drafts/" + id);
+      fulls.push(d);
+    } catch (e) { /* a draft that will not load is left out */ }
+  }
+  if (!fulls.length) {
+    alert("Those drafts could not be loaded. Try again.");
+    return;
+  }
+  openBatchPanel(fulls);
+});
+
+$("b-category").addEventListener("input", updateBatchConfirm);
+
+$("btn-batch-suggest").addEventListener("click", async () => {
+  const box = $("batch-suggestions");
+  box.classList.remove("hidden");
+  box.innerHTML = "<p class='hint'>Asking eBay…</p>";
+  try {
+    const { suggestions } = await api("/api/ebay/category-suggest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: $("b-keywords").value.trim() }),
+    });
+    if (!suggestions.length) {
+      box.innerHTML = "<p class='hint'>No suggestions. Try simpler keywords.</p>";
+      return;
+    }
+    box.innerHTML = "";
+    suggestions.forEach((s) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "ghost sug";
+      b.textContent = s.name + " (" + s.id + ")";
+      b.addEventListener("click", () => {
+        $("b-category").value = s.id;
+        box.classList.add("hidden");
+        updateBatchConfirm();
+      });
+      box.appendChild(b);
+    });
+  } catch (e) {
+    box.innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
+  }
+});
+
+$("btn-batch-cancel").addEventListener("click", () => $("btn-drafts").click());
+$("btn-batch-done").addEventListener("click", () => $("btn-drafts").click());
+
+$("btn-batch-confirm").addEventListener("click", async () => {
+  const cid = $("b-category").value.trim();
+  if (!cid || !batchIncluded.length) return;
+  if (!confirm("Post " + batchIncluded.length + " draft(s) to eBay now? Each becomes a real, live listing.")) return;
+  $("btn-batch-confirm").disabled = true;
+  $("btn-batch-cancel").disabled = true;
+  $("batch-progress").classList.remove("hidden");
+  $("batch-results").innerHTML = "";
+  try {
+    const { results } = await api("/api/ebay/batch-publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        draft_ids: batchIncluded.map((d) => d.id),
+        category_id: cid,
+      }),
+    });
+    const box = $("batch-results");
+    box.innerHTML = "<h4>Results</h4>";
+    (results || []).forEach((r) => {
+      const row = document.createElement("div");
+      row.className = "batch-row";
+      if (r.ok) {
+        row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+          '<div class="bp"><a href="' + esc(r.listing_url) + '" target="_blank">Live</a></div>';
+      } else {
+        row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+          '<div class="bp batch-skip">Failed: ' + esc(r.error || "unknown error") + "</div>";
+      }
+      box.appendChild(row);
+    });
+  } catch (e) {
+    $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
+  } finally {
+    $("batch-progress").classList.add("hidden");
+    $("btn-batch-confirm").classList.add("hidden");
+    $("btn-batch-cancel").classList.add("hidden");
+    $("btn-batch-done").classList.remove("hidden");
+  }
+});
 
 /* ---------- init ---------- */
 api("/api/config").then((c) => {
@@ -874,8 +1098,81 @@ async function renderEbayStep() {
   $("p-fulfillment").value = pd.fulfillment || "";
   $("p-payment").value = pd.payment || "";
   $("p-return").value = pd.return || "";
+  /* v24: apply the saved usual settings, but only where the draft has
+     nothing of its own — a draft's own values always win, except
+     policies and the category number, which drafts never store (the
+     category number always starts blank; policies fall back to .env
+     above, and an explicit preset beats that default). */
+  let preset = null;
+  try {
+    const r = await api("/api/preset");
+    preset = r.preset;
+  } catch (e) { preset = null; }
+  const applied = [];
+  const note = $("preset-note");
+  note.classList.add("hidden");
+  if (preset) {
+    if (!cur.condition && preset.condition) {
+      sel.value = preset.condition;
+      applied.push("condition");
+    }
+    if (preset.category_id) {
+      $("p-category").value = preset.category_id;
+      applied.push("category");
+    }
+    if (preset.fulfillment_policy_id) {
+      $("p-fulfillment").value = preset.fulfillment_policy_id;
+      applied.push("policies");
+    }
+    if (preset.payment_policy_id) $("p-payment").value = preset.payment_policy_id;
+    if (preset.return_policy_id) $("p-return").value = preset.return_policy_id;
+    const draftBO = !!draft.best_offer ||
+      String(draft.best_offer_auto_decline || "").trim() ||
+      String(draft.best_offer_auto_accept || "").trim();
+    if (!draftBO && preset.best_offer) {
+      $("p-best-offer").checked = true;
+      $("p-bo-decline").value = preset.best_offer_auto_decline || "";
+      $("p-bo-accept").value = preset.best_offer_auto_accept || "";
+      $("best-offer-fields").classList.remove("hidden");
+      applied.push("Best Offer");
+    }
+    /* A preset-filled condition clears the reminder, same as a typed one. */
+    $("condition-reminder").classList.toggle("hidden", !!sel.value);
+  }
+  if (applied.length) {
+    note.textContent = "Usual settings applied (" + applied.join(", ") +
+      ") — change anything before listing.";
+    note.classList.remove("hidden");
+  }
   $("publish-panel").classList.remove("hidden");
 }
+
+/* v24: save the current publish-panel values as the one usual-settings
+   preset. Re-saving overwrites it. The note confirms what was saved. */
+$("btn-save-preset").addEventListener("click", async () => {
+  const note = $("preset-note");
+  try {
+    await api("/api/preset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        condition: $("p-condition").value,
+        category_id: $("p-category").value.trim(),
+        fulfillment_policy_id: $("p-fulfillment").value.trim(),
+        payment_policy_id: $("p-payment").value.trim(),
+        return_policy_id: $("p-return").value.trim(),
+        best_offer: $("p-best-offer").checked,
+        best_offer_auto_decline: $("p-bo-decline").value.trim(),
+        best_offer_auto_accept: $("p-bo-accept").value.trim(),
+      }),
+    });
+    note.textContent = "Saved as your usual settings. Next time they fill in by themselves.";
+    note.classList.remove("hidden");
+  } catch (e) {
+    note.textContent = "Could not save those settings: " + e.message;
+    note.classList.remove("hidden");
+  }
+});
 
 $("btn-cat-suggest").addEventListener("click", async () => {
   const box = $("cat-suggestions");

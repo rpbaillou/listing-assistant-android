@@ -44,6 +44,9 @@ DATA_DIR = os.environ.get("LA_DATA_DIR", "").strip() or os.path.join(BASE_DIR, "
 PHOTOS_DIR = os.path.join(DATA_DIR, "photos")
 DRAFTS_DIR = os.path.join(DATA_DIR, "drafts")
 EBAY_TOKEN_FILE = os.path.join(DATA_DIR, "ebay_token.json")
+# v24: one saved "usual settings" preset (settings, not secrets — never in
+# .env, which holds keys). Lives with the drafts in private storage.
+PRESET_FILE = os.path.join(DATA_DIR, "preset.json")
 for _d in (PHOTOS_DIR, DRAFTS_DIR):
     os.makedirs(_d, exist_ok=True)
 
@@ -156,6 +159,56 @@ def _save_draft(draft):
     with open(_draft_path(draft["id"]), "w", encoding="utf-8") as f:
         json.dump(draft, f, indent=2)
     return draft
+
+
+# ---------------------------------------------------------------- v24: preset
+
+PRESET_KEYS = ("condition", "category_id", "fulfillment_policy_id",
+               "payment_policy_id", "return_policy_id", "best_offer",
+               "best_offer_auto_decline", "best_offer_auto_accept")
+
+
+def _load_preset():
+    """One saved 'usual settings' preset, or None. Never crashes on a
+    missing or corrupt file — no preset just means no prefill."""
+    if not os.path.isfile(PRESET_FILE):
+        return None
+    try:
+        with open(PRESET_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {k: data.get(k) for k in PRESET_KEYS}
+
+
+def _clean_preset(body):
+    """Keep only known preset keys, with light validation. Invalid values
+    are dropped, never saved, so a bad write can never corrupt it."""
+    out = {}
+    cond = str(body.get("condition", "") or "").strip()
+    if cond in {v for v, _ in CONDITIONS}:
+        out["condition"] = cond
+    cat = str(body.get("category_id", "") or "").strip()
+    if cat:
+        out["category_id"] = cat[:20]
+    for key in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id"):
+        v = str(body.get(key, "") or "").strip()
+        if v:
+            out[key] = v[:30]
+    out["best_offer"] = bool(body.get("best_offer", False))
+    for key in ("best_offer_auto_decline", "best_offer_auto_accept"):
+        v = str(body.get(key, "") or "").strip()
+        if v:
+            out[key] = v[:20]
+    return out
+
+
+def _save_preset(data):
+    with open(PRESET_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    return data
 
 
 def _gemini_identify(photo_relpaths):
@@ -746,6 +799,158 @@ def api_ebay_category_aspects():
                     "unavailable": False})
 
 
+class _PublishValidationError(RuntimeError):
+    """A publish failure the user can fix (missing field, bad value).
+    The single-publish wrapper maps these to 400; anything else is 502."""
+
+
+class _EbayAuthError(RuntimeError):
+    """The eBay sign-in itself failed (not connected, expired). The
+    wrapper maps these to 400, exactly like the old publish code did
+    for its token-fetch step."""
+
+
+def _do_publish(d, f):
+    """Create the live eBay listing for draft d. Shared by single publish
+    and batch publish so both paths behave identically.
+
+    f holds already-assembled fields: title (pre-truncated to 80),
+    description, price_val (float), condition, condition_details,
+    category_id, fulfillment_id, payment_id, return_id (any of the three
+    may be empty — they fall back to .env here), attributes (dict),
+    best_offer_terms (dict or None). Policy ids still empty after the
+    .env fallback raise _PublishValidationError, as do a missing title,
+    category, condition value, or photos. Returns (listing_id,
+    listing_url) and saves the draft's eBay fields. Raises RuntimeError
+    for eBay-side failures.
+    """
+    fulfillment_id = (f.get("fulfillment_id") or "").strip() or EBAY_FULFILLMENT_POLICY_ID
+    payment_id = (f.get("payment_id") or "").strip() or EBAY_PAYMENT_POLICY_ID
+    return_id = (f.get("return_id") or "").strip() or EBAY_RETURN_POLICY_ID
+    title = (f.get("title") or "").strip()
+    category_id = (f.get("category_id") or "").strip()
+    condition = (f.get("condition") or "").strip()
+    condition_details = (f.get("condition_details") or "").strip()
+    if not title:
+        raise _PublishValidationError(
+            "The title is empty. Go back and write a title first.")
+    if not category_id:
+        raise _PublishValidationError(
+            "Pick an eBay category first (tap Suggest).")
+    if not (fulfillment_id and payment_id and return_id):
+        raise _PublishValidationError(
+            "The three policy numbers are missing. Add them in .env "
+            "or type them in the boxes (setup guide: Connect eBay).")
+    if condition and condition not in {v for v, _ in CONDITIONS}:
+        raise _PublishValidationError("Pick a condition from the list.")
+    photos = d.get("photos") or []
+    if not photos:
+        raise _PublishValidationError("This draft has no photos.")
+    try:
+        token = _ebay_access_token()
+    except RuntimeError as exc:
+        raise _EbayAuthError(str(exc))
+
+    sku = "la" + d["id"]
+    # 1. photos -> eBay-hosted URLs (Trading API picture hosting, no third party)
+    image_urls = []
+    for i, rel in enumerate(photos, 1):
+        full = os.path.join(PHOTOS_DIR, rel)
+        if os.path.isfile(full):
+            image_urls.append(_ebay_upload_picture(full, token, f"{sku}-{i}"))
+    if not image_urls:
+        raise RuntimeError("No photos could be uploaded. Try again.")
+
+    # 2. inventory item
+    desc_html = html.escape(f.get("description") or "").replace("\n", "<br>")
+    # v8: normalize aspect names to eBay's exact spelling (case-insensitive
+    # match) and enforce the category's required aspects. When eBay's
+    # aspects lookup fails we skip validation and send what we have —
+    # never block the user on our own API trouble.
+    required, recommended = _category_aspects(category_id)
+    attributes = dict(f.get("attributes") or {})
+    if required is not None:
+        exact = {a["name"].lower(): a["name"]
+                 for a in (required + recommended)}
+        normalized = {}
+        for k, v in attributes.items():
+            ks = str(k).strip()
+            normalized[exact.get(ks.lower(), ks)] = v
+        attributes = normalized
+        missing = _missing_required_aspects(attributes, required)
+        if missing:
+            raise _PublishValidationError(
+                "eBay requires " + ", ".join(missing) +
+                " for this category. Fill them in under "
+                "'Details eBay requires' above, then try again.")
+    aspects = _clean_aspects(attributes)
+    inventory_item = {
+        "product": {
+            "title": title,
+            "description": desc_html or title,
+            "imageUrls": image_urls,
+            **({"aspects": aspects} if aspects else {}),
+        },
+        "availability": {"shipToLocationAvailability": {"quantity": 1}},
+    }
+    if condition:
+        inventory_item["condition"] = condition
+    if condition_details:
+        inventory_item["conditionDescription"] = condition_details
+    _ebay_call("PUT", f"/sell/inventory/v1/inventory_item/{sku}", token,
+               inventory_item)
+
+    # 3. offer (reuse if one was already made for this draft)
+    offer_id = d.get("ebay_offer_id")
+    if not offer_id:
+        offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
+            "sku": sku,
+            "marketplaceId": "EBAY_US",
+            "format": "FIXED_PRICE",
+            "availableQuantity": 1,
+            "categoryId": category_id,
+            "listingDescription": desc_html or title,
+            "listingPolicies": {
+                "fulfillmentPolicyId": fulfillment_id,
+                "paymentPolicyId": payment_id,
+                "returnPolicyId": return_id,
+                # v9: bestOfferTerms lives INSIDE listingPolicies per
+                # eBay's Sell Inventory docs. Omitted entirely when off.
+                **({"bestOfferTerms": f.get("best_offer_terms")}
+                   if f.get("best_offer_terms") else {}),
+            },
+            "pricingSummary": {"price": {"currency": "USD",
+                                         "value": f"{f['price_val']:.2f}"}},
+            "listing": {"listingDuration": "GTC"},
+        })
+        offer_id = offer.get("offerId")
+        if not offer_id:
+            raise RuntimeError("eBay made the offer but did not return an offer ID. "
+                               "Check Seller Hub; the listing may need finishing there.")
+
+    # 4. publish
+    published = _ebay_call(
+        "POST", f"/sell/inventory/v1/offer/{offer_id}/publish", token)
+    listing_id = str(published.get("listingId", ""))
+    if not listing_id:
+        raise RuntimeError("eBay accepted the listing but did not return a listing "
+                           "number. Check Seller Hub.")
+    listing_url = f"https://www.ebay.com/itm/{listing_id}"
+
+    # 5. best-effort check that the listing is live (Sell Listing API)
+    try:
+        _ebay_call("GET", f"/sell/listing/v1/item/{listing_id}", token)
+    except RuntimeError:
+        pass  # publish already succeeded; the link below proves it
+
+    d["ebay_offer_id"] = offer_id
+    d["ebay_listing_id"] = listing_id
+    d["ebay_listing_url"] = listing_url
+    d["ebay_sku"] = sku
+    _save_draft(d)
+    return listing_id, listing_url
+
+
 @app.route("/api/ebay/publish", methods=["POST"])
 def api_ebay_publish():
     body = request.get_json(force=True) or {}
@@ -815,110 +1020,100 @@ def api_ebay_publish():
         return jsonify({"error": "This draft has no photos."}), 400
 
     try:
-        token = _ebay_access_token()
-    except RuntimeError as exc:
+        listing_id, listing_url = _do_publish(d, {
+            "title": title,
+            "description": description,
+            "price_val": price_val,
+            "condition": condition,
+            "condition_details": condition_details,
+            "category_id": category_id,
+            "fulfillment_id": fulfillment_id,
+            "payment_id": payment_id,
+            "return_id": return_id,
+            "attributes": attributes,
+            "best_offer_terms": best_offer_terms,
+        })
+    except _PublishValidationError as exc:
         return jsonify({"error": str(exc)}), 400
-
-    sku = "la" + d["id"]
-    try:
-        # 1. photos -> eBay-hosted URLs (Trading API picture hosting, no third party)
-        image_urls = []
-        for i, rel in enumerate(photos, 1):
-            full = os.path.join(PHOTOS_DIR, rel)
-            if os.path.isfile(full):
-                image_urls.append(_ebay_upload_picture(full, token, f"{sku}-{i}"))
-        if not image_urls:
-            raise RuntimeError("No photos could be uploaded. Try again.")
-
-        # 2. inventory item
-        desc_html = html.escape(description).replace("\n", "<br>")
-        # v8: normalize aspect names to eBay's exact spelling (case-insensitive
-        # match) and enforce the category's required aspects. When eBay's
-        # aspects lookup fails we skip validation and send what we have —
-        # never block the user on our own API trouble.
-        required, recommended = _category_aspects(category_id)
-        if required is not None:
-            exact = {a["name"].lower(): a["name"]
-                     for a in (required + recommended)}
-            normalized = {}
-            for k, v in attributes.items():
-                ks = str(k).strip()
-                normalized[exact.get(ks.lower(), ks)] = v
-            attributes = normalized
-            missing = _missing_required_aspects(attributes, required)
-            if missing:
-                return jsonify({"error":
-                                "eBay requires " + ", ".join(missing) +
-                                " for this category. Fill them in under "
-                                "'Details eBay requires' above, then try again."}), 400
-        aspects = _clean_aspects(attributes)
-        inventory_item = {
-            "product": {
-                "title": title,
-                "description": desc_html or title,
-                "imageUrls": image_urls,
-                **({"aspects": aspects} if aspects else {}),
-            },
-            "availability": {"shipToLocationAvailability": {"quantity": 1}},
-        }
-        if condition:
-            inventory_item["condition"] = condition
-        if condition_details:
-            inventory_item["conditionDescription"] = condition_details
-        _ebay_call("PUT", f"/sell/inventory/v1/inventory_item/{sku}", token,
-                   inventory_item)
-
-        # 3. offer (reuse if one was already made for this draft)
-        offer_id = d.get("ebay_offer_id")
-        if not offer_id:
-            offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
-                "sku": sku,
-                "marketplaceId": "EBAY_US",
-                "format": "FIXED_PRICE",
-                "availableQuantity": 1,
-                "categoryId": category_id,
-                "listingDescription": desc_html or title,
-                "listingPolicies": {
-                    "fulfillmentPolicyId": fulfillment_id,
-                    "paymentPolicyId": payment_id,
-                    "returnPolicyId": return_id,
-                    # v9: bestOfferTerms lives INSIDE listingPolicies per
-                    # eBay's Sell Inventory docs. Omitted entirely when off.
-                    **({"bestOfferTerms": best_offer_terms}
-                       if best_offer_terms else {}),
-                },
-                "pricingSummary": {"price": {"currency": "USD",
-                                             "value": f"{price_val:.2f}"}},
-                "listing": {"listingDuration": "GTC"},
-            })
-            offer_id = offer.get("offerId")
-            if not offer_id:
-                raise RuntimeError("eBay made the offer but did not return an offer ID. "
-                                   "Check Seller Hub; the listing may need finishing there.")
-
-        # 4. publish
-        published = _ebay_call(
-            "POST", f"/sell/inventory/v1/offer/{offer_id}/publish", token)
-        listing_id = str(published.get("listingId", ""))
-        if not listing_id:
-            raise RuntimeError("eBay accepted the listing but did not return a listing "
-                               "number. Check Seller Hub.")
-        listing_url = f"https://www.ebay.com/itm/{listing_id}"
-
-        # 5. best-effort check that the listing is live (Sell Listing API)
-        try:
-            _ebay_call("GET", f"/sell/listing/v1/item/{listing_id}", token)
-        except RuntimeError:
-            pass  # publish already succeeded; the link below proves it
+    except _EbayAuthError as exc:
+        return jsonify({"error": str(exc)}), 400
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 502
-
-    d["ebay_offer_id"] = offer_id
-    d["ebay_listing_id"] = listing_id
-    d["ebay_listing_url"] = listing_url
-    d["ebay_sku"] = sku
-    _save_draft(d)
     return jsonify({"listing_id": listing_id, "listing_url": listing_url})
+
+
+@app.route("/api/ebay/batch-publish", methods=["POST"])
+def api_ebay_batch_publish():
+    """Post several drafts in one go, sequentially, one result per draft.
+
+    The confirmation screen in the app is the review: this endpoint only
+    ever publishes drafts the user confirmed there. One draft failing
+    never stops the rest. The category comes from the batch screen
+    (drafts never store a category number); policies come from the saved
+    preset when one exists, otherwise .env (via the helper's fallback).
+    """
+    body = request.get_json(force=True) or {}
+    ids = body.get("draft_ids") or []
+    category_id = str(body.get("category_id", "") or "").strip()
+    if not category_id:
+        return jsonify({"error": "Pick a category for the batch first."}), 400
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "Pick at least one draft first."}), 400
+    preset = _load_preset() or {}
+    results = []
+    for raw_id in ids:
+        draft_id = str(raw_id or "")
+        d = _load_draft(draft_id) if draft_id else None
+        title = (d.get("title", "") if d else "") or "(untitled)"
+        if d is None:
+            results.append({"draft_id": draft_id, "title": title, "ok": False,
+                            "error": "Draft not found."})
+            continue
+        if d.get("ebay_listing_id"):
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": "Already live on eBay."})
+            continue
+        price_val = _parse_money(d.get("price", ""))
+        if price_val is None:
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": "No price set."})
+            continue
+        title_v = str(d.get("title", "")).strip()[:80]
+        if not title_v:
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": "The title is empty."})
+            continue
+        terms, bo_error = _best_offer_terms(
+            bool(d.get("best_offer", False)),
+            str(d.get("best_offer_auto_decline", "") or ""),
+            str(d.get("best_offer_auto_accept", "") or ""), price_val)
+        if bo_error:
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": bo_error})
+            continue
+        try:
+            listing_id, listing_url = _do_publish(d, {
+                "title": title_v,
+                "description": str(d.get("description", "")).strip(),
+                "price_val": price_val,
+                "condition": str(d.get("condition", "") or "").strip(),
+                "condition_details": str(d.get("condition_details", "") or "").strip()[:1000],
+                "category_id": category_id,
+                "fulfillment_id": str(preset.get("fulfillment_policy_id", "") or "").strip(),
+                "payment_id": str(preset.get("payment_policy_id", "") or "").strip(),
+                "return_id": str(preset.get("return_policy_id", "") or "").strip(),
+                "attributes": dict(d.get("attributes") or {}),
+                "best_offer_terms": terms,
+            })
+        except RuntimeError as exc:
+            # Covers validation, auth, and eBay-side failures alike: each
+            # is reported per draft and never stops the rest.
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": str(exc)})
+            continue
+        results.append({"draft_id": d["id"], "title": title, "ok": True,
+                        "listing_id": listing_id, "listing_url": listing_url})
+    return jsonify({"results": results})
 
 
 # ---------------------------------------------------------------- v1 routes
@@ -975,6 +1170,32 @@ def api_analyze():
              "best_offer": False, "best_offer_auto_decline": "",
              "best_offer_auto_accept": "",
              **identified}
+    _save_draft(draft)
+    return jsonify({"draft": draft})
+
+
+@app.route("/api/quick-post", methods=["POST"])
+def api_quick_post():
+    """Start a listing from photos WITHOUT the AI Identify step.
+
+    Same photo intake as /api/analyze, but the draft starts blank — he
+    types the title himself. Never calls Gemini, so it needs no AI key
+    and has no AI wait.
+    """
+    files = request.files.getlist("photos")
+    if not files:
+        return jsonify({"error": "Pick at least one photo first."}), 400
+    try:
+        draft_id, rels = _store_uploads(files)
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 400
+    now = datetime.now().isoformat(timespec="seconds")
+    draft = {"id": draft_id, "created": now, "photos": rels, "price": "",
+             "condition": "", "condition_details": "",
+             "best_offer": False, "best_offer_auto_decline": "",
+             "best_offer_auto_accept": "",
+             "title": "", "description": "", "category": "",
+             "attributes": {}, "identification_notes": ""}
     _save_draft(draft)
     return jsonify({"draft": draft})
 
@@ -1042,6 +1263,20 @@ def api_draft_delete(draft_id):
         return jsonify({"error": "Draft not found."}), 404
     os.remove(_draft_path(draft_id))
     return jsonify({"ok": True})
+
+
+@app.route("/api/preset", methods=["GET"])
+def api_preset_get():
+    return jsonify({"preset": _load_preset()})
+
+
+@app.route("/api/preset", methods=["POST"])
+def api_preset_save():
+    """Save one 'usual settings' preset. Re-saving overwrites it.
+    Holds settings only (condition, category, policies, Best Offer) —
+    never keys, which stay in .env."""
+    body = request.get_json(force=True) or {}
+    return jsonify({"preset": _save_preset(_clean_preset(body))})
 
 
 @app.route("/api/drafts/<draft_id>/reanalyze", methods=["POST"])
