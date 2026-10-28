@@ -461,21 +461,68 @@ def _picture_hosting_error(resp, token):
             f"{snippet}.")
 
 
-def _ebay_upload_picture(photo_path, token, picture_name):
-    """Upload one photo to eBay's own picture hosting (Trading API
-    UploadSiteHostedPictures, authorized with the OAuth user token in the
-    X-EBAY-API-IAF-TOKEN header). Returns the public FullURL."""
-    import xml.etree.ElementTree as ET
+def _picture_content_type(raw, photo_path):
+    """Detect an image Content-Type from magic bytes, falling back to
+    the file extension, then image/jpeg."""
+    if raw[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if raw[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp"
+    if raw[:2] == b"BM":
+        return "image/bmp"
+    if raw[:4] in (b"II*\x00", b"MM\x00*"):
+        return "image/tiff"
+    ext = os.path.splitext(photo_path)[1].lower()
+    return {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+            ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+            ".tif": "image/tiff", ".tiff": "image/tiff"}.get(ext, "image/jpeg")
+
+
+def _build_picture_upload(photo_path, picture_name):
+    """Build the multipart EPS upload for one photo.
+
+    Returns (files, xml) where files is the requests files dict: the XML
+    request FIRST ('XML Payload', payload.xml, text/xml) with
+    PictureName + PictureSet and NO PictureData, then the photo's RAW
+    bytes ('dummy', filename, detected content type). This is the
+    multipart form eBay's photo layer wants (same shape as the hendt
+    ebay-api library's UploadSiteHostedPictures example); the base64
+    PictureData mode fails at that layer in 2026 with HTTP 404.
+    requests generates the multipart boundary; it must never be set
+    by hand, and the raw bytes are passed as bytes so a retry sends
+    the identical request.
+    """
     with open(photo_path, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
+        raw = f.read()
     name = "".join(c for c in picture_name if c.isalnum() or c in "-_")[:60] or "photo"
     xml = (
         '<?xml version="1.0" encoding="utf-8"?>'
         '<UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
         f"<PictureName>{name}</PictureName>"
-        f"<PictureData>{b64}</PictureData>"
+        "<PictureSet>Supersize</PictureSet>"
         "</UploadSiteHostedPicturesRequest>"
     )
+    ext = os.path.splitext(photo_path)[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
+                   ".tif", ".tiff"):
+        ext = ".jpg"
+    files = {
+        "XML Payload": ("payload.xml", xml.encode("utf-8"), "text/xml"),
+        "dummy": (name + ext, raw, _picture_content_type(raw, photo_path)),
+    }
+    return files, xml
+
+
+def _ebay_upload_picture(photo_path, token, picture_name):
+    """Upload one photo to eBay's own picture hosting (Trading API
+    UploadSiteHostedPictures, authorized with the OAuth user token in the
+    X-EBAY-API-IAF-TOKEN header). Returns the public FullURL."""
+    import xml.etree.ElementTree as ET
+    files, _xml = _build_picture_upload(photo_path, picture_name)
     # One automatic retry (same photo, same request) when the failure is
     # transient: HTTP 5xx, an empty body, or a garbled reply at HTTP 200.
     # No hosted URL was returned on those failures, so nothing can be
@@ -489,9 +536,8 @@ def _ebay_upload_picture(photo_path, token, picture_name):
                 headers={"X-EBAY-API-CALL-NAME": "UploadSiteHostedPictures",
                          "X-EBAY-API-SITEID": "0",
                          "X-EBAY-API-COMPATIBILITY-LEVEL": EBAY_TRADING_COMPAT_LEVEL,
-                         "X-EBAY-API-IAF-TOKEN": token,
-                         "Content-Type": "text/xml"},
-                data=xml.encode("utf-8"),
+                         "X-EBAY-API-IAF-TOKEN": token},
+                files=files,
                 timeout=120)
         except requests.RequestException as exc:
             raise RuntimeError(f"Could not reach eBay picture hosting: {exc}")
