@@ -948,7 +948,10 @@ async function runBatch(shipFrom, fulfillmentOverride) {
       draft_ids: batchIncluded.map((d) => d.id),
       category_id: $("b-category").value.trim(),
       ...(shipFrom ? { ship_from: shipFrom } : {}),
-      ...(fulfillmentOverride ? { fulfillment_policy_id: fulfillmentOverride } : {}),
+      ...(fulfillmentOverride ? { fulfillment_policy_id: fulfillmentOverride,
+                                  /* v34: pick re-run — each draft's
+                                     pre-pick offer is discarded first. */
+                                  policy_pick: true } : {}),
     }),
   });
   const box = $("batch-results");
@@ -1320,6 +1323,10 @@ async function prefillListing() {
   $("p-length").value = draft.package_length || "";
   $("p-width").value = draft.package_width || "";
   $("p-height").value = draft.package_height || "";
+  /* v34: the Shipping chooser follows the restored policy number, and
+     the policy list refreshes every time the listing page opens. */
+  refreshShippingChooser();
+  fetchShippingPolicies();
   /* Remember the restored category pair so later saves keep its display
      name when the number is untouched. */
   pickedCat = pre.category_id
@@ -1718,13 +1725,12 @@ async function postPublish(body) {
     $("scope-reconnect-box").classList.remove("hidden");
     return "needs-scope";
   }
-  /* v32: the shipping policy number is unusable. Offer the current
-     policies as a one-tap pick; picking one re-posts the confirmed
-     publish with the picked number. */
+  /* v34: the shipping policy number is unusable. The Shipping chooser
+     opens with the current policies; picking one re-posts the
+     confirmed publish with the picked number. */
   if (r.needs_policy_pick) {
     pendingPublishBody = body;
-    renderPolicyPick(r.policies || [], r.error || "");
-    $("policy-pick-form").classList.remove("hidden");
+    openShippingPick(r.policies || [], r.error || "");
     return "needs-pick";
   }
   draft.ebay_listing_id = r.listing_id;
@@ -1745,46 +1751,148 @@ function policyTypeLabel(costType) {
   return "unknown type";
 }
 
-function renderPolicyPick(policies, message) {
-  $("policy-pick-msg").textContent = message ||
-    "That shipping policy number no longer works. Pick one below.";
-  const list = $("policy-pick-list");
-  list.innerHTML = "";
-  $("policy-pick-error").classList.add("hidden");
-  if (!policies.length) {
-    list.innerHTML = "<p class='hint'>No shipping policies found on your account. Create one in Seller Hub first.</p>";
+/* v34: Shipping chooser state. shippingPolicies holds the account's
+   current policies (chooser/gate entry shape: id, name, cost_type);
+   shippingPickMode is true only while a failed publish waits on a
+   pick, in which case selecting one re-posts that confirmed publish. */
+let shippingPolicies = [];
+let shippingPickMode = false;
+let shippingFetchInFlight = false;
+
+async function fetchShippingPolicies() {
+  /* v34: fetched every time the listing page opens, so the chooser
+     always shows the account's current policies. On 403 the token
+     lacks sell.account: the plain message + Connect link show here,
+     the same message the publish path shows. */
+  if (shippingFetchInFlight) return;
+  shippingFetchInFlight = true;
+  const listEl = $("shipping-list");
+  const errEl = $("shipping-error");
+  errEl.classList.add("hidden");
+  listEl.innerHTML = "<p class='hint'>Loading shipping policies…</p>";
+  try {
+    const r = await api("/api/ebay/fulfillment-policies");
+    if (r.needs_scope_reconnect) {
+      errEl.innerHTML = "<p style='margin:0'>" + esc(r.error ||
+        "The app needs one new permission to read your shipping policies.") +
+        "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
+      errEl.classList.remove("hidden");
+      listEl.innerHTML = "";
+      return;
+    }
+    shippingPolicies = r.policies || [];
+    renderShippingList();
+    refreshShippingChooser();
+  } catch (e) {
+    errEl.innerHTML = "<p style='margin:0'>" + esc(e.message) + "</p>" +
+      "<p class='hint'><button id='btn-shipping-retry' class='ghost' type='button'>Try again</button></p>";
+    errEl.classList.remove("hidden");
+    listEl.innerHTML = "";
+    const retry = $("btn-shipping-retry");
+    if (retry) retry.addEventListener("click", fetchShippingPolicies);
+  } finally {
+    shippingFetchInFlight = false;
+  }
+}
+
+function renderShippingList() {
+  /* v34: one-tap buttons for every current policy, with the plain type
+     label. The selected one carries a check mark. A policy with no
+     shippable service is still shown, labeled plainly — the publish
+     gate says why it cannot ship if it is picked. */
+  const listEl = $("shipping-list");
+  listEl.innerHTML = "";
+  const selected = ($("p-fulfillment").value || "").trim();
+  if (!shippingPolicies.length) {
+    listEl.innerHTML = "<p class='hint'>No shipping policies found on your account. Create one in Seller Hub first.</p>";
     return;
   }
-  policies.forEach((p) => {
+  shippingPolicies.forEach((p) => {
     const b = document.createElement("button");
     b.type = "button"; b.className = "ghost";
-    b.textContent = (p.name || "Unnamed policy") + " — " +
+    b.textContent = (p.id === selected ? "✓ " : "") +
+      (p.name || "Unnamed policy") + " — " +
       policyTypeLabel(p.cost_type) + " (" + p.id + ")";
-    b.addEventListener("click", () => pickPolicy(p.id));
-    list.appendChild(b);
+    b.addEventListener("click", () => selectShippingPolicy(p.id));
+    listEl.appendChild(b);
   });
 }
 
-async function pickPolicy(policyId) {
-  const errEl = $("policy-pick-error");
+function refreshShippingChooser() {
+  /* v34: the selected line + package visibility follow the shipping
+     number box. Known flat/free/pickup policies hide the package
+     fields (they are not sent for those); calculated shows them; an
+     unknown number shows them too, so a weight can be entered before
+     the gate reads the policy at publish time. */
+  const selected = ($("p-fulfillment").value || "").trim();
+  const line = $("shipping-selected");
+  const pkg = $("shipping-package");
+  const match = shippingPolicies.find((p) => p.id === selected);
+  if (!selected) {
+    line.textContent = "Shipping policy: not picked yet.";
+  } else if (match) {
+    line.textContent = "Shipping policy: " + (match.name || "Unnamed policy") +
+      " — " + policyTypeLabel(match.cost_type) + " (" + match.id + ")";
+  } else {
+    line.textContent = "Shipping policy: " + selected + " (details not loaded yet).";
+  }
+  const showPackage = !match || match.cost_type === "CALCULATED";
+  pkg.classList.toggle("hidden", !showPackage);
+  /* Sync the list checkmarks with the number box: prefill, a
+     hand-typed number, and picks all flow through here, and the
+     checkmark must follow whichever number is current. */
+  if (shippingPolicies.length) renderShippingList();
+}
+
+function openShippingPick(policies, message) {
+  /* v34: a failed publish with an unusable saved policy opens this
+     same chooser (replacing the old separate pick form): the fresh
+     policy list, the plain problem message, and pick mode on, so the
+     next selection re-posts the confirmed publish. */
+  shippingPolicies = policies || [];
+  shippingPickMode = true;
+  renderShippingList();
+  refreshShippingChooser();
+  const msg = $("shipping-pick-msg");
+  msg.textContent = message ||
+    "That shipping policy number no longer works. Pick one below.";
+  msg.classList.remove("hidden");
+  $("shipping-section").scrollIntoView();
+}
+
+async function selectShippingPolicy(policyId) {
+  /* v34: picking a policy saves it to the draft (so it sticks across
+     reloads) and refreshes the chooser. In pick mode — a failed publish
+     is waiting — it also re-posts that already-confirmed publish with
+     the picked number, which (v34 discard) replaces the old offer with
+     a fresh one carrying the picked policy. No second confirmation
+     dialog: the listing was already confirmed before the first
+     attempt. The save is the listing page's own autosave (best-effort,
+     like every other field here); the re-post body carries the picked
+     number regardless, so a pick always reaches eBay. */
+  const errEl = $("shipping-error");
   errEl.classList.add("hidden");
-  if (!pendingPublishBody) return;
-  /* The listing was already confirmed (title, price, category) before
-     the first attempt, and this re-post carries exactly that body with
-     the picked policy number — so the pick itself authorizes
-     continuing that confirmed publish, and no second confirmation
-     dialog is shown. The picked number also saves into the draft
-     (the listing page's own autosave) for this listing. */
   $("p-fulfillment").value = policyId;
   await saveDraft();
+  renderShippingList();
+  refreshShippingChooser();
+  if (!shippingPickMode || !pendingPublishBody) return;
   $("publish-spinner").classList.remove("hidden");
   try {
     const body = Object.assign({}, pendingPublishBody,
-                               { fulfillment_policy_id: policyId });
+                               { fulfillment_policy_id: policyId,
+                                 /* v34: a pick re-post must discard the
+                                    pre-pick offer, so the fresh offer
+                                    carries the picked policy. */
+                                 policy_pick: true });
     const outcome = await postPublish(body);
-    if (outcome === "listed") $("policy-pick-form").classList.add("hidden");
+    if (outcome === "listed") {
+      shippingPickMode = false;
+      $("shipping-pick-msg").classList.add("hidden");
+    }
     /* "needs-pick" can recur only if the picked policy itself turns
-       out unusable; the form stays open with the fresh list then. */
+       out unusable; the chooser stays in pick mode with the fresh
+       list then. */
   } catch (e) {
     errEl.textContent = e.message;
     errEl.classList.remove("hidden");
@@ -1829,9 +1937,12 @@ $("btn-ship-from").addEventListener("click", async () => {
 function hidePublishMsg() {
   $("publish-error").classList.add("hidden");
   $("publish-ok").classList.add("hidden");
-  /* v32: fresh attempt, so the scope box and pick form reset too. */
+  /* v34: fresh attempt, so the scope box and chooser pick message
+     reset too (the chooser list itself stays — it is always
+     visible). */
   $("scope-reconnect-box").classList.add("hidden");
-  $("policy-pick-form").classList.add("hidden");
+  $("shipping-pick-msg").classList.add("hidden");
+  shippingPickMode = false;
 }
 
 /* ---------- v2: eBay connect banner ---------- */

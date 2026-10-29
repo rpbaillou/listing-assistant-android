@@ -113,6 +113,41 @@
       <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
 
+    <!-- v34: Shipping chooser, always visible on the listing page. Shows
+         the selected shipping policy (name + plain type) and the
+         account's current policies as one-tap buttons; picking one
+         saves it to the draft, so it sticks across reloads. When the
+         selected policy charges by weight (Calculated), the shipping
+         package fields live here — eBay uses them to work out what the
+         buyer pays for shipping — and they are required before List.
+         Flat-rate and free shipping need no package, so the fields hide
+         for those. A failed publish with an unusable saved policy opens
+         this same chooser (see openShippingPick in app.js) instead of a
+         separate pick form. -->
+    <div id="shipping-section">
+      <h3>Shipping</h3>
+      <p id="shipping-selected" class="hint">Shipping policy: not picked yet.</p>
+      <div id="shipping-list" class="btnrow wrap"></div>
+      <p id="shipping-pick-msg" class="hint hidden"></p>
+      <div id="shipping-error" class="error hidden"></div>
+      <div id="shipping-package" class="hidden">
+        <label>Shipping package weight</label>
+        <input id="p-weight" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 4">
+        <label>Weight unit</label>
+        <select id="p-weight-unit">
+          <option value="OUNCE">ounces</option>
+          <option value="POUND">pounds</option>
+        </select>
+        <label>Length (inches)</label>
+        <input id="p-length" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 12">
+        <label>Width (inches)</label>
+        <input id="p-width" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 9">
+        <label>Height (inches)</label>
+        <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
+        <p class="hint">eBay uses this package to work out what the buyer pays for shipping. Enter the real weight and size of the parcel you will send — nothing is guessed.</p>
+      </div>
+    </div>
+
     <details>
       <summary>Shop policy numbers (usually set once)</summary>
       <label>Shipping policy number</label>
@@ -122,29 +157,6 @@
       <label>Return policy number</label>
       <input id="p-return" type="text" inputmode="numeric">
       <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
-    </details>
-
-    <!-- v32: package weight + size. Only needed when the shipping policy
-         charges by weight (Calculated); flat-rate shipping ignores it.
-         No defaults anywhere — the weight must be real, never invented.
-         Saved per draft (framed and unframed parcels differ), never as
-         a usual setting. -->
-    <details>
-      <summary>Package weight and size (only if your shipping policy charges by weight)</summary>
-      <label>Package weight</label>
-      <input id="p-weight" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 4">
-      <label>Weight unit</label>
-      <select id="p-weight-unit">
-        <option value="OUNCE">ounces</option>
-        <option value="POUND">pounds</option>
-      </select>
-      <label>Length (inches)</label>
-      <input id="p-length" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 12">
-      <label>Width (inches)</label>
-      <input id="p-width" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 9">
-      <label>Height (inches)</label>
-      <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
-      <p class="hint">Only needed if your shipping policy is Calculated (price based on weight). Leave blank for flat-rate shipping.</p>
     </details>
 
     <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
@@ -181,16 +193,9 @@
       <button id="btn-ship-from" class="primary big" type="button">Create shop location and list</button>
     </div>
 
-    <!-- v32: one-tap shipping-policy pick. Shown only when the policy
-         number the publish would send is unusable (deleted, wrong
-         marketplace, or no shippable service). The message names the
-         problem; picking one re-posts the publish that was already
-         confirmed above. -->
-    <div id="policy-pick-form" class="hidden">
-      <p id="policy-pick-msg" class="hint"></p>
-      <div id="policy-pick-list"></div>
-      <div id="policy-pick-error" class="error hidden"></div>
-    </div>
+    <!-- v34: the reactive pick no longer has its own form — a failed
+         publish with an unusable saved policy opens the Shipping
+         chooser above (see openShippingPick in app.js). -->
 
     <!-- v32: scope reconnect box. Shown only when the stored sign-in
          was granted before the app could read shipping policies. One

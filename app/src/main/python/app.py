@@ -1272,7 +1272,7 @@ def _check_fulfillment_policy(token, fulfillment_id, package):
             raise _PublishValidationError(
                 "Your shipping policy charges by weight, so eBay needs "
                 "the package weight and dimensions. Enter them under "
-                "Package weight and size, then list again.")
+                "Shipping, then list again.")
         return cost_type, _validate_package(package)
     if cost_type == "FLAT_RATE":
         if package is not None:
@@ -1299,6 +1299,32 @@ def _draft_package(d):
             "length": raw["package_length"],
             "width": raw["package_width"],
             "height": raw["package_height"]}
+
+
+def _discard_offer(d, token):
+    """v34: delete the draft's saved offer from eBay (best-effort) and
+    forget its local ID, so the next publish creates a fresh offer
+    instead of re-publishing a stale one. A saved offer is a snapshot
+    of the data it was created with — eBay publishes the saved offer
+    state, not the app's current data — so an offer created before a
+    policy pick (or before a package block existed) can never be fixed
+    by retrying it. Never touches a live listing: if the draft already
+    has a listing ID, this is a no-op. Delete failures are ignored —
+    the local ID is still cleared, and a later create either succeeds
+    fresh or hits 25002 and reuses via the existing F3 path. DELETE
+    /sell/inventory/v1/offer/{offerId} permanently deletes an
+    unpublished offer (for a published offer it would end the live
+    listing, which is why the listing guard above is absolute)."""
+    offer_id = (d.get("ebay_offer_id") or "").strip()
+    if not offer_id or d.get("ebay_listing_id"):
+        return
+    try:
+        _ebay_call("DELETE", f"/sell/inventory/v1/offer/{offer_id}", token)
+    except Exception:
+        pass  # best-effort: never block the retry on the delete itself
+    d.pop("ebay_offer_id", None)
+    d.pop("ebay_offer_fulfillment_id", None)
+    _save_draft(d)
 
 
 def _do_publish(d, f, ship_from=None):
@@ -1434,6 +1460,23 @@ def _do_publish(d, f, ship_from=None):
 
     # 3. offer (reuse if one was already made for this draft)
     offer_id = d.get("ebay_offer_id")
+    # v34: a policy-pick re-post carries a freshly picked policy, so
+    # the saved offer (if any) predates it — discard it here so the
+    # re-post creates a fresh offer carrying the picked policy.
+    # No-op when no offer is saved.
+    if f.get("fresh_offer") and offer_id:
+        _discard_offer(d, token)
+        offer_id = None
+    # v34: a saved offer is a snapshot of the data it was created
+    # with. If the fulfillment policy has changed since that offer was
+    # made (a pick, or a hand-edited policy number), reusing it would
+    # publish the OLD policy, not the current one — so discard it and
+    # create fresh below. Drafts saved before v34 carry no recorded
+    # policy, so the comparison is skipped and reuse is preserved.
+    recorded_policy = (d.get("ebay_offer_fulfillment_id") or "").strip()
+    if offer_id and recorded_policy and recorded_policy != fulfillment_id:
+        _discard_offer(d, token)
+        offer_id = None
     if not offer_id:
         try:
             offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
@@ -1465,6 +1508,9 @@ def _do_publish(d, f, ship_from=None):
             if not offer_id:
                 raise RuntimeError("eBay made the offer but did not return an offer ID. "
                                    "Check Seller Hub; the listing may need finishing there.")
+            # v34: record which policy this offer was created with, so
+            # a later policy change discards it instead of reusing it.
+            d["ebay_offer_fulfillment_id"] = fulfillment_id
         except RuntimeError as exc:
             # v30 (audit F3): if eBay says an offer already exists for this
             # SKU (25002-style), reuse it instead of failing the retry.
@@ -1486,6 +1532,16 @@ def _do_publish(d, f, ship_from=None):
             offer_id = (offers[0].get("offerId") or "").strip() if offers else ""
             if not offer_id:
                 raise
+            # v34: record the reused offer's policy when eBay reports
+            # it, so a later policy change still discards correctly.
+            # When eBay does not report it, leave any recorded value
+            # untouched rather than guessing.
+            if offers and isinstance(offers[0], dict):
+                _lp = offers[0].get("listingPolicies") or {}
+                if isinstance(_lp, dict):
+                    _rp = str(_lp.get("fulfillmentPolicyId") or "").strip()
+                    if _rp:
+                        d["ebay_offer_fulfillment_id"] = _rp
         # v30 (audit F3): persist the offer ID IMMEDIATELY, before publish,
         # so a publish failure cannot orphan the offer and block the retry.
         d["ebay_offer_id"] = offer_id
@@ -1496,6 +1552,16 @@ def _do_publish(d, f, ship_from=None):
         published = _ebay_call(
             "POST", f"/sell/inventory/v1/offer/{offer_id}/publish", token)
     except RuntimeError as exc:
+        # v34: a 25007/25604 publish failure means the offer itself is
+        # suspect (a stale snapshot — the publish used saved offer
+        # state, not the current data). Discard it so the NEXT attempt
+        # creates a fresh offer instead of re-publishing the same stale
+        # one forever. Other failures keep the F3 reuse protection
+        # intact, and a live listing is never touched (_discard_offer
+        # guards it; listing_id is unset on this path in any case).
+        low_publish = str(exc).lower()
+        if "25007" in low_publish or "25604" in low_publish:
+            _discard_offer(d, token)
         # v32: same 25007 naming as the offer step above.
         if "25007" in str(exc).lower():
             raise RuntimeError(
@@ -1520,6 +1586,49 @@ def _do_publish(d, f, ship_from=None):
     d["ebay_sku"] = sku
     _save_draft(d)
     return listing_id, listing_url
+
+
+@app.route("/api/ebay/fulfillment-policies", methods=["GET"])
+def api_ebay_fulfillment_policies():
+    """v34: the Shipping chooser's policy list. Returns the account's
+    current EBAY_US fulfillment policies as pick entries (id, name,
+    cost_type, marketplace) — the same shape the publish gate returns
+    for a reactive pick, so the chooser renders both identically. A 403
+    means the token lacks sell.account and maps to the reconnect flag
+    (the publish path's message + Connect button), never to a bare
+    error."""
+    try:
+        token = _ebay_access_token()
+        listing = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US",
+            token)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": SCOPE_RECONNECT_MSG}), 200
+        # _ebay_call already built this message with the errorId (v30
+        # F6), so str(exc) is the surfaced text — no re-parse here.
+        return jsonify({"error": str(exc)}), 502
+    except _EbayAuthError as exc:
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": str(exc)}), 200
+        return jsonify({"error": str(exc)}), 400
+    except RuntimeError as exc:
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": str(exc)}), 200
+        return jsonify({"error": str(exc)}), 502
+    policies = []
+    if isinstance(listing, dict):
+        for p in (listing.get("fulfillmentPolicies") or []):
+            if isinstance(p, dict):
+                policies.append(_policy_pick_entry(p))
+    return jsonify({"policies": policies})
 
 
 @app.route("/api/ebay/publish", methods=["POST"])
@@ -1625,6 +1734,9 @@ def api_ebay_publish():
             "attributes": attributes,
             "best_offer_terms": best_offer_terms,
             "package": package,
+            # v34: a policy-pick re-post must discard the pre-pick
+            # offer (see _do_publish); normal List taps never set it.
+            "fresh_offer": bool(body.get("policy_pick")),
         }, ship_from=body.get("ship_from")
           if isinstance(body.get("ship_from"), dict) else None)
     except _PublishValidationError as exc:
@@ -1736,6 +1848,11 @@ def api_ebay_batch_publish():
                 # (listing-page fields, per draft — framed and unframed
                 # parcels differ, so this is never a preset).
                 "package": _draft_package(d),
+                # v34: fulfillment_override is only ever set by a pick
+                # re-run (confirm and ship-from re-runs pass none), so
+                # it doubles as the pick flag: a pick re-run discards
+                # each draft's pre-pick offer before creating fresh.
+                "fresh_offer": bool(fulfillment_override),
             }, ship_from=ship_from)
         except _NeedsShipFromAddress as exc:
             # v31: one draft hitting the empty-location wall tells the
