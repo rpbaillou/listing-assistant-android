@@ -926,6 +926,41 @@ $("btn-batch-suggest").addEventListener("click", async () => {
 $("btn-batch-cancel").addEventListener("click", () => $("btn-drafts").click());
 $("btn-batch-done").addEventListener("click", () => $("btn-drafts").click());
 
+/* v31: one batch run. Returns true when any draft stopped on the
+   empty-location wall, so the caller can show the one-time ship-from
+   address form instead of the done button. */
+async function runBatch(shipFrom) {
+  const { results } = await api("/api/ebay/batch-publish", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      draft_ids: batchIncluded.map((d) => d.id),
+      category_id: $("b-category").value.trim(),
+      ...(shipFrom ? { ship_from: shipFrom } : {}),
+    }),
+  });
+  const box = $("batch-results");
+  box.innerHTML = "<h4>Results</h4>";
+  let needsAddress = false;
+  (results || []).forEach((r) => {
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    if (r.ok) {
+      row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+        '<div class="bp"><a href="' + esc(r.listing_url) + '" target="_blank">Live</a></div>';
+    } else if (r.needs_ship_from) {
+      needsAddress = true;
+      row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+        '<div class="bp batch-skip">Needs a shop location: enter your ship-from address below.</div>';
+    } else {
+      row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+        '<div class="bp batch-skip">Failed: ' + esc(r.error || "unknown error") + "</div>";
+    }
+    box.appendChild(row);
+  });
+  return needsAddress;
+}
+
 $("btn-batch-confirm").addEventListener("click", async () => {
   const cid = $("b-category").value.trim();
   if (!cid || !batchIncluded.length) return;
@@ -934,36 +969,64 @@ $("btn-batch-confirm").addEventListener("click", async () => {
   $("btn-batch-cancel").disabled = true;
   $("batch-progress").classList.remove("hidden");
   $("batch-results").innerHTML = "";
+  $("batch-ship-from-form").classList.add("hidden");
   try {
-    const { results } = await api("/api/ebay/batch-publish", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        draft_ids: batchIncluded.map((d) => d.id),
-        category_id: cid,
-      }),
-    });
-    const box = $("batch-results");
-    box.innerHTML = "<h4>Results</h4>";
-    (results || []).forEach((r) => {
-      const row = document.createElement("div");
-      row.className = "batch-row";
-      if (r.ok) {
-        row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
-          '<div class="bp"><a href="' + esc(r.listing_url) + '" target="_blank">Live</a></div>';
-      } else {
-        row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
-          '<div class="bp batch-skip">Failed: ' + esc(r.error || "unknown error") + "</div>";
-      }
-      box.appendChild(row);
-    });
+    const needsAddress = await runBatch(null);
+    if (needsAddress) {
+      /* Keep an exit open: cancel stays visible and enabled so the
+         seller can bail to drafts instead of filling the form. */
+      $("batch-ship-from-form").classList.remove("hidden");
+      $("btn-batch-cancel").classList.remove("hidden");
+      $("btn-batch-cancel").disabled = false;
+      $("btn-batch-done").classList.add("hidden");
+    } else {
+      $("btn-batch-done").classList.remove("hidden");
+    }
   } catch (e) {
     $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
+    $("btn-batch-done").classList.remove("hidden");
   } finally {
     $("batch-progress").classList.add("hidden");
     $("btn-batch-confirm").classList.add("hidden");
-    $("btn-batch-cancel").classList.add("hidden");
+    if ($("batch-ship-from-form").classList.contains("hidden")) {
+      $("btn-batch-cancel").classList.add("hidden");
+    }
+  }
+});
+
+/* v31: batch ship-from submit. The batch was already confirmed above,
+   and this re-run carries exactly those drafts plus the address, so
+   no second confirmation dialog is shown — the submit itself
+   authorizes creating the location and continuing. */
+$("btn-batch-ship-from").addEventListener("click", async () => {
+  const errEl = $("batch-ship-from-error");
+  errEl.classList.add("hidden");
+  const parsed = readShipFrom("bsf");
+  if (parsed.error) {
+    errEl.textContent = parsed.error;
+    errEl.classList.remove("hidden");
+    return;
+  }
+  $("btn-batch-ship-from").disabled = true;
+  $("batch-progress").classList.remove("hidden");
+  try {
+    const needsAddress = await runBatch(parsed.data);
+    if (needsAddress) {
+      /* Cannot normally recur with an address supplied; keep the form
+         open with a plain message if it ever does. */
+      errEl.textContent = "eBay still has no shop location. Check the address and try again.";
+      errEl.classList.remove("hidden");
+    } else {
+      $("batch-ship-from-form").classList.add("hidden");
+      $("btn-batch-done").classList.remove("hidden");
+    }
+  } catch (e) {
+    $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
+    $("batch-ship-from-form").classList.add("hidden");
     $("btn-batch-done").classList.remove("hidden");
+  } finally {
+    $("batch-progress").classList.add("hidden");
+    $("btn-batch-ship-from").disabled = false;
   }
 });
 
@@ -1451,18 +1514,7 @@ $("btn-publish").addEventListener("click", async () => {
       best_offer_auto_decline: $("p-bo-decline").value.trim(),
       best_offer_auto_accept: $("p-bo-accept").value.trim(),
     };
-    const r = await api("/api/ebay/publish", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    draft.ebay_listing_id = r.listing_id;
-    draft.ebay_listing_url = r.listing_url;
-    const ok = $("publish-ok");
-    ok.innerHTML = "It is live! <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" +
-      "<br>Item number: " + esc(r.listing_id);
-    ok.classList.remove("hidden");
-    prefillListing();
+    await postPublish(body);
   } catch (e) {
     const el = $("publish-error");
     el.textContent = e.message;
@@ -1470,6 +1522,82 @@ $("btn-publish").addEventListener("click", async () => {
   } finally {
     $("publish-spinner").classList.add("hidden");
     $("btn-publish").disabled = false;
+  }
+});
+
+/* v31: one-time ship-from address form. Shown only when eBay has no
+   shop location yet. The inputs start empty and no code ever writes an
+   address into them — only the seller's keystrokes fill them. */
+function readShipFrom(prefix) {
+  const street = $(prefix + "-street").value.trim();
+  const city = $(prefix + "-city").value.trim();
+  const state = $(prefix + "-state").value.trim().toUpperCase();
+  const zip = $(prefix + "-zip").value.trim().replace(/\s+/g, "");
+  if (!street || !city || !state || !zip)
+    return { error: "Fill in all four: street, city, state, ZIP code." };
+  if (!/^[A-Z]{2}$/.test(state))
+    return { error: "Use the 2-letter state code, e.g. TX." };
+  if (!/^\d{5}(-\d{4})?$/.test(zip))
+    return { error: "Enter a 5-digit ZIP code." };
+  return { data: { street, city, state, zip } };
+}
+
+/* The body of the publish the user already confirmed (title, price,
+   category). Kept so the address-form submit re-posts exactly that
+   confirmed listing, plus the address — nothing else changes. */
+let pendingPublishBody = null;
+
+async function postPublish(body) {
+  const r = await api("/api/ebay/publish", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (r.needs_ship_from) {
+    pendingPublishBody = body;
+    $("ship-from-form").classList.remove("hidden");
+    return "needs-address";
+  }
+  draft.ebay_listing_id = r.listing_id;
+  draft.ebay_listing_url = r.listing_url;
+  const ok = $("publish-ok");
+  ok.innerHTML = "It is live! <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" +
+    "<br>Item number: " + esc(r.listing_id);
+  ok.classList.remove("hidden");
+  prefillListing();
+  return "listed";
+}
+
+$("btn-ship-from").addEventListener("click", async () => {
+  const errEl = $("ship-from-error");
+  errEl.classList.add("hidden");
+  const parsed = readShipFrom("sf");
+  if (parsed.error) {
+    errEl.textContent = parsed.error;
+    errEl.classList.remove("hidden");
+    return;
+  }
+  if (!pendingPublishBody) return;
+  /* The listing was already confirmed (title, price, category) before
+     the first attempt, and this re-post carries exactly that body plus
+     the address — so the address submit itself authorizes creating the
+     shop location and continuing that confirmed publish, and no second
+     confirmation dialog is shown. */
+  $("publish-spinner").classList.remove("hidden");
+  $("btn-ship-from").disabled = true;
+  try {
+    const body = Object.assign({}, pendingPublishBody,
+                               { ship_from: parsed.data });
+    const outcome = await postPublish(body);
+    if (outcome === "listed") $("ship-from-form").classList.add("hidden");
+    /* "needs-address" cannot recur with an address supplied: the server
+       either creates the location or answers with an error. */
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove("hidden");
+  } finally {
+    $("publish-spinner").classList.add("hidden");
+    $("btn-ship-from").disabled = false;
   }
 });
 

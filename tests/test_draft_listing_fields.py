@@ -162,7 +162,7 @@ class DraftListingFieldsTestCase(unittest.TestCase):
                     payment_policy_id="222", return_policy_id="333")
         seen = {}
 
-        def fake_publish(d, f):
+        def fake_publish(d, f, ship_from=None):
             seen.update(f)
             return ("123", "https://example.com/123")
 

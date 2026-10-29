@@ -242,8 +242,12 @@ class PublishChainTest(unittest.TestCase):
         self.assertEqual(lookups, [])
 
     def test_empty_location_list_fails_fast(self):
+        # v31 supersedes the v30 contract: an empty list without a
+        # ship-from address now raises _NeedsShipFromAddress (the app
+        # shows the address form) instead of the old dead-end
+        # validation error. The fail-fast part is unchanged.
         self.behavior["locations"] = {"locations": []}
-        with self.assertRaises(m._PublishValidationError) as ctx:
+        with self.assertRaises(m._NeedsShipFromAddress) as ctx:
             self._run()
         self.assertIn("No shop location found", str(ctx.exception))
         # Fail fast: only the location lookup ran — no photo upload, no

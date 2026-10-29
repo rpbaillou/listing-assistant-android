@@ -138,6 +138,26 @@
     <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
     <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
+    <!-- v31: one-time ship-from address form. Shown only when eBay has
+         no shop location saved yet. The fields start empty and are
+         never prefilled by any code — only the seller's keystrokes fill
+         them. Submitting creates the location, then continues the
+         publish that was already confirmed above. -->
+    <div id="ship-from-form" class="hidden">
+      <p class="hint">eBay has no shop location saved for your account yet. Enter the address you ship from once. The app will create the shop location, then list.</p>
+      <label>Street address</label>
+      <input id="sf-street" type="text" placeholder="Street address" autocomplete="off">
+      <label>City</label>
+      <input id="sf-city" type="text" placeholder="City" autocomplete="off">
+      <label>State (2 letters)</label>
+      <input id="sf-state" type="text" maxlength="2" placeholder="TX" autocomplete="off">
+      <label>ZIP code</label>
+      <input id="sf-zip" type="text" inputmode="numeric" placeholder="ZIP code" autocomplete="off">
+      <p class="hint">Country: United States. The app only lists in the US.</p>
+      <div id="ship-from-error" class="error hidden"></div>
+      <button id="btn-ship-from" class="primary big" type="button">Create shop location and list</button>
+    </div>
+
     <h3>Or list manually, like before</h3>
     <div class="btnrow wrap">
       <button id="btn-copy-title" class="secondary" type="button">Copy title</button>
@@ -184,6 +204,24 @@
     </div>
     <div id="batch-progress" class="spinner hidden">Posting… about a minute per item. Leave the app open.</div>
     <div id="batch-results"></div>
+    <!-- v31: batch version of the one-time ship-from address form.
+         Same rules as the listing-page form: starts empty, never
+         prefilled, submitting creates the location and re-runs the
+         batch that was already confirmed above. -->
+    <div id="batch-ship-from-form" class="hidden">
+      <p class="hint">eBay has no shop location saved for your account yet. Enter the address you ship from once. The app will create it, then post these.</p>
+      <label>Street address</label>
+      <input id="bsf-street" type="text" placeholder="Street address" autocomplete="off">
+      <label>City</label>
+      <input id="bsf-city" type="text" placeholder="City" autocomplete="off">
+      <label>State (2 letters)</label>
+      <input id="bsf-state" type="text" maxlength="2" placeholder="TX" autocomplete="off">
+      <label>ZIP code</label>
+      <input id="bsf-zip" type="text" inputmode="numeric" placeholder="ZIP code" autocomplete="off">
+      <p class="hint">Country: United States. The app only lists in the US.</p>
+      <div id="batch-ship-from-error" class="error hidden"></div>
+      <button id="btn-batch-ship-from" class="primary" type="button">Create shop location and post these</button>
+    </div>
     <button id="btn-batch-done" class="primary hidden" type="button">Back to drafts</button>
   </section>
 </main>

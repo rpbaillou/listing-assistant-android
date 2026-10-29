@@ -12,6 +12,7 @@ import html
 import io
 import json
 import os
+import re
 import time
 import uuid
 import zipfile
@@ -932,18 +933,101 @@ class _PublishValidationError(RuntimeError):
     The single-publish wrapper maps these to 400; anything else is 502."""
 
 
+class _NeedsShipFromAddress(RuntimeError):
+    """The account has no inventory location and the caller supplied no
+    ship-from address to create one with. The publish wrappers map this
+    to a needs_ship_from signal so the app can show the address form
+    instead of a dead-end error — never a 400/502 failure."""
+
+
+# v31: the merchant location key used when the app creates the shop
+# location from the address the seller types once in the app. eBay caps
+# the key at 36 characters (per its own Inventory docs) and the key can
+# never be changed once set, so a short, stable, generic key is used.
+# The key is not personal data; the address itself is never stored here.
+SHIP_FROM_LOCATION_KEY = "home"
+
+
 class _EbayAuthError(RuntimeError):
     """The eBay sign-in itself failed (not connected, expired). The
     wrapper maps these to 400, exactly like the old publish code did
     for its token-fetch step."""
 
 
-def _resolve_merchant_location_key(token):
-    """Merchant location key for the offer (v30, audit F2). eBay requires
-    an inventory location to publish an offer. Pin: EBAY_MERCHANT_LOCATION_KEY
-    in .env wins (for sellers with several locations); otherwise use the
-    first location on the account. An empty list raises a plain validation
-    error — never invent an address, never proceed to publish."""
+def _validate_ship_from(raw):
+    """Clean a ship-from address the seller typed in the app into eBay's
+    Address shape. Country is always US (the app only lists on EBAY_US),
+    whatever the caller passed. Raises _PublishValidationError on any
+    missing or malformed field, in plain words. The address is never
+    logged, saved to a file, or put in a draft, preset, or .env — eBay
+    holds the location after creation, and later publishes find it via
+    GET, so the app needs the address for this one call only."""
+    if not isinstance(raw, dict):
+        raise _PublishValidationError(
+            "Fill in the ship-from address first.")
+    street = str(raw.get("street", "") or "").strip()
+    city = str(raw.get("city", "") or "").strip()
+    state = str(raw.get("state", "") or "").strip().upper()
+    zip_code = re.sub(r"\s+", "", str(raw.get("zip", "") or ""))
+    if not street or not city or not state or not zip_code:
+        raise _PublishValidationError(
+            "Fill in all four: street, city, state, ZIP code.")
+    if not re.fullmatch(r"[A-Z]{2}", state):
+        raise _PublishValidationError(
+            "Use the 2-letter state code, e.g. TX.")
+    if not re.fullmatch(r"\d{5}(-\d{4})?", zip_code):
+        raise _PublishValidationError(
+            "Enter a 5-digit ZIP code.")
+    return {"addressLine1": street, "city": city,
+            "stateOrProvince": state, "postalCode": zip_code,
+            "country": "US"}
+
+
+def _create_merchant_location(token, address):
+    """Create the shop location (v31, eBay createInventoryLocation:
+    POST /sell/inventory/v1/location/{merchantLocationKey}). Per eBay's
+    own Inventory docs, only the seller-defined key and a physical
+    location are required at first creation, and a WAREHOUSE location
+    (traditional shipping, which is this seller's case) needs postalCode
+    + country, or city + stateOrProvince + country — the form supplies
+    all of them. Locations are enabled by default, so no status field is
+    sent. Success is 204 No Content, which _ebay_call already maps to {}.
+    If the create fails but a location now exists (the create landed
+    while its reply was lost, or the key already exists), use that
+    location instead of failing; otherwise re-raise eBay's own
+    message + errorId."""
+    body = {"name": "Home",
+            "locationTypes": ["WAREHOUSE"],
+            "location": {"address": address}}
+    try:
+        _ebay_call("POST",
+                   f"/sell/inventory/v1/location/{SHIP_FROM_LOCATION_KEY}",
+                   token, body)
+    except RuntimeError as exc:
+        try:
+            existing = _ebay_call("GET", "/sell/inventory/v1/location",
+                                  token)
+        except RuntimeError:
+            raise exc
+        locations = existing.get("locations") \
+            if isinstance(existing, dict) else None
+        if locations:
+            key = (locations[0].get("merchantLocationKey") or "").strip()
+            if key:
+                return key
+        raise exc
+    return SHIP_FROM_LOCATION_KEY
+
+
+def _resolve_merchant_location_key(token, ship_from=None):
+    """Merchant location key for the offer (v30, audit F2; v31 creation).
+    eBay requires an inventory location to publish an offer. Pin:
+    EBAY_MERCHANT_LOCATION_KEY in .env wins (for sellers with several
+    locations); otherwise use the first location on the account. When
+    the list is empty and the caller supplied a ship-from address typed
+    once in the app, create the location and return its key; without an
+    address, raise _NeedsShipFromAddress so the app shows the form.
+    Never invent an address, never proceed to publish without one."""
     if EBAY_MERCHANT_LOCATION_KEY:
         return EBAY_MERCHANT_LOCATION_KEY
     body = _ebay_call("GET", "/sell/inventory/v1/location", token)
@@ -952,13 +1036,16 @@ def _resolve_merchant_location_key(token):
         key = (locations[0].get("merchantLocationKey") or "").strip()
         if key:
             return key
-    raise _PublishValidationError(
-        "No shop location found on your eBay account. eBay needs a shop "
-        "location to publish — provide your shop address so one can be "
-        "created, or create one in Seller Hub, then try again.")
+    if ship_from is not None:
+        address = _validate_ship_from(ship_from)
+        return _create_merchant_location(token, address)
+    raise _NeedsShipFromAddress(
+        "No shop location found on your eBay account yet. Enter the "
+        "address you ship from below and the app will create one, "
+        "then list.")
 
 
-def _do_publish(d, f):
+def _do_publish(d, f, ship_from=None):
     """Create the live eBay listing for draft d. Shared by single publish
     and batch publish so both paths behave identically.
 
@@ -968,9 +1055,13 @@ def _do_publish(d, f):
     may be empty — they fall back to .env here), attributes (dict),
     best_offer_terms (dict or None). Policy ids still empty after the
     .env fallback raise _PublishValidationError, as do a missing title,
-    category, condition value, or photos. Returns (listing_id,
-    listing_url) and saves the draft's eBay fields. Raises RuntimeError
-    for eBay-side failures.
+    category, condition value, or photos. ship_from, when given, is the
+    address the seller typed once in the app: if the account has no
+    inventory location, one is created from it (v31) and the publish
+    proceeds; without it, an empty location list raises
+    _NeedsShipFromAddress instead of a dead-end error. Returns
+    (listing_id, listing_url) and saves the draft's eBay fields. Raises
+    RuntimeError for eBay-side failures.
     """
     fulfillment_id = (f.get("fulfillment_id") or "").strip() or EBAY_FULFILLMENT_POLICY_ID
     payment_id = (f.get("payment_id") or "").strip() or EBAY_PAYMENT_POLICY_ID
@@ -1004,10 +1095,13 @@ def _do_publish(d, f):
     except RuntimeError as exc:
         raise _EbayAuthError(str(exc))
 
-    # v30 (audit F2): eBay requires an inventory location to publish.
-    # Resolve before any photo work so an empty location list fails fast
-    # instead of wasting uploads on a listing that cannot publish.
-    merchant_location_key = _resolve_merchant_location_key(token)
+    # v30 (audit F2) + v31: eBay requires an inventory location to
+    # publish. Resolve before any photo work so an empty location list
+    # fails fast instead of wasting uploads on a listing that cannot
+    # publish — with a ship-from address supplied, the location is
+    # created here and the publish proceeds; without one, the caller
+    # gets _NeedsShipFromAddress and shows the address form.
+    merchant_location_key = _resolve_merchant_location_key(token, ship_from)
 
     sku = "la" + d["id"]
     # 1. photos -> eBay-hosted URLs (Media API photo service).
@@ -1218,11 +1312,16 @@ def api_ebay_publish():
             "return_id": return_id,
             "attributes": attributes,
             "best_offer_terms": best_offer_terms,
-        })
+        }, ship_from=body.get("ship_from")
+          if isinstance(body.get("ship_from"), dict) else None)
     except _PublishValidationError as exc:
         return jsonify({"error": str(exc)}), 400
     except _EbayAuthError as exc:
         return jsonify({"error": str(exc)}), 400
+    except _NeedsShipFromAddress:
+        # v31: not a failure — the app shows the one-time ship-from
+        # address form and re-posts with it; the publish then proceeds.
+        return jsonify({"needs_ship_from": True}), 200
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify({"listing_id": listing_id, "listing_url": listing_url})
@@ -1248,6 +1347,8 @@ def api_ebay_batch_publish():
     if not isinstance(ids, list) or not ids:
         return jsonify({"error": "Pick at least one draft first."}), 400
     preset = _load_preset() or {}
+    ship_from = body.get("ship_from") \
+        if isinstance(body.get("ship_from"), dict) else None
     results = []
     for raw_id in ids:
         draft_id = str(raw_id or "")
@@ -1292,7 +1393,15 @@ def api_ebay_batch_publish():
                 "return_id": str(preset.get("return_policy_id", "") or "").strip(),
                 "attributes": dict(d.get("attributes") or {}),
                 "best_offer_terms": terms,
-            })
+            }, ship_from=ship_from)
+        except _NeedsShipFromAddress as exc:
+            # v31: one draft hitting the empty-location wall tells the
+            # whole batch — the rest would hit the same wall. Stop here;
+            # the app shows the address form once and re-runs the batch
+            # with it (already-listed drafts are skipped above).
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "needs_ship_from": True, "error": str(exc)})
+            break
         except RuntimeError as exc:
             # Covers validation, auth, and eBay-side failures alike: each
             # is reported per draft and never stops the rest.
