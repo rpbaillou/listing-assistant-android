@@ -95,6 +95,11 @@ EBAY_RUNAME = os.environ.get("EBAY_RUNAME", "").strip()
 EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID", "").strip()
 EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID", "").strip()
 EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID", "").strip()
+# v30 (audit F2): optional pin for the merchant location key eBay requires
+# on the offer at publish time. When unset, the app uses the first
+# location on the account (GET /sell/inventory/v1/location) instead.
+# Only set this if the seller has several locations and wants a specific one.
+EBAY_MERCHANT_LOCATION_KEY = os.environ.get("EBAY_MERCHANT_LOCATION_KEY", "").strip()
 
 EBAY_AUTH_URL = "https://auth.ebay.com/oauth2/authorize"
 EBAY_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
@@ -113,7 +118,8 @@ EBAY_SCOPES = ("https://api.ebay.com/oauth/api_scope "
 EBAY_MEDIA_API = "https://apim.ebay.com/commerce/media/v1_beta"
 
 MAX_PHOTOS = 24
-MAX_FILE_MB = 15
+# v30 (audit F11): eBay's documented Media example caps photos at 12 MB.
+MAX_FILE_MB = 12
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_PHOTOS * MAX_FILE_MB * 1024 * 1024
@@ -381,7 +387,13 @@ def _ebay_access_token():
 
 
 def _plain_ebay_error(resp):
-    """Turn an eBay API error response into plain words."""
+    """Turn an eBay API error response into plain words. v30 (audit F6):
+    eBay's errorId is included in EVERY surfaced message, so the next
+    failure names its code instead of arriving as a bare sentence. Keyword
+    rewrites apply only on a tight match: aspect/specifics errors often
+    mention "category", "condition", or "image" in passing, so those words
+    alone must not trigger a rewrite — otherwise eBay's message + errorId
+    is shown verbatim."""
     try:
         body = resp.json()
         errs = body.get("errors") or []
@@ -389,45 +401,60 @@ def _plain_ebay_error(resp):
         err_id = str(errs[0].get("errorId", "")) if errs else ""
     except ValueError:
         msg, err_id = resp.text[:300], ""
+    code = f" (error {err_id})" if err_id else ""
     low = (msg + " " + err_id).lower()
+    if err_id == "190013":
+        return ("Your eBay sign-in is missing a permission eBay needs for "
+                "this action" + code + ". Details: " + msg[:160])
     if "business polic" in low or err_id == "25710":
         return ("eBay needs your shop's payment, shipping, and return policies on this "
                 "listing. Check the three policy numbers in your .env (setup guide: Connect eBay), "
-                "or pick different ones.")
+                "or pick different ones." + code)
     if "opt" in low and "program" in low:
         return ("Your eBay seller account needs business policies turned on before the "
                 "app can list. In Seller Hub go to Account, then Business policies, and "
-                "opt in. Then try again.")
-    if "categor" in low:
+                "opt in. Then try again." + code)
+    aspecty = ("aspect" in low or "specific" in low)
+    if "categor" in low and not aspecty:
         return ("eBay did not accept that category. Tap Suggest next to the category "
-                "field and pick one from the list. Details: " + msg[:160])
-    if "condition" in low:
+                "field and pick one from the list. Details: " + msg[:160] + code)
+    if "condition" in low and not aspecty:
         return ("eBay needs more condition detail for this category. Try a different "
-                "condition choice. Details: " + msg[:160])
-    if "image" in low:
+                "condition choice. Details: " + msg[:160] + code)
+    if "image" in low and not aspecty:
         return ("eBay rejected a photo. Make sure every photo is a normal JPG under "
-                "12 MB. Details: " + msg[:160])
-    if "title" in low:
+                "12 MB. Details: " + msg[:160] + code)
+    if "title" in low and not aspecty:
         return ("eBay did not accept the title. Keep it under 80 characters with no "
-                "strange symbols. Details: " + msg[:160])
+                "strange symbols. Details: " + msg[:160] + code)
     if resp.status_code in (401, 403):
         return ("eBay refused the sign-in for this action. Tap Connect eBay again in "
-                "this browser, then retry.")
-    return ("eBay said: " + (msg[:220] if msg else f"error {resp.status_code}"))
+                "this browser, then retry." + code)
+    return ("eBay said" + (f" (error {err_id})" if err_id else "") + ": " +
+            (msg[:220] if msg else f"error {resp.status_code}"))
 
 
 def _ebay_call(method, path, token, payload=None):
     try:
         resp = requests.request(method, EBAY_API + path,
                                 headers={"Authorization": "Bearer " + token,
-                                         "Content-Type": "application/json"},
+                                         "Content-Type": "application/json",
+                                         # v30 (audit F1): eBay requires
+                                         # Content-Language on Inventory calls.
+                                         "Content-Language": "en-US"},
                                 json=payload, timeout=60)
     except requests.RequestException as exc:
         raise RuntimeError(f"Could not reach eBay: {exc}")
-    if resp.status_code in (401, 403):
+    if resp.status_code == 401:
         _clear_ebay_tokens()
         raise RuntimeError(
             "Your eBay sign-in stopped working. Tap Connect eBay again in this browser.")
+    if resp.status_code == 403:
+        # v30 (audit F7): do NOT clear on 403 — a scope error is not fixed
+        # by reconnecting with the same scopes. Surface eBay's message +
+        # errorId (including the 190013 permission naming in
+        # _plain_ebay_error) instead.
+        raise RuntimeError(_plain_ebay_error(resp))
     if resp.status_code >= 400:
         raise RuntimeError(_plain_ebay_error(resp))
     if resp.status_code == 204 or not resp.text.strip():
@@ -451,11 +478,25 @@ def _resp_bytes(resp):
 
 
 def _media_api_error(resp, token):
-    """Error text that never discards what eBay sent: HTTP status plus the
-    first ~300 characters of eBay's reply body. The reply never contains
-    our token or photo data (those went in the request, not the reply),
-    but the token is redacted from the snippet anyway so it can never
+    """Error text for the Media API. v30 (audit F8): extract eBay's message
+    + errorId when parseable, so the failure names its code; fall back to
+    the raw snippet only when unparseable. The reply never contains our
+    token or photo data (those went in the request, not the reply), but
+    the token is redacted from the fallback snippet anyway so it can never
     leak into a surfaced message."""
+    try:
+        body = resp.json()
+        errs = body.get("errors") or []
+        msg = errs[0].get("message", "") if errs else ""
+        err_id = str(errs[0].get("errorId", "")) if errs else ""
+    except ValueError:
+        msg, err_id = "", ""
+    if msg or err_id:
+        code = f" (error {err_id})" if err_id else ""
+        if msg:
+            return f"eBay photo service said{code}: {msg[:220]}"
+        return (f"eBay photo service answered with error {resp.status_code}"
+                f"{code}.")
     text = _resp_bytes(resp).decode("utf-8", "replace").strip()
     if token:
         text = text.replace(token, "[removed]")
@@ -897,6 +938,26 @@ class _EbayAuthError(RuntimeError):
     for its token-fetch step."""
 
 
+def _resolve_merchant_location_key(token):
+    """Merchant location key for the offer (v30, audit F2). eBay requires
+    an inventory location to publish an offer. Pin: EBAY_MERCHANT_LOCATION_KEY
+    in .env wins (for sellers with several locations); otherwise use the
+    first location on the account. An empty list raises a plain validation
+    error — never invent an address, never proceed to publish."""
+    if EBAY_MERCHANT_LOCATION_KEY:
+        return EBAY_MERCHANT_LOCATION_KEY
+    body = _ebay_call("GET", "/sell/inventory/v1/location", token)
+    locations = body.get("locations") if isinstance(body, dict) else None
+    if locations:
+        key = (locations[0].get("merchantLocationKey") or "").strip()
+        if key:
+            return key
+    raise _PublishValidationError(
+        "No shop location found on your eBay account. eBay needs a shop "
+        "location to publish — provide your shop address so one can be "
+        "created, or create one in Seller Hub, then try again.")
+
+
 def _do_publish(d, f):
     """Create the live eBay listing for draft d. Shared by single publish
     and batch publish so both paths behave identically.
@@ -928,7 +989,12 @@ def _do_publish(d, f):
         raise _PublishValidationError(
             "The three policy numbers are missing. Add them in .env "
             "or type them in the boxes (setup guide: Connect eBay).")
-    if condition and condition not in {v for v, _ in CONDITIONS}:
+    if not condition:
+        # v30 (audit F4): condition is required before listing. Never
+        # default to NEW here — silently calling a used item "new"
+        # misleads the buyer (the honesty rule from v6).
+        raise _PublishValidationError("Pick a condition first.")
+    if condition not in {v for v, _ in CONDITIONS}:
         raise _PublishValidationError("Pick a condition from the list.")
     photos = d.get("photos") or []
     if not photos:
@@ -937,6 +1003,11 @@ def _do_publish(d, f):
         token = _ebay_access_token()
     except RuntimeError as exc:
         raise _EbayAuthError(str(exc))
+
+    # v30 (audit F2): eBay requires an inventory location to publish.
+    # Resolve before any photo work so an empty location list fails fast
+    # instead of wasting uploads on a listing that cannot publish.
+    merchant_location_key = _resolve_merchant_location_key(token)
 
     sku = "la" + d["id"]
     # 1. photos -> eBay-hosted URLs (Media API photo service).
@@ -990,30 +1061,52 @@ def _do_publish(d, f):
     # 3. offer (reuse if one was already made for this draft)
     offer_id = d.get("ebay_offer_id")
     if not offer_id:
-        offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
-            "sku": sku,
-            "marketplaceId": "EBAY_US",
-            "format": "FIXED_PRICE",
-            "availableQuantity": 1,
-            "categoryId": category_id,
-            "listingDescription": desc_html or title,
-            "listingPolicies": {
-                "fulfillmentPolicyId": fulfillment_id,
-                "paymentPolicyId": payment_id,
-                "returnPolicyId": return_id,
-                # v9: bestOfferTerms lives INSIDE listingPolicies per
-                # eBay's Sell Inventory docs. Omitted entirely when off.
-                **({"bestOfferTerms": f.get("best_offer_terms")}
-                   if f.get("best_offer_terms") else {}),
-            },
-            "pricingSummary": {"price": {"currency": "USD",
-                                         "value": f"{f['price_val']:.2f}"}},
-            "listing": {"listingDuration": "GTC"},
-        })
-        offer_id = offer.get("offerId")
-        if not offer_id:
-            raise RuntimeError("eBay made the offer but did not return an offer ID. "
-                               "Check Seller Hub; the listing may need finishing there.")
+        try:
+            offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
+                "sku": sku,
+                "marketplaceId": "EBAY_US",
+                "format": "FIXED_PRICE",
+                "availableQuantity": 1,
+                "categoryId": category_id,
+                "listingDescription": desc_html or title,
+                "listingPolicies": {
+                    "fulfillmentPolicyId": fulfillment_id,
+                    "paymentPolicyId": payment_id,
+                    "returnPolicyId": return_id,
+                    # v9: bestOfferTerms lives INSIDE listingPolicies per
+                    # eBay's Sell Inventory docs. Omitted entirely when off.
+                    **({"bestOfferTerms": f.get("best_offer_terms")}
+                       if f.get("best_offer_terms") else {}),
+                },
+                "pricingSummary": {"price": {"currency": "USD",
+                                             "value": f"{f['price_val']:.2f}"}},
+                # v30 (audit F9): listingDuration is a TOP-LEVEL offer
+                # field, not nested under a "listing" object.
+                "listingDuration": "GTC",
+                # v30 (audit F2): eBay requires an inventory location to
+                # publish; offer creation succeeds without it, publish fails.
+                "merchantLocationKey": merchant_location_key,
+            })
+            offer_id = offer.get("offerId")
+            if not offer_id:
+                raise RuntimeError("eBay made the offer but did not return an offer ID. "
+                                   "Check Seller Hub; the listing may need finishing there.")
+        except RuntimeError as exc:
+            # v30 (audit F3): if eBay says an offer already exists for this
+            # SKU (25002-style), reuse it instead of failing the retry.
+            low_exc = str(exc).lower()
+            if "25002" not in low_exc and not ("already" in low_exc
+                                               and "offer" in low_exc):
+                raise
+            existing = _ebay_call("GET", f"/sell/inventory/v1/offer?sku={sku}", token)
+            offers = existing.get("offers") if isinstance(existing, dict) else None
+            offer_id = (offers[0].get("offerId") or "").strip() if offers else ""
+            if not offer_id:
+                raise
+        # v30 (audit F3): persist the offer ID IMMEDIATELY, before publish,
+        # so a publish failure cannot orphan the offer and block the retry.
+        d["ebay_offer_id"] = offer_id
+        _save_draft(d)
 
     # 4. publish
     published = _ebay_call(

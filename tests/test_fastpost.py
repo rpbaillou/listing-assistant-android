@@ -60,6 +60,10 @@ def _ebay_patches(fail_sku=None):
             return {"offerId": "OFF-" + (payload.get("sku") or "x")}
         if method == "POST" and path.endswith("/publish"):
             return {"listingId": "999"}
+        if method == "GET" and path == "/sell/inventory/v1/location":
+            # v30 (audit F2): the publish helper resolves a merchant
+            # location before offering; the fixture seller has one.
+            return {"locations": [{"merchantLocationKey": "LOC1"}]}
         if method == "GET":
             return {}
         raise AssertionError("unexpected eBay call %s %s" % (method, path))
@@ -257,7 +261,7 @@ class FastpostTestCase(unittest.TestCase):
         # A second good draft, posted after the failing one.
         p2 = self._write_photo("good2")
         self._save(_draft("good2", title="Second good item", price="40.00",
-                          photos=[p2]))
+                          photos=[p2], condition="USED_VERY_GOOD"))
         with ExitStack() as stack:
             for p in _ebay_patches(fail_sku="lagood"):
                 stack.enter_context(p)
