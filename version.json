@@ -1,1 +1,1 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v28/ebay-listing-assistant-apk-v28.apk","notes":"Photo upload fixed: photos now go to eBay the way eBay expects them.","versionCode":28,"versionName":"1.27"}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v29/ebay-listing-assistant-apk-v29.apk","notes":"Photos now go to eBay's new photo service, and everything about a listing lives on the listing page itself.","versionCode":29,"versionName":"1.28"}
