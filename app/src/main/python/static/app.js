@@ -1323,10 +1323,13 @@ async function prefillListing() {
   $("p-length").value = draft.package_length || "";
   $("p-width").value = draft.package_width || "";
   $("p-height").value = draft.package_height || "";
-  /* v34: the Shipping chooser follows the restored policy number, and
-     the policy list refreshes every time the listing page opens. */
+  /* v34: the Shipping dropdown follows the restored policy number, and
+     the policy list refreshes every time the listing page opens.
+     v35: the Condition dropdown likewise follows the restored
+     category. */
   refreshShippingChooser();
   fetchShippingPolicies();
+  fetchCategoryConditions();
   /* Remember the restored category pair so later saves keep its display
      name when the number is untouched. */
   pickedCat = pre.category_id
@@ -1404,6 +1407,7 @@ $("btn-cat-suggest").addEventListener("click", async () => {
         cs.classList.remove("hidden");
         box.classList.add("hidden");
         loadCategoryAspects(); /* v8: fetch what eBay requires for this category */
+        fetchCategoryConditions(); /* v35: fetch what conditions this category takes */
         await saveDraft(); /* v29: a Suggest pick saves immediately, through the draft autosave */
       });
       box.appendChild(b);
@@ -1427,6 +1431,7 @@ function onCategoryEdited() {
 $("p-category").addEventListener("change", () => {
   onCategoryEdited();
   loadCategoryAspects();
+  fetchCategoryConditions(); /* v35 */
 });
 $("p-category").addEventListener("input", onCategoryEdited);
 
@@ -1435,6 +1440,14 @@ $("p-category").addEventListener("input", onCategoryEdited);
 ["p-fulfillment", "p-payment", "p-return"].forEach((id) => {
   $(id).addEventListener("input", scheduleSave);
 });
+/* v35: the dropdown is the shipping control; picking one saves it
+   (selectShippingPolicy), and a hand-typed number re-syncs the
+   dropdown, the type line, and the package fields. */
+$("shipping-select").addEventListener("change", () => {
+  const v = $("shipping-select").value;
+  if (v) selectShippingPolicy(v);
+});
+$("p-fulfillment").addEventListener("input", refreshShippingChooser);
 $("required-aspects").addEventListener("input", scheduleSave);
 
 /* v9: best offer toggle shows/hides the auto-price fields; all three join
@@ -1554,6 +1567,61 @@ async function loadCategoryAspects() {
     det.appendChild(sum);
     rec.forEach((a) => det.appendChild(aspectInput(a.name, a.values, false, draftAttrValue(a.name))));
     box.appendChild(det);
+  }
+}
+
+/* v35: category-aware Condition dropdown. The category's allowed
+   conditions come from the Metadata API; the dropdown offers ONLY
+   those, labeled with eBay's plain names. The seller's current pick
+   is never silently changed: if it is not in the allowed set, it
+   stays selected and marked, so the pre-publish check can flag it
+   with the allowed choices instead of rewriting the choice. When the
+   fetch fails, the hardcoded fallback options stay and a plain hint
+   shows. */
+let lastConditionCategory = "";
+async function fetchCategoryConditions() {
+  const cid = ($("p-category").value || "").trim();
+  const sel = $("f-condition");
+  const hint = $("condition-fetch-hint");
+  if (!cid || cid === lastConditionCategory) return;
+  lastConditionCategory = cid;
+  let data = null;
+  try {
+    data = await api("/api/ebay/category-conditions?category_id=" +
+      encodeURIComponent(cid));
+  } catch (e) {
+    data = null;
+  }
+  if (!data || !data.available || !data.conditions || !data.conditions.length) {
+    hint.classList.remove("hidden");
+    return;
+  }
+  hint.classList.add("hidden");
+  const current = sel.value;
+  let currentLabel = current;
+  const currentOpt = sel.querySelector('option[value="' + current + '"]');
+  if (currentOpt && currentOpt.textContent) currentLabel = currentOpt.textContent;
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "— Pick one —";
+  sel.appendChild(ph);
+  data.conditions.forEach((c) => {
+    const o = document.createElement("option");
+    o.value = c.value;
+    o.textContent = c.label;
+    sel.appendChild(o);
+  });
+  if (current && data.conditions.some((c) => c.value === current)) {
+    sel.value = current;
+  } else if (current) {
+    const o = document.createElement("option");
+    o.value = current;
+    o.textContent = currentLabel + " (not allowed for this category)";
+    sel.appendChild(o);
+    sel.value = current;
+  } else {
+    sel.value = "";
   }
 }
 
@@ -1725,12 +1793,13 @@ async function postPublish(body) {
     $("scope-reconnect-box").classList.remove("hidden");
     return "needs-scope";
   }
-  /* v34: the shipping policy number is unusable. The Shipping chooser
+  /* v34: the shipping policy number is unusable. The Shipping dropdown
      opens with the current policies; picking one re-posts the
-     confirmed publish with the picked number. */
+     confirmed publish with the picked number. v35: compliance problems
+     found alongside ride along, so the pick screen shows them too. */
   if (r.needs_policy_pick) {
     pendingPublishBody = body;
-    openShippingPick(r.policies || [], r.error || "");
+    openShippingPick(r.policies || [], r.error || "", r.problems || []);
     return "needs-pick";
   }
   draft.ebay_listing_id = r.listing_id;
@@ -1751,25 +1820,36 @@ function policyTypeLabel(costType) {
   return "unknown type";
 }
 
-/* v34: Shipping chooser state. shippingPolicies holds the account's
+/* v35: Shipping dropdown state. shippingPolicies holds the account's
    current policies (chooser/gate entry shape: id, name, cost_type);
    shippingPickMode is true only while a failed publish waits on a
-   pick, in which case selecting one re-posts that confirmed publish. */
+   pick, in which case selecting one re-posts that confirmed publish.
+   The dropdown shows policy NAMES only — never ID numbers — and the
+   closed dropdown IS the current-selection display, so there is no
+   separate selected line anymore. */
 let shippingPolicies = [];
 let shippingPickMode = false;
 let shippingFetchInFlight = false;
 
+function shippingTypeLine(costType) {
+  /* v35: one short plain line under the dropdown. */
+  if (costType === "CALCULATED") return "Charges by weight.";
+  if (costType === "FLAT_RATE") return "Flat rate.";
+  if (costType === "NOT_SPECIFIED") return "Local pickup only.";
+  return "Unknown type.";
+}
+
 async function fetchShippingPolicies() {
-  /* v34: fetched every time the listing page opens, so the chooser
+  /* v35: fetched every time the listing page opens, so the dropdown
      always shows the account's current policies. On 403 the token
      lacks sell.account: the plain message + Connect link show here,
      the same message the publish path shows. */
   if (shippingFetchInFlight) return;
   shippingFetchInFlight = true;
-  const listEl = $("shipping-list");
+  const sel = $("shipping-select");
   const errEl = $("shipping-error");
   errEl.classList.add("hidden");
-  listEl.innerHTML = "<p class='hint'>Loading shipping policies…</p>";
+  sel.disabled = true;
   try {
     const r = await api("/api/ebay/fulfillment-policies");
     if (r.needs_scope_reconnect) {
@@ -1777,87 +1857,93 @@ async function fetchShippingPolicies() {
         "The app needs one new permission to read your shipping policies.") +
         "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
       errEl.classList.remove("hidden");
-      listEl.innerHTML = "";
       return;
     }
     shippingPolicies = r.policies || [];
-    renderShippingList();
+    renderShippingDropdown();
     refreshShippingChooser();
   } catch (e) {
     errEl.innerHTML = "<p style='margin:0'>" + esc(e.message) + "</p>" +
       "<p class='hint'><button id='btn-shipping-retry' class='ghost' type='button'>Try again</button></p>";
     errEl.classList.remove("hidden");
-    listEl.innerHTML = "";
     const retry = $("btn-shipping-retry");
     if (retry) retry.addEventListener("click", fetchShippingPolicies);
   } finally {
+    sel.disabled = false;
     shippingFetchInFlight = false;
   }
 }
 
-function renderShippingList() {
-  /* v34: one-tap buttons for every current policy, with the plain type
-     label. The selected one carries a check mark. A policy with no
-     shippable service is still shown, labeled plainly — the publish
-     gate says why it cannot ship if it is picked. */
-  const listEl = $("shipping-list");
-  listEl.innerHTML = "";
-  const selected = ($("p-fulfillment").value || "").trim();
-  if (!shippingPolicies.length) {
-    listEl.innerHTML = "<p class='hint'>No shipping policies found on your account. Create one in Seller Hub first.</p>";
-    return;
-  }
+function renderShippingDropdown() {
+  /* v35: one option per current policy, NAME ONLY. The id rides in
+     the option value for the app, but it is never displayed — the
+     v34 buttons showed "name — type (id)", which read as bare text
+     with number noise. A policy with no shippable service is still
+     shown (its type line says so); the publish gate says why it
+     cannot ship if it is picked. */
+  const sel = $("shipping-select");
+  const current = ($("p-fulfillment").value || "").trim();
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "— Pick a shipping policy —";
+  sel.appendChild(ph);
   shippingPolicies.forEach((p) => {
-    const b = document.createElement("button");
-    b.type = "button"; b.className = "ghost";
-    b.textContent = (p.id === selected ? "✓ " : "") +
-      (p.name || "Unnamed policy") + " — " +
-      policyTypeLabel(p.cost_type) + " (" + p.id + ")";
-    b.addEventListener("click", () => selectShippingPolicy(p.id));
-    listEl.appendChild(b);
+    const o = document.createElement("option");
+    o.value = p.id;
+    o.textContent = p.name || "Unnamed policy";
+    sel.appendChild(o);
   });
+  sel.value = shippingPolicies.some((p) => p.id === current) ? current : "";
 }
 
 function refreshShippingChooser() {
-  /* v34: the selected line + package visibility follow the shipping
-     number box. Known flat/free/pickup policies hide the package
-     fields (they are not sent for those); calculated shows them; an
-     unknown number shows them too, so a weight can be entered before
-     the gate reads the policy at publish time. */
+  /* v35: the dropdown value + type line + package visibility follow
+     the shipping number box. Known flat/free/pickup policies hide the
+     package fields (they are not sent for those); calculated shows
+     them; an unknown number shows them too, so a weight can be
+     entered before the gate reads the policy at publish time. A
+     hand-typed number that matches a fetched policy selects it in the
+     dropdown; one that does not match leaves the placeholder, and
+     the publish gate flags it with the pick message. */
   const selected = ($("p-fulfillment").value || "").trim();
-  const line = $("shipping-selected");
+  const sel = $("shipping-select");
+  const line = $("shipping-type-line");
   const pkg = $("shipping-package");
   const match = shippingPolicies.find((p) => p.id === selected);
+  if (shippingPolicies.length) {
+    sel.value = match ? selected : "";
+  }
   if (!selected) {
-    line.textContent = "Shipping policy: not picked yet.";
+    line.textContent = "";
   } else if (match) {
-    line.textContent = "Shipping policy: " + (match.name || "Unnamed policy") +
-      " — " + policyTypeLabel(match.cost_type) + " (" + match.id + ")";
+    line.textContent = shippingTypeLine(match.cost_type);
   } else {
-    line.textContent = "Shipping policy: " + selected + " (details not loaded yet).";
+    line.textContent = "Details not loaded yet.";
   }
   const showPackage = !match || match.cost_type === "CALCULATED";
   pkg.classList.toggle("hidden", !showPackage);
-  /* Sync the list checkmarks with the number box: prefill, a
-     hand-typed number, and picks all flow through here, and the
-     checkmark must follow whichever number is current. */
-  if (shippingPolicies.length) renderShippingList();
 }
 
-function openShippingPick(policies, message) {
-  /* v34: a failed publish with an unusable saved policy opens this
-     same chooser (replacing the old separate pick form): the fresh
-     policy list, the plain problem message, and pick mode on, so the
-     next selection re-posts the confirmed publish. */
+function openShippingPick(policies, message, problems) {
+  /* v35: a failed publish with an unusable saved policy opens this
+     same dropdown: the fresh policy list, the plain problem message,
+     any compliance problems found alongside it, and pick mode on, so
+     the next selection re-posts the confirmed publish. */
   shippingPolicies = policies || [];
   shippingPickMode = true;
-  renderShippingList();
+  renderShippingDropdown();
   refreshShippingChooser();
   const msg = $("shipping-pick-msg");
-  msg.textContent = message ||
+  let text = message ||
     "That shipping policy number no longer works. Pick one below.";
+  if (problems && problems.length) {
+    text += " Also fix before listing: " + problems.join(" ");
+  }
+  msg.textContent = text;
   msg.classList.remove("hidden");
   $("shipping-section").scrollIntoView();
+  $("shipping-select").focus();
 }
 
 async function selectShippingPolicy(policyId) {
@@ -1874,8 +1960,7 @@ async function selectShippingPolicy(policyId) {
   errEl.classList.add("hidden");
   $("p-fulfillment").value = policyId;
   await saveDraft();
-  renderShippingList();
-  refreshShippingChooser();
+  refreshShippingChooser(); /* v35: the dropdown value follows the number box */
   if (!shippingPickMode || !pendingPublishBody) return;
   $("publish-spinner").classList.remove("hidden");
   try {
@@ -1938,7 +2023,7 @@ function hidePublishMsg() {
   $("publish-error").classList.add("hidden");
   $("publish-ok").classList.add("hidden");
   /* v34: fresh attempt, so the scope box and chooser pick message
-     reset too (the chooser list itself stays — it is always
+     reset too (the dropdown itself stays — it is always
      visible). */
   $("scope-reconnect-box").classList.add("hidden");
   $("shipping-pick-msg").classList.add("hidden");

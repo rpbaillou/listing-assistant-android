@@ -171,6 +171,8 @@ class LocationCreateChainTest(unittest.TestCase):
                               return_value="https://i.ebayimg.com/fake.jpg"),
             mock.patch.object(m, "_category_aspects",
                               return_value=(None, None)),
+            mock.patch.object(m, "_category_conditions",
+                              return_value=(None, None)),
             mock.patch.object(m, "_ebay_call", side_effect=self._fake_call),
             mock.patch.object(m, "EBAY_MERCHANT_LOCATION_KEY", env_key),
         ]
@@ -184,10 +186,15 @@ class LocationCreateChainTest(unittest.TestCase):
         with self.assertRaises(m._NeedsShipFromAddress) as ctx:
             self._run()
         self.assertIn("No shop location found", str(ctx.exception))
-        # Fails fast: only the location lookup ran — no create, no photo
+        # Fails fast: only reads ran — no create, no photo
         # upload, no inventory PUT, no offer, no publish.
+        # v35: the compliance check's policy read runs before location
+        # resolution (a harmless read; the report must cover policy
+        # problems too).
         self.assertEqual([(e[0], e[1], e[2]) for e in self.events],
-                         [("call", "GET", "/sell/inventory/v1/location")])
+                         [("call", "GET",
+                           "/sell/account/v1/fulfillment_policy/111"),
+                          ("call", "GET", "/sell/inventory/v1/location")])
 
     def test_empty_list_with_address_creates_then_publishes(self):
         listing_id, _url = self._run(ship_from=dict(DUMMY_SHIP_FROM))

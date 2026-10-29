@@ -147,12 +147,47 @@ _app_token_cache = {}   # {"token":..., "expires_at":...} for taxonomy calls
 
 CONDITIONS = [
     ("NEW", "New"),
-    ("USED_EXCELLENT", "Used - excellent"),
-    ("USED_VERY_GOOD", "Used - very good"),
-    ("USED_GOOD", "Used - good"),
-    ("USED_ACCEPTABLE", "Used - acceptable"),
+    ("USED_EXCELLENT", "Used"),
+    ("USED_VERY_GOOD", "Very Good"),
+    ("USED_GOOD", "Good"),
+    ("USED_ACCEPTABLE", "Acceptable"),
     ("FOR_PARTS_OR_NOT_WORKING", "For parts or not working"),
 ]
+
+# v35: numeric condition ID -> Inventory API ConditionEnum, from eBay's
+# official ID table (docs/ebay-listing-requirements.md). There is NO
+# plain USED enum: a category that takes "Used" takes USED_EXCELLENT
+# (3000). The old "Used - excellent" label for that value was
+# misleading, so the static list above now labels it "Used".
+CONDITION_ID_TO_ENUM = {
+    1000: "NEW", 1500: "NEW_OTHER", 1750: "NEW_WITH_DEFECTS",
+    2000: "CERTIFIED_REFURBISHED", 2010: "EXCELLENT_REFURBISHED",
+    2020: "VERY_GOOD_REFURBISHED", 2030: "GOOD_REFURBISHED",
+    2500: "SELLER_REFURBISHED", 2750: "LIKE_NEW",
+    2990: "PRE_OWNED_EXCELLENT", 3000: "USED_EXCELLENT",
+    3010: "PRE_OWNED_FAIR", 4000: "USED_VERY_GOOD",
+    5000: "USED_GOOD", 6000: "USED_ACCEPTABLE",
+    7000: "FOR_PARTS_OR_NOT_WORKING",
+}
+
+# Plain display names for every enum (official table's display names),
+# used for the category-aware Condition dropdown and for naming the
+# allowed choices in compliance messages.
+CONDITION_DISPLAY = {
+    "NEW": "New", "NEW_OTHER": "New other (see details)",
+    "NEW_WITH_DEFECTS": "New with defects",
+    "CERTIFIED_REFURBISHED": "Certified Refurbished",
+    "EXCELLENT_REFURBISHED": "Excellent - Refurbished",
+    "VERY_GOOD_REFURBISHED": "Very Good - Refurbished",
+    "GOOD_REFURBISHED": "Good - Refurbished",
+    "SELLER_REFURBISHED": "Seller refurbished",
+    "LIKE_NEW": "Like New",
+    "PRE_OWNED_EXCELLENT": "Pre-owned - Excellent",
+    "USED_EXCELLENT": "Used", "PRE_OWNED_FAIR": "Pre-owned - Fair",
+    "USED_VERY_GOOD": "Very Good", "USED_GOOD": "Good",
+    "USED_ACCEPTABLE": "Acceptable",
+    "FOR_PARTS_OR_NOT_WORKING": "For parts or not working",
+}
 
 IDENTIFY_PROMPT = """You are an expert eBay reseller assistant. The attached photos show ONE item a reseller wants to list on eBay. Identify it as specifically as you can (brand or maker, model or pattern name, era, materials, colors). Then write an eBay listing draft.
 
@@ -453,12 +488,21 @@ def _plain_ebay_error(resp):
                 "app can list. In Seller Hub go to Account, then Business policies, and "
                 "opt in. Then try again." + code)
     aspecty = ("aspect" in low or "specific" in low)
-    if "categor" in low and not aspecty:
-        return ("eBay did not accept that category. Tap Suggest next to the category "
-                "field and pick one from the list. Details: " + msg[:160] + code)
+    # v35: condition is checked BEFORE category. Error 25021 ("provided
+    # condition id is invalid for this category") contains BOTH words,
+    # so the old category-first order mislabeled a condition problem as
+    # "eBay did not accept that category. Tap Suggest" — wrong advice
+    # that sent the seller to re-pick a fine category (live v1.33).
+    if err_id == "25021":
+        return ("That condition choice isn't allowed for this category. "
+                "Pick a different condition." + code +
+                ". Details: " + msg[:160])
     if "condition" in low and not aspecty:
         return ("eBay needs more condition detail for this category. Try a different "
                 "condition choice. Details: " + msg[:160] + code)
+    if "categor" in low and not aspecty:
+        return ("eBay did not accept that category. Tap Suggest next to the category "
+                "field and pick one from the list. Details: " + msg[:160] + code)
     if "image" in low and not aspecty:
         return ("eBay rejected a photo. Make sure every photo is a normal JPG under "
                 "12 MB. Details: " + msg[:160] + code)
@@ -779,6 +823,72 @@ def _category_aspects(category_id):
         return None, None
     _aspects_cache[cid] = (time.time() + 86400, (required, recommended))
     return required, recommended
+
+
+_conditions_cache = {}
+
+
+def _category_conditions(category_id):
+    """v35: conditions a category allows, via the Metadata API's
+    getItemConditionPolicies (official: supported condition values vary
+    by category; the call returns numeric IDs that map to ConditionEnum
+    values via CONDITION_ID_TO_ENUM).
+
+    Returns (allowed_enums, condition_required) where allowed_enums is
+    a list of ConditionEnum strings in official-table order. Returns
+    (None, None) when eBay can't be reached, the token is rejected, or
+    the response is unusable — callers must fall back to the static
+    list + a plain hint instead of blocking the user. The app (client
+    credentials) token is used, like the Taxonomy aspects fetch; the
+    method's OpenAPI security block is the base scope, which that token
+    carries. Cached 24 hours per category, like aspects.
+    """
+    cid = str(category_id).strip()
+    if not cid:
+        return None, None
+    hit = _conditions_cache.get(cid)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    try:
+        token = _app_token()
+        resp = requests.get(
+            EBAY_API + "/sell/metadata/v1/marketplace/EBAY_US/"
+            "get_item_condition_policies",
+            headers={"Authorization": "Bearer " + token},
+            params={"filter": "categoryIds:" + cid},
+            timeout=30)
+    except (requests.RequestException, RuntimeError):
+        return None, None
+    if resp.status_code != 200:
+        return None, None
+    try:
+        body = resp.json()
+        policies = body.get("itemConditionPolicies") or []
+        entry = None
+        for p in policies:
+            if isinstance(p, dict) and str(p.get("categoryId", "")).strip() == cid:
+                entry = p
+                break
+        if entry is None:
+            return None, None
+        enums = []
+        for c in (entry.get("itemConditions") or []):
+            if not isinstance(c, dict):
+                continue
+            try:
+                num = int(c.get("conditionId"))
+            except (TypeError, ValueError):
+                continue
+            enum = CONDITION_ID_TO_ENUM.get(num)
+            if enum and enum not in enums:
+                enums.append(enum)
+        if not enums:
+            return None, None
+        result = (enums, bool(entry.get("itemConditionRequired")))
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+    _conditions_cache[cid] = (time.time() + 86400, result)
+    return result
 
 
 def _clean_aspects(attributes):
@@ -1125,11 +1235,17 @@ class _NeedsFulfillmentPolicyChoice(RuntimeError):
     service). Carries the account's current EBAY_US fulfillment policies
     (plain dicts: id, name, cost_type, marketplace) so the app can offer
     a one-tap pick instead of a dead-end error. Policy IDs are seller
-    config, not secrets — the status endpoint already exposes them."""
+    config, not secrets — the status endpoint already exposes them.
 
-    def __init__(self, message, policies):
+    v35: also carries `problems` — compliance problems found alongside
+    the unusable policy (e.g. a bad condition), so the pick screen can
+    show them too instead of surfacing one wall at a time.
+    """
+
+    def __init__(self, message, policies, problems=None):
         super().__init__(message)
         self.policies = policies
+        self.problems = list(problems or [])
 
 
 def _policy_cost_type(policy):
@@ -1267,6 +1383,12 @@ def _check_fulfillment_policy(token, fulfillment_id, package):
             "Pick one of your US shipping policies below.",
             [_policy_pick_entry(p) for p in (policies or [])])
     cost_type = _policy_cost_type(policy)
+    # v35: a lone weight-unit default is not a package (see
+    # _package_has_content) — treat it as no package, so the seller
+    # hears "charges by weight" instead of a half-filled-fields error
+    # for a section they never touched.
+    if package is not None and not _package_has_content(package):
+        package = None
     if cost_type == "CALCULATED":
         if package is None:
             raise _PublishValidationError(
@@ -1284,6 +1406,26 @@ def _check_fulfillment_policy(token, fulfillment_id, package):
         [_policy_pick_entry(p) for p in (policies or [])])
 
 
+def _package_has_content(raw):
+    """v35: whether a package block carries anything the seller entered.
+    The weight-unit dropdown always holds a value (OUNCE by default),
+    so a lone unit must NOT count: a draft that only ever autosaved
+    the unit is an empty package, not a half-filled one. Content means
+    a weight value or any dimension is filled. Fixes the live v34
+    trap where a flat-rate publish with nothing entered failed
+    validation on the defaulted unit alone.
+    """
+    if not isinstance(raw, dict):
+        return False
+    for key in ("weight_value", "package_weight_value",
+                "length", "package_length",
+                "width", "package_width",
+                "height", "package_height"):
+        if str(raw.get(key, "") or "").strip():
+            return True
+    return False
+
+
 def _draft_package(d):
     """A draft's saved package block (v32 listing-page fields), or None
     when nothing was entered. Mirrors the single-publish assembly: any
@@ -1292,7 +1434,7 @@ def _draft_package(d):
     raw = {k: str(d.get(k, "") or "").strip() for k in (
         "package_weight_value", "package_weight_unit",
         "package_length", "package_width", "package_height")}
-    if not any(raw.values()):
+    if not _package_has_content(raw):
         return None
     return {"weight_value": raw["package_weight_value"],
             "weight_unit": raw["package_weight_unit"],
@@ -1324,7 +1466,125 @@ def _discard_offer(d, token):
         pass  # best-effort: never block the retry on the delete itself
     d.pop("ebay_offer_id", None)
     d.pop("ebay_offer_fulfillment_id", None)
+    d.pop("ebay_offer_condition", None)
     _save_draft(d)
+
+
+def _format_problems(problems, notes):
+    """v35: render a compliance report as one error string. A single
+    problem stands alone (so its wording matches the old single-error
+    messages exactly); several problems list under one header, each
+    naming what is wrong + how to fix it. Notes (checks that could not
+    run) trail as a non-blocking line on a multi-problem report only.
+    The frontend error box uses pre-wrap, so the line breaks render
+    as a list.
+    """
+    if len(problems) == 1:
+        body = problems[0]
+    else:
+        body = ("Fix these before listing:\n" +
+                "\n".join("- " + p for p in problems))
+    # v35: notes trail only on a multi-problem report. A single problem
+    # keeps its exact legacy wording (existing tests assert it), so a
+    # "could not check" note never rides along and changes the message.
+    if notes and len(problems) > 1:
+        body += "\nNote: " + " ".join(notes)
+    return body
+
+
+def _listing_readiness(d, f, token):
+    """v35: pre-publish compliance check (docs/ebay-listing-requirements.md).
+    Returns (problems, notes). problems are plain-word strings, each
+    naming what is wrong + how to fix it; notes are checks that could
+    not run (a fetch failed) and never block. Hard-blocks ONLY on
+    verified rules. Runs after token acquisition and before location
+    resolution, so a blocked publish never uploads photos or touches
+    eBay state. A stale-policy pick signal or a scope-reconnect signal
+    from the policy gate is re-raised, not converted: the pick UI (with
+    any problems found so far attached) and the reconnect UI own those
+    paths, and the next publish reports everything.
+    """
+    problems, notes = [], []
+    title = (f.get("title") or "").strip()
+    category_id = (f.get("category_id") or "").strip()
+    condition = (f.get("condition") or "").strip()
+    fulfillment_id = ((f.get("fulfillment_id") or "").strip()
+                      or EBAY_FULFILLMENT_POLICY_ID)
+    payment_id = ((f.get("payment_id") or "").strip()
+                  or EBAY_PAYMENT_POLICY_ID)
+    return_id = ((f.get("return_id") or "").strip()
+                 or EBAY_RETURN_POLICY_ID)
+    if not title:
+        problems.append("The title is empty. Go back and write a title first.")
+    elif len(title) > 80:
+        problems.append("The title is over 80 characters. Shorten it to 80 or fewer.")
+    price_error = f.get("price_error")
+    if price_error:
+        problems.append(str(price_error))
+    else:
+        price_val = f.get("price_val")
+        if price_val is None or price_val <= 0:
+            problems.append("Set a price above $0 before listing.")
+    if not category_id:
+        problems.append("Pick an eBay category first (tap Suggest).")
+    if not (fulfillment_id and payment_id and return_id):
+        problems.append("The three policy numbers are missing. Add them in .env "
+                        "or type them in the boxes (setup guide: Connect eBay).")
+    if not condition:
+        problems.append("Pick a condition first.")
+    elif condition not in {v for v, _ in CONDITIONS}:
+        problems.append("Pick a condition from the list.")
+    bo_error = f.get("bo_error")
+    if bo_error:
+        problems.append(str(bo_error))
+    if not (d.get("photos") or []):
+        problems.append("This draft has no photos.")
+    # Condition vs category (Metadata API; never blocks on a failed fetch).
+    if category_id and condition and condition in {v for v, _ in CONDITIONS}:
+        allowed, _required = _category_conditions(category_id)
+        if allowed is None:
+            notes.append("Could not check which conditions this category "
+                         "takes, so eBay will decide at publish.")
+        elif condition not in allowed:
+            labels = ", ".join(CONDITION_DISPLAY.get(e, e) for e in allowed)
+            problems.append(
+                "That condition choice isn't allowed for this category. "
+                f"This category takes: {labels}. "
+                "Pick one from the Condition list.")
+    # Shipping policy gate (user token): a validation failure becomes
+    # one more problem; a pick/scope signal propagates with the
+    # problems found so far attached to the pick signal.
+    if fulfillment_id:
+        try:
+            _check_fulfillment_policy(token, fulfillment_id, f.get("package"))
+        except _NeedsFulfillmentPolicyChoice as exc:
+            exc.problems = list(problems)
+            raise
+        except _NeedsScopeReconnect:
+            raise
+        except _PublishValidationError as exc:
+            problems.append(str(exc))
+    # Required specifics (Taxonomy API; never blocks on a failed fetch).
+    if category_id:
+        required, recommended = _category_aspects(category_id)
+        if required is None:
+            notes.append("Could not check this category's required details, "
+                         "so eBay will decide at publish.")
+        else:
+            attributes = dict(f.get("attributes") or {})
+            exact = {a["name"].lower(): a["name"]
+                     for a in (required + recommended)}
+            normalized = {}
+            for k, v in attributes.items():
+                ks = str(k).strip()
+                normalized[exact.get(ks.lower(), ks)] = v
+            missing = _missing_required_aspects(normalized, required)
+            if missing:
+                problems.append(
+                    "eBay requires these details for this category: " +
+                    ", ".join(missing) + ". Fill them in under "
+                    "'Details eBay requires', then try again.")
+    return problems, notes
 
 
 def _do_publish(d, f, ship_from=None):
@@ -1338,9 +1598,12 @@ def _do_publish(d, f, ship_from=None):
     best_offer_terms (dict or None), package (dict or None: the
     listing-page weight + size block, validated by the v32 policy gate
     and sent on the inventory item only for calculated policies).
-    best_offer_terms (dict or None). Policy ids still empty after the
-    .env fallback raise _PublishValidationError, as do a missing title,
-    category, condition value, or photos. ship_from, when given, is the
+    best_offer_terms (dict or None). v35: the pre-publish compliance
+    check (_listing_readiness) reports ALL problems at once (missing
+    title, category, policy ids, condition value, photos, price, bad
+    condition for the category, calculated policy without a package,
+    missing required specifics) before any eBay call; the old
+    one-at-a-time raises are gone. ship_from, when given, is the
     address the seller typed once in the app: if the account has no
     inventory location, one is created from it (v31) and the publish
     proceeds; without it, an empty location list raises
@@ -1355,26 +1618,7 @@ def _do_publish(d, f, ship_from=None):
     category_id = (f.get("category_id") or "").strip()
     condition = (f.get("condition") or "").strip()
     condition_details = (f.get("condition_details") or "").strip()
-    if not title:
-        raise _PublishValidationError(
-            "The title is empty. Go back and write a title first.")
-    if not category_id:
-        raise _PublishValidationError(
-            "Pick an eBay category first (tap Suggest).")
-    if not (fulfillment_id and payment_id and return_id):
-        raise _PublishValidationError(
-            "The three policy numbers are missing. Add them in .env "
-            "or type them in the boxes (setup guide: Connect eBay).")
-    if not condition:
-        # v30 (audit F4): condition is required before listing. Never
-        # default to NEW here — silently calling a used item "new"
-        # misleads the buyer (the honesty rule from v6).
-        raise _PublishValidationError("Pick a condition first.")
-    if condition not in {v for v, _ in CONDITIONS}:
-        raise _PublishValidationError("Pick a condition from the list.")
     photos = d.get("photos") or []
-    if not photos:
-        raise _PublishValidationError("This draft has no photos.")
     try:
         token = _ebay_access_token()
     except _NeedsScopeReconnect:
@@ -1385,6 +1629,19 @@ def _do_publish(d, f, ship_from=None):
         raise
     except RuntimeError as exc:
         raise _EbayAuthError(str(exc))
+
+    # v35: pre-publish compliance check — ALL problems at once, before
+    # location resolution, photo uploads, or any eBay state change.
+    # This replaces the old one-at-a-time validations (empty title,
+    # then category, then condition, then eBay's own verdict): a draft
+    # with three things wrong now hears all three in one message, each
+    # naming the fix. A stale-policy pick signal or a scope signal
+    # propagates (the pick/reconnect UI owns those paths). Condition
+    # is still required, never silently defaulted to NEW (v30 audit F4
+    # + the v6 honesty rule).
+    problems, _notes = _listing_readiness(d, f, token)
+    if problems:
+        raise _PublishValidationError(_format_problems(problems, _notes))
 
     # v30 (audit F2) + v31: eBay requires an inventory location to
     # publish. Resolve before any photo work so an empty location list
@@ -1477,6 +1734,17 @@ def _do_publish(d, f, ship_from=None):
     if offer_id and recorded_policy and recorded_policy != fulfillment_id:
         _discard_offer(d, token)
         offer_id = None
+    # v35: same snapshot rule for condition. A saved offer predates a
+    # condition change, and publish validates the offer's snapshot
+    # (error 25021 names "the inventory item, or the unpublished
+    # offer"), so reusing it would publish the OLD condition, not the
+    # current one — discard it and create fresh below. Drafts saved
+    # before v35 carry no recorded condition, so the comparison is
+    # skipped and reuse is preserved.
+    recorded_condition = (d.get("ebay_offer_condition") or "").strip()
+    if offer_id and recorded_condition and recorded_condition != condition:
+        _discard_offer(d, token)
+        offer_id = None
     if not offer_id:
         try:
             offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
@@ -1511,6 +1779,9 @@ def _do_publish(d, f, ship_from=None):
             # v34: record which policy this offer was created with, so
             # a later policy change discards it instead of reusing it.
             d["ebay_offer_fulfillment_id"] = fulfillment_id
+            # v35: same for the condition, so a later condition change
+            # discards it instead of publishing the old condition.
+            d["ebay_offer_condition"] = condition
         except RuntimeError as exc:
             # v30 (audit F3): if eBay says an offer already exists for this
             # SKU (25002-style), reuse it instead of failing the retry.
@@ -1554,13 +1825,23 @@ def _do_publish(d, f, ship_from=None):
     except RuntimeError as exc:
         # v34: a 25007/25604 publish failure means the offer itself is
         # suspect (a stale snapshot — the publish used saved offer
-        # state, not the current data). Discard it so the NEXT attempt
+        # state, not the current data). v35 adds 25021 (bad condition
+        # for the category) to the same set: a reused offer can carry
+        # the old condition snapshot. Discard it so the NEXT attempt
         # creates a fresh offer instead of re-publishing the same stale
         # one forever. Other failures keep the F3 reuse protection
         # intact, and a live listing is never touched (_discard_offer
         # guards it; listing_id is unset on this path in any case).
         low_publish = str(exc).lower()
-        if "25007" in low_publish or "25604" in low_publish:
+        # v35: match the structured errorId too, not just message text
+        # (a _plain_ebay_error message carries "(error 25021)", but a
+        # direct _EbayApiError may not — the discard must fire either
+        # way; plain RuntimeErrors have no error_id and fall back to
+        # the message sniff below).
+        exc_id = str(getattr(exc, "error_id", "") or "")
+        if (exc_id in ("25007", "25604", "25021")
+                or "25007" in low_publish or "25604" in low_publish
+                or "25021" in low_publish):
             _discard_offer(d, token)
         # v32: same 25007 naming as the offer step above.
         if "25007" in str(exc).lower():
@@ -1631,6 +1912,32 @@ def api_ebay_fulfillment_policies():
     return jsonify({"policies": policies})
 
 
+@app.route("/api/ebay/category-conditions", methods=["GET"])
+def api_ebay_category_conditions():
+    """v35: the Condition dropdown's per-category list. Returns the
+    category's allowed conditions (value + plain label) from the
+    Metadata API, plus whether the category requires a condition at
+    all. When the fetch fails, `available` is False and the static
+    list is returned instead, so the page keeps the full dropdown plus
+    a plain hint that eBay will decide — never a block, never an
+    empty dropdown.
+    """
+    category_id = str(request.args.get("category_id", "") or "").strip()
+    allowed, required = _category_conditions(category_id)
+    if allowed is None:
+        return jsonify({
+            "conditions": [{"value": v, "label": l} for v, l in CONDITIONS],
+            "condition_required": True,
+            "available": False,
+        })
+    return jsonify({
+        "conditions": [{"value": e, "label": CONDITION_DISPLAY.get(e, e)}
+                       for e in allowed],
+        "condition_required": bool(required),
+        "available": True,
+    })
+
+
 @app.route("/api/ebay/publish", methods=["POST"])
 def api_ebay_publish():
     body = request.get_json(force=True) or {}
@@ -1650,9 +1957,10 @@ def api_ebay_publish():
     price_raw = str(body.get("price", d.get("price", ""))).strip()
     # v6: condition comes from the listing page, falling back to the draft's
     # condition field. Empty means unset: we do NOT default to NEW,
-    # because silently calling a used item "new" misleads the buyer. eBay gets
-    # no condition value in that case; if the category requires one, eBay's own
-    # error message says so in plain words.
+    # because silently calling a used item "new" misleads the buyer.
+    # v35: the compliance check inside _do_publish reports a missing
+    # condition together with every other problem, instead of eBay's
+    # own error arriving later.
     condition = str(body.get("condition", "") or d.get("condition", "")).strip()
     condition_details = str(body.get("condition_details", "")
                             or d.get("condition_details", "")).strip()[:1000]
@@ -1674,19 +1982,19 @@ def api_ebay_publish():
         for k, v in body_attrs.items():
             attributes[str(k)] = v
 
-    if not title:
-        return jsonify({"error": "The title is empty. Go back and write a title first."}), 400
+    # v35: no early single-error returns here anymore. The endpoint
+    # assembles f and lets _do_publish's compliance check report ALL
+    # problems at once — a draft with three things wrong used to hear
+    # only the first. Price and Best Offer parse results ride along as
+    # error strings so compliance can include them in the same report.
     try:
         price_val = round(float(price_raw), 2)
         if price_val <= 0:
             raise ValueError()
+        price_error = None
     except (ValueError, TypeError):
-        return jsonify({"error": "Set a price above $0 before listing."}), 400
-    if not category_id:
-        return jsonify({"error": "Pick an eBay category first (tap Suggest)."}), 400
-    if not (fulfillment_id and payment_id and return_id):
-        return jsonify({"error": "The three policy numbers are missing. Add them in .env "
-                                 "or type them in the boxes (setup guide: Connect eBay)."}), 400
+        price_val = None
+        price_error = "Set a price above $0 before listing."
     # v9: best offer. The toggle and optional auto prices come from the
     # listing page, falling back to the draft's saved values. Toggle off =
     # today's behavior, unchanged (no bestOfferTerms sent).
@@ -1697,23 +2005,18 @@ def api_ebay_publish():
                               d.get("best_offer_auto_accept", "")) or "")
     best_offer_terms, bo_error = _best_offer_terms(best_offer, decline_raw,
                                                    accept_raw, price_val)
-    if bo_error:
-        return jsonify({"error": bo_error}), 400
-    if condition and condition not in {v for v, _ in CONDITIONS}:
-        return jsonify({"error": "Pick a condition from the list."}), 400
-    photos = d.get("photos") or []
-    if not photos:
-        return jsonify({"error": "This draft has no photos."}), 400
+    # v35: bo_error rides into f for the compliance report (see above);
+    # it is not returned early anymore.
 
-    # v32: package weight + size for calculated shipping policies.
-    # Only assembled when at least one field is filled; _do_publish
-    # validates a partial block and requires the full block for
-    # calculated policies. Never defaulted — the weight must be real.
+    # v35: a lone weight-unit default (OUNCE) is not a package — only
+    # a weight value or a dimension counts (see _package_has_content).
+    # The assembled dict still carries the unit for validation when a
+    # real block is present.
     package = None
     _pkg_raw = {k: str(body.get(k, "") or "").strip() for k in (
         "package_weight_value", "package_weight_unit",
         "package_length", "package_width", "package_height")}
-    if any(_pkg_raw.values()):
+    if _package_has_content(_pkg_raw):
         package = {"weight_value": _pkg_raw["package_weight_value"],
                    "weight_unit": _pkg_raw["package_weight_unit"],
                    "length": _pkg_raw["package_length"],
@@ -1725,6 +2028,8 @@ def api_ebay_publish():
             "title": title,
             "description": description,
             "price_val": price_val,
+            "price_error": price_error,
+            "bo_error": bo_error,
             "condition": condition,
             "condition_details": condition_details,
             "category_id": category_id,
@@ -1762,8 +2067,11 @@ def api_ebay_publish():
     except _NeedsFulfillmentPolicyChoice as exc:
         # v32: not a failure — the app offers the current policies as
         # a one-tap pick and re-posts with the picked ID.
+        # v35: compliance problems found alongside the unusable policy
+        # ride along, so the pick screen shows them too.
         return jsonify({"needs_policy_pick": True,
                         "policies": exc.policies,
+                        "problems": getattr(exc, "problems", []),
                         "error": str(exc)}), 200
     except RuntimeError as exc:
         # v33: same defense — a bare scope raise must never surface
@@ -1874,9 +2182,11 @@ def api_ebay_batch_publish():
             # v32: the stored shipping policy is unusable for every
             # draft in the run. Stop here; the app offers the current
             # policies as a one-tap pick and re-runs with the pick.
+            # v35: compliance problems found alongside ride along.
             results.append({"draft_id": d["id"], "title": title, "ok": False,
                             "needs_policy_pick": True,
                             "policies": exc.policies,
+                            "problems": getattr(exc, "problems", []),
                             "error": str(exc)})
             break
         except RuntimeError as exc:

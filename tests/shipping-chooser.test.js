@@ -1,11 +1,18 @@
-/* v34: node tests for the frontend Shipping chooser in static/app.js.
+/* v35: node tests for the frontend Shipping dropdown in static/app.js.
    app.js is a browser script, so this stubs the DOM with STATEFUL
    elements (unlike scope-reconnect.test.js, whose proxy elements are
    no-ops): values, text, and hidden toggles must persist across $()
-   calls, or the chooser cannot be observed at all. The test drives the
-   real functions: openShippingPick seeds the policy list + pick mode,
-   hidePublishMsg resets pick mode (browse mode), selectShippingPolicy
-   picks, refreshShippingChooser follows the number box.
+   calls, or the dropdown cannot be observed at all. The test drives
+   the real functions: openShippingPick seeds the policy list + pick
+   mode, hidePublishMsg resets pick mode (browse mode),
+   selectShippingPolicy picks, refreshShippingChooser follows the
+   number box. The v34 bare-text button list is gone: one compact
+   dropdown shows policy NAMES ONLY (no ID numbers, no duplicated
+   header line — the closed dropdown IS the current-selection
+   display), one short line states flat rate vs charges-by-weight,
+   and package fields show only for calculated policies, always
+   empty unless the draft already has saved values (a policy named
+   "Calculated 2lb" never sets 2lb).
    Run: node tests/shipping-chooser.test.js (exit 0 = pass). */
 const fs = require("fs");
 const path = require("path");
@@ -93,6 +100,8 @@ const sandbox = {
   },
   URLSearchParams,
   console,
+  setTimeout,
+  clearTimeout,
 };
 sandbox.window.document = sandbox.document;
 vm.createContext(sandbox);
@@ -105,80 +114,103 @@ function check(name, cond) {
   if (!cond) { failures++; console.log("FAIL: " + name); }
   else { console.log("ok: " + name); }
 }
-const $ = (id) => registry[id];
+const $ = (id) => sandbox.document.getElementById(id);
 const hidden = (id) => $(id).classList.contains("hidden");
+const optionTexts = () => $("shipping-select").children.map((o) => o.textContent);
+const optionValues = () => $("shipping-select").children.map((o) => o.value);
 
 (async () => {
-  // Plain type labels (shared with the old pick list).
+  // Plain type labels (shared with the untouched batch pick list).
   check("calculated label", sandbox.policyTypeLabel("CALCULATED") === "calculated (needs package weight)");
   check("flat label", sandbox.policyTypeLabel("FLAT_RATE") === "flat rate");
   check("pickup label", sandbox.policyTypeLabel("NOT_SPECIFIED") === "local pickup only");
   check("unknown label", sandbox.policyTypeLabel(null) === "unknown type");
 
-  // Seed via the reactive-pick entry: list renders, pick message shows.
+  // Short type lines under the dropdown.
+  check("calculated type line", sandbox.shippingTypeLine("CALCULATED") === "Charges by weight.");
+  check("flat type line", sandbox.shippingTypeLine("FLAT_RATE") === "Flat rate.");
+  check("pickup type line", sandbox.shippingTypeLine("NOT_SPECIFIED") === "Local pickup only.");
+  check("unknown type line", sandbox.shippingTypeLine(null) === "Unknown type.");
+
+  // Seed via the reactive-pick entry: dropdown renders, pick message shows.
   const POLICIES = [
-    { id: "111", name: "Dummy Calculated", cost_type: "CALCULATED" },
+    { id: "111", name: "Calculated 2lb", cost_type: "CALCULATED" },
     { id: "222", name: "Dummy Flat", cost_type: "FLAT_RATE" },
   ];
   sandbox.openShippingPick(POLICIES, "That shipping policy number no longer works. Pick one below.");
-  const list = $("shipping-list");
-  check("list renders two buttons", list.children.length === 2);
-  check("first button names calculated policy",
-    list.children[0].textContent.includes("Dummy Calculated") &&
-    list.children[0].textContent.includes("calculated (needs package weight)") &&
-    list.children[0].textContent.includes("(111)"));
-  check("second button names flat policy",
-    list.children[1].textContent.includes("Dummy Flat") &&
-    list.children[1].textContent.includes("flat rate") &&
-    list.children[1].textContent.includes("(222)"));
+  check("dropdown renders placeholder + two policies",
+    optionTexts().length === 3 && optionTexts()[0].includes("Pick a shipping policy"));
+  check("dropdown options are names only, no IDs",
+    optionTexts()[1] === "Calculated 2lb" && optionTexts()[2] === "Dummy Flat" &&
+    !optionTexts().join(" ").includes("111") && !optionTexts().join(" ").includes("222"));
   check("pick message shown", !hidden("shipping-pick-msg") &&
     $("shipping-pick-msg").textContent.includes("no longer works"));
 
-  // Selected line + package visibility follow the number box.
+  // Dropdown value + type line + package visibility follow the number box.
   $("p-fulfillment").value = "111";
   sandbox.refreshShippingChooser();
-  check("calculated selected line names policy + type",
-    $("shipping-selected").textContent.includes("Dummy Calculated") &&
-    $("shipping-selected").textContent.includes("calculated"));
+  check("calculated selects in dropdown", $("shipping-select").value === "111");
+  check("calculated type line states charges by weight",
+    $("shipping-type-line").textContent === "Charges by weight.");
   check("calculated shows package fields", !hidden("shipping-package"));
-  check("selected button carries check mark",
-    $("shipping-list").children[0].textContent.startsWith("✓ "));
+  check("calculated shows EMPTY package fields (never from the policy name)",
+    $("p-weight").value === "" && $("p-length").value === "" &&
+    $("p-width").value === "" && $("p-height").value === "");
+  check("type line carries no ID numbers",
+    !$("shipping-type-line").textContent.includes("111"));
   $("p-fulfillment").value = "222";
   sandbox.refreshShippingChooser();
-  check("flat selected line names policy + type",
-    $("shipping-selected").textContent.includes("Dummy Flat") &&
-    $("shipping-selected").textContent.includes("flat rate"));
+  check("flat selects in dropdown", $("shipping-select").value === "222");
+  check("flat type line states flat rate",
+    $("shipping-type-line").textContent === "Flat rate.");
   check("flat hides package fields", hidden("shipping-package"));
   $("p-fulfillment").value = "999";
   sandbox.refreshShippingChooser();
-  check("unknown number shows details-not-loaded + package fields",
-    $("shipping-selected").textContent.includes("(details not loaded yet)") &&
+  check("unknown number leaves placeholder + details line + package fields",
+    $("shipping-select").value === "" &&
+    $("shipping-type-line").textContent === "Details not loaded yet." &&
     !hidden("shipping-package"));
   $("p-fulfillment").value = "";
   sandbox.refreshShippingChooser();
-  check("empty number shows not-picked line",
-    $("shipping-selected").textContent.includes("not picked yet"));
+  check("empty number clears type line",
+    $("shipping-type-line").textContent === "");
 
   // Browse mode: selecting saves the number + refreshes, never publishes.
   sandbox.hidePublishMsg();
   check("pick message hidden after fresh attempt", hidden("shipping-pick-msg"));
   fetchCalls.length = 0;
+  /* app.js's `draft` is a lexical binding in the vm context, so a plain
+     sandbox.draft assignment would not reach it; evaluate the
+     assignment inside the context instead. */
+  vm.runInContext("draft = { id: 'd1' };", sandbox);
   $("p-fulfillment").value = "111";
   sandbox.refreshShippingChooser();
   await sandbox.selectShippingPolicy("222");
   check("browse select sets the number box", $("p-fulfillment").value === "222");
-  check("browse select refreshes to flat + hides package",
-    $("shipping-selected").textContent.includes("Dummy Flat") &&
+  check("browse select refreshes dropdown to flat + hides package",
+    $("shipping-select").value === "222" &&
+    $("shipping-type-line").textContent === "Flat rate." &&
     hidden("shipping-package"));
   check("browse select never publishes",
     !fetchCalls.some((c) => String(c.url).includes("/api/ebay/publish")));
+  check("browse select persists via draft autosave",
+    fetchCalls.some((c) => String(c.url).includes("/api/drafts/d1") &&
+      String(c.opts.body || "").includes('"fulfillment_policy_id":"222"')));
 
   // Pick mode: selecting re-posts the confirmed publish with the picked
   // number + the v34 discard flag (postPublish stubbed to capture).
+  // Reactive pick also shows compliance problems found alongside.
   const PICK_BODY = { draft_id: "d1", title: "T", price: "10.00" };
-  fetchQueue = [{ needs_policy_pick: true, policies: POLICIES, error: "Pick one below." }];
+  fetchQueue = [{ needs_policy_pick: true, policies: POLICIES, error: "Pick one below.",
+                  problems: ["Pick a condition first."] }];
   await sandbox.postPublish(PICK_BODY);
   check("pick mode entered via failed publish", !hidden("shipping-pick-msg"));
+  check("pick message carries compliance problems",
+    $("shipping-pick-msg").textContent.includes("Pick a condition first."));
+  let focused = false;
+  $("shipping-select").focus = () => { focused = true; };
+  sandbox.openShippingPick(POLICIES, "Pick one below.", ["Pick a condition first."]);
+  check("reactive pick focuses the dropdown", focused);
   let repostBody = null;
   sandbox.postPublish = async (body) => { repostBody = body; return "listed"; };
   await sandbox.selectShippingPolicy("111");
@@ -189,6 +221,16 @@ const hidden = (id) => $(id).classList.contains("hidden");
   check("pick re-post keeps confirmed body",
     repostBody && repostBody.draft_id === "d1" && repostBody.title === "T");
   check("listed pick exits pick mode + hides message", hidden("shipping-pick-msg"));
+
+  // Package fields stay fully editable: a calculated pick never fills
+  // them from the policy name, even when the draft has no values.
+  $("p-weight").value = "";
+  $("p-length").value = "";
+  await sandbox.selectShippingPolicy("111");
+  check("calculated pick leaves package inputs empty for the seller to fill",
+    $("p-weight").value === "" && $("p-length").value === "");
+  check("option values still carry the IDs internally (app use only)",
+    optionValues().includes("111") && optionValues().includes("222"));
 
   if (failures) { console.log(failures + " failure(s)"); process.exit(1); }
   console.log("all shipping-chooser checks pass");

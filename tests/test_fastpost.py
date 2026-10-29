@@ -202,12 +202,20 @@ class FastpostTestCase(unittest.TestCase):
                          "https://www.ebay.com/itm/999")
 
     def test_publish_wrapper_missing_category_400(self):
+        # v35: the endpoint no longer short-circuits on category before
+        # auth — _do_publish's compliance check is the single source of
+        # truth, and it needs a token for its policy gate. The token
+        # is mocked (not asserted-absent) and the compliance report
+        # still 400s naming the missing category; no photo upload,
+        # inventory PUT, offer, or publish runs.
         photo = self._write_photo("d1")
         self._save(_draft("d1", title="Test item", price="30.00",
                           photos=[photo]))
-        with mock.patch.object(
-                m, "_ebay_access_token",
-                side_effect=AssertionError("must fail before any eBay call")):
+        with ExitStack() as stack:
+            for p in _ebay_patches():
+                stack.enter_context(p)
+            stack.enter_context(mock.patch.object(
+                m, "_category_conditions", return_value=(None, None)))
             resp = self.client.post("/api/ebay/publish",
                                     json={"draft_id": "d1"})
         self.assertEqual(resp.status_code, 400)

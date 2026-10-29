@@ -176,9 +176,31 @@ class DraftListingFieldsTestCase(unittest.TestCase):
         self.assertEqual(seen["return_id"], "333")
 
     def test_publish_genuinely_empty_category_still_400(self):
+        # v35: the endpoint no longer short-circuits on category before
+        # auth — _do_publish's compliance check is the single source of
+        # truth, and it needs a token for its policy gate. So this test
+        # mocks the token + policy read, and the compliance report
+        # still 400s naming the missing category.
         self._draft()
-        resp = self.client.post("/api/ebay/publish", json={
-            "draft_id": "d1", "title": "Test item", "price": "10.00"})
+        flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
+                "marketplaceId": "EBAY_US",
+                "shippingOptions": [{"optionType": "DOMESTIC",
+                                     "costType": "FLAT_RATE"}]}
+
+        def fake_call(method, path, token, payload=None):
+            if path.startswith("/sell/account/v1/fulfillment_policy"):
+                return flat
+            raise AssertionError("unexpected eBay call %s %s" % (method, path))
+
+        with mock.patch.object(m, "_ebay_access_token",
+                               return_value="tok"), \
+                mock.patch.object(m, "_category_aspects",
+                                  return_value=(None, None)), \
+                mock.patch.object(m, "_category_conditions",
+                                  return_value=(None, None)), \
+                mock.patch.object(m, "_ebay_call", side_effect=fake_call):
+            resp = self.client.post("/api/ebay/publish", json={
+                "draft_id": "d1", "title": "Test item", "price": "10.00"})
         self.assertEqual(resp.status_code, 400)
         self.assertIn("Pick an eBay category first",
                       resp.get_json()["error"])

@@ -69,13 +69,14 @@
     <select id="f-condition">
       <option value="">— Pick one —</option>
       <option value="NEW">New</option>
-      <option value="USED_EXCELLENT">Used - like new</option>
-      <option value="USED_VERY_GOOD">Used - very good</option>
-      <option value="USED_GOOD">Used - good</option>
-      <option value="USED_ACCEPTABLE">Used - fair</option>
+      <option value="USED_EXCELLENT">Used</option>
+      <option value="USED_VERY_GOOD">Very Good</option>
+      <option value="USED_GOOD">Good</option>
+      <option value="USED_ACCEPTABLE">Acceptable</option>
       <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
     </select>
     <p class="hint">You state the condition — the AI no longer guesses about it. Pick what fits, then spell out the specifics below.</p>
+    <p id="condition-fetch-hint" class="hint hidden">Could not check which conditions this category takes, so the full list is shown. If eBay rejects the condition, pick a different one.</p>
 
     <label>Condition details</label>
     <textarea id="f-condition-details" rows="3" placeholder="e.g. small chips on the base, wear on the glaze — be honest, it protects you from returns"></textarea>
@@ -113,21 +114,27 @@
       <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
 
-    <!-- v34: Shipping chooser, always visible on the listing page. Shows
-         the selected shipping policy (name + plain type) and the
-         account's current policies as one-tap buttons; picking one
-         saves it to the draft, so it sticks across reloads. When the
-         selected policy charges by weight (Calculated), the shipping
-         package fields live here — eBay uses them to work out what the
-         buyer pays for shipping — and they are required before List.
-         Flat-rate and free shipping need no package, so the fields hide
-         for those. A failed publish with an unusable saved policy opens
-         this same chooser (see openShippingPick in app.js) instead of a
-         separate pick form. -->
+    <!-- v35: Shipping dropdown, always visible on the listing page. One
+         compact dropdown showing policy names only — no ID numbers, no
+         duplicated header line: the closed dropdown IS the current
+         selection display. Below it, one short line states flat rate
+         vs charges-by-weight. When the selected policy charges by
+         weight (Calculated), the shipping package fields live here —
+         eBay uses them to work out what the buyer pays for shipping —
+         and they are required before List. The policy name is just the
+         label the seller gave it on eBay: it never sets the weight.
+         Package weight and size stay fully editable per listing and
+         start empty unless the draft already has saved values. Flat
+         rate and free shipping need no package, so the fields hide
+         for those. A failed publish with an unusable saved policy
+         opens this same dropdown (see openShippingPick in app.js). -->
     <div id="shipping-section">
       <h3>Shipping</h3>
-      <p id="shipping-selected" class="hint">Shipping policy: not picked yet.</p>
-      <div id="shipping-list" class="btnrow wrap"></div>
+      <label>Shipping policy</label>
+      <select id="shipping-select">
+        <option value="">— Pick a shipping policy —</option>
+      </select>
+      <p id="shipping-type-line" class="hint"></p>
       <p id="shipping-pick-msg" class="hint hidden"></p>
       <div id="shipping-error" class="error hidden"></div>
       <div id="shipping-package" class="hidden">
@@ -145,6 +152,7 @@
         <label>Height (inches)</label>
         <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
         <p class="hint">eBay uses this package to work out what the buyer pays for shipping. Enter the real weight and size of the parcel you will send — nothing is guessed.</p>
+        <p class="hint">The policy name is just the label you gave it on eBay. Enter this item's real package weight and size here.</p>
       </div>
     </div>
 

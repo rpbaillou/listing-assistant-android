@@ -229,6 +229,8 @@ class PublishChainTest(unittest.TestCase):
                               return_value="https://i.ebayimg.com/fake.jpg"),
             mock.patch.object(m, "_category_aspects",
                               return_value=(None, None)),
+            mock.patch.object(m, "_category_conditions",
+                              return_value=(None, None)),
             mock.patch.object(m, "_ebay_call", side_effect=self._fake_call),
             mock.patch.object(m, "_save_draft", side_effect=saving),
             mock.patch.object(m, "EBAY_MERCHANT_LOCATION_KEY", env_key),
@@ -257,15 +259,19 @@ class PublishChainTest(unittest.TestCase):
         # ship-from address now raises _NeedsShipFromAddress (the app
         # shows the address form) instead of the old dead-end
         # validation error. The fail-fast part is unchanged.
+        # v35: the compliance check's policy read runs before location
+        # resolution (it is a harmless read, and the report must cover
+        # policy problems too) — so the events now open with it.
         self.behavior["locations"] = {"locations": []}
         with self.assertRaises(m._NeedsShipFromAddress) as ctx:
             self._run()
         self.assertIn("No shop location found", str(ctx.exception))
-        # Fail fast: only the location lookup ran — no photo upload, no
+        # Fail fast: only reads ran — no photo upload, no
         # inventory PUT, no offer, no publish, no draft save.
         self.assertEqual(
             self.events,
-            [("call", "GET", "/sell/inventory/v1/location")])
+            [("call", "GET", "/sell/account/v1/fulfillment_policy/111"),
+             ("call", "GET", "/sell/inventory/v1/location")])
 
     def test_offer_id_saved_before_publish(self):
         self._run()
@@ -304,8 +310,14 @@ class PublishChainTest(unittest.TestCase):
         with self.assertRaises(m._PublishValidationError) as ctx:
             self._run(fields=fields)
         self.assertEqual(str(ctx.exception), "Pick a condition first.")
-        # Validation precedes token/location/photos: no eBay call ran.
-        self.assertEqual(self.events, [])
+        # v35: compliance reports ALL problems at once, so its policy
+        # gate reads the policy even when the condition is already
+        # wrong (a stale policy must still surface in the same
+        # report). That read is the only eBay call: no photo upload,
+        # no inventory PUT, no offer, no publish, no draft save.
+        self.assertEqual(
+            self.events,
+            [("call", "GET", "/sell/account/v1/fulfillment_policy/111")])
 
     def test_invalid_condition_rejected(self):
         fields = dict(self.fields, condition="BOGUS")
