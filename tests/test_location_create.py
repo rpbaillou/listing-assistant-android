@@ -151,6 +151,17 @@ class LocationCreateChainTest(unittest.TestCase):
             return {"offers": []}
         if method == "GET" and path.startswith("/sell/listing/v1/item/"):
             return {}
+        if method == "GET" and path.startswith("/sell/account/v1/fulfillment_policy"):
+            # v32: the publish helper reads the shipping policy before
+            # offering. The fixture seller's policy is flat-rate, so no
+            # package block is needed. Dummy IDs only.
+            flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
+                    "marketplaceId": "EBAY_US",
+                    "shippingOptions": [{"optionType": "DOMESTIC",
+                                         "costType": "FLAT_RATE"}]}
+            if "?" in path:
+                return {"fulfillmentPolicies": [flat]}
+            return flat
         raise AssertionError(f"unexpected eBay call {method} {path}")
 
     def _run(self, ship_from=None, env_key=""):
@@ -300,6 +311,17 @@ class LocationCreateRouteTest(unittest.TestCase):
             return {"listingId": "999"}
         if method == "GET" and path.startswith("/sell/inventory/v1/offer?sku="):
             return {"offers": []}
+        if method == "GET" and path.startswith("/sell/account/v1/fulfillment_policy"):
+            # v32: the publish helper reads the shipping policy before
+            # offering. The fixture seller's policy is flat-rate, so no
+            # package block is needed. Dummy IDs only.
+            flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
+                    "marketplaceId": "EBAY_US",
+                    "shippingOptions": [{"optionType": "DOMESTIC",
+                                         "costType": "FLAT_RATE"}]}
+            if "?" in path:
+                return {"fulfillmentPolicies": [flat]}
+            return flat
         if method == "GET" and path.startswith("/sell/listing/v1/item/"):
             return {}
         raise AssertionError(f"unexpected eBay call {method} {path}")

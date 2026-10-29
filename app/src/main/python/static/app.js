@@ -552,6 +552,14 @@ function collectForm() {
     best_offer: $("p-best-offer").checked,
     best_offer_auto_decline: $("p-bo-decline").value.trim(),
     best_offer_auto_accept: $("p-bo-accept").value.trim(),
+    /* v32: package weight + size, per draft (framed and unframed
+       parcels differ, so never a usual setting). Saved by the same
+       draft autosave; sent only for calculated shipping policies. */
+    package_weight_value: $("p-weight").value.trim(),
+    package_weight_unit: $("p-weight-unit").value,
+    package_length: $("p-length").value.trim(),
+    package_width: $("p-width").value.trim(),
+    package_height: $("p-height").value.trim(),
   };
 }
 
@@ -926,10 +934,13 @@ $("btn-batch-suggest").addEventListener("click", async () => {
 $("btn-batch-cancel").addEventListener("click", () => $("btn-drafts").click());
 $("btn-batch-done").addEventListener("click", () => $("btn-drafts").click());
 
-/* v31: one batch run. Returns true when any draft stopped on the
-   empty-location wall, so the caller can show the one-time ship-from
-   address form instead of the done button. */
-async function runBatch(shipFrom) {
+/* v31: one batch run. Returns the follow-up signals, if any, so the
+   caller can show the one-time ship-from address form (empty-location
+   wall), the policy pick form (unusable shipping policy), or the
+   scope box (sign-in granted before sell.account) instead of the done
+   button. One draft stopping on a shared wall stops the whole run —
+   the rest would hit the same wall. */
+async function runBatch(shipFrom, fulfillmentOverride) {
   const { results } = await api("/api/ebay/batch-publish", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -937,11 +948,13 @@ async function runBatch(shipFrom) {
       draft_ids: batchIncluded.map((d) => d.id),
       category_id: $("b-category").value.trim(),
       ...(shipFrom ? { ship_from: shipFrom } : {}),
+      ...(fulfillmentOverride ? { fulfillment_policy_id: fulfillmentOverride } : {}),
     }),
   });
   const box = $("batch-results");
   box.innerHTML = "<h4>Results</h4>";
-  let needsAddress = false;
+  const signals = { needsAddress: false, needsScope: false, needsPick: false,
+                    policies: [], pickError: "" };
   (results || []).forEach((r) => {
     const row = document.createElement("div");
     row.className = "batch-row";
@@ -949,16 +962,97 @@ async function runBatch(shipFrom) {
       row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
         '<div class="bp"><a href="' + esc(r.listing_url) + '" target="_blank">Live</a></div>';
     } else if (r.needs_ship_from) {
-      needsAddress = true;
+      signals.needsAddress = true;
       row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
         '<div class="bp batch-skip">Needs a shop location: enter your ship-from address below.</div>';
+    } else if (r.needs_scope_reconnect) {
+      signals.needsScope = true;
+      row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+        '<div class="bp batch-skip">' + esc(r.error || "Needs a new eBay permission.") + "</div>";
+    } else if (r.needs_policy_pick) {
+      signals.needsPick = true;
+      signals.policies = r.policies || [];
+      signals.pickError = r.error || "";
+      row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
+        '<div class="bp batch-skip">Needs a working shipping policy: pick one below.</div>';
     } else {
       row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
         '<div class="bp batch-skip">Failed: ' + esc(r.error || "unknown error") + "</div>";
     }
     box.appendChild(row);
   });
-  return needsAddress;
+  return signals;
+}
+
+/* v32: hide every batch follow-up form/box, then show the one the
+   signals call for. Returns true when something still needs the
+   seller (so the caller keeps cancel visible instead of Done). */
+function showBatchFollowups(signals) {
+  $("batch-ship-from-form").classList.add("hidden");
+  $("batch-policy-pick-form").classList.add("hidden");
+  $("batch-scope-box").classList.add("hidden");
+  if (signals.needsAddress) {
+    /* Keep an exit open: cancel stays visible and enabled so the
+       seller can bail to drafts instead of filling the form. */
+    $("batch-ship-from-form").classList.remove("hidden");
+    $("btn-batch-cancel").classList.remove("hidden");
+    $("btn-batch-cancel").disabled = false;
+    return true;
+  }
+  if (signals.needsPick) {
+    renderBatchPolicyPick(signals.policies, signals.pickError);
+    $("batch-policy-pick-form").classList.remove("hidden");
+    $("btn-batch-cancel").classList.remove("hidden");
+    $("btn-batch-cancel").disabled = false;
+    return true;
+  }
+  if (signals.needsScope) {
+    $("batch-scope-box").classList.remove("hidden");
+    $("btn-batch-cancel").classList.remove("hidden");
+    $("btn-batch-cancel").disabled = false;
+    return true;
+  }
+  return false;
+}
+
+function renderBatchPolicyPick(policies, message) {
+  $("batch-policy-pick-msg").textContent = message ||
+    "That shipping policy number no longer works. Pick one below.";
+  const list = $("batch-policy-pick-list");
+  list.innerHTML = "";
+  $("batch-policy-pick-error").classList.add("hidden");
+  if (!policies.length) {
+    list.innerHTML = "<p class='hint'>No shipping policies found on your account. Create one in Seller Hub first.</p>";
+    return;
+  }
+  policies.forEach((p) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "ghost";
+    b.textContent = (p.name || "Unnamed policy") + " — " +
+      policyTypeLabel(p.cost_type) + " (" + p.id + ")";
+    b.addEventListener("click", () => pickBatchPolicy(p.id));
+    list.appendChild(b);
+  });
+}
+
+/* v32: batch policy pick. The batch was already confirmed, so this
+   re-run carries exactly those drafts with the picked policy — no
+   second confirmation dialog. */
+async function pickBatchPolicy(policyId) {
+  const errEl = $("batch-policy-pick-error");
+  errEl.classList.add("hidden");
+  $("batch-progress").classList.remove("hidden");
+  try {
+    const signals = await runBatch(null, policyId);
+    if (!showBatchFollowups(signals)) {
+      $("btn-batch-done").classList.remove("hidden");
+    }
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove("hidden");
+  } finally {
+    $("batch-progress").classList.add("hidden");
+  }
 }
 
 $("btn-batch-confirm").addEventListener("click", async () => {
@@ -970,16 +1064,11 @@ $("btn-batch-confirm").addEventListener("click", async () => {
   $("batch-progress").classList.remove("hidden");
   $("batch-results").innerHTML = "";
   $("batch-ship-from-form").classList.add("hidden");
+  $("batch-policy-pick-form").classList.add("hidden");
+  $("batch-scope-box").classList.add("hidden");
   try {
-    const needsAddress = await runBatch(null);
-    if (needsAddress) {
-      /* Keep an exit open: cancel stays visible and enabled so the
-         seller can bail to drafts instead of filling the form. */
-      $("batch-ship-from-form").classList.remove("hidden");
-      $("btn-batch-cancel").classList.remove("hidden");
-      $("btn-batch-cancel").disabled = false;
-      $("btn-batch-done").classList.add("hidden");
-    } else {
+    const signals = await runBatch(null, null);
+    if (!showBatchFollowups(signals)) {
       $("btn-batch-done").classList.remove("hidden");
     }
   } catch (e) {
@@ -988,7 +1077,9 @@ $("btn-batch-confirm").addEventListener("click", async () => {
   } finally {
     $("batch-progress").classList.add("hidden");
     $("btn-batch-confirm").classList.add("hidden");
-    if ($("batch-ship-from-form").classList.contains("hidden")) {
+    if ($("batch-ship-from-form").classList.contains("hidden") &&
+        $("batch-policy-pick-form").classList.contains("hidden") &&
+        $("batch-scope-box").classList.contains("hidden")) {
       $("btn-batch-cancel").classList.add("hidden");
     }
   }
@@ -1010,15 +1101,21 @@ $("btn-batch-ship-from").addEventListener("click", async () => {
   $("btn-batch-ship-from").disabled = true;
   $("batch-progress").classList.remove("hidden");
   try {
-    const needsAddress = await runBatch(parsed.data);
-    if (needsAddress) {
+    const signals = await runBatch(parsed.data, null);
+    if (signals.needsAddress) {
       /* Cannot normally recur with an address supplied; keep the form
          open with a plain message if it ever does. */
       errEl.textContent = "eBay still has no shop location. Check the address and try again.";
       errEl.classList.remove("hidden");
-    } else {
+    } else if (!showBatchFollowups(signals)) {
+      /* v32: the address fixed the location wall, and no policy or
+         scope wall followed — hide the form and finish. */
       $("batch-ship-from-form").classList.add("hidden");
       $("btn-batch-done").classList.remove("hidden");
+    } else {
+      /* A policy or scope wall followed the location fix: that form
+         is showing now, so the address form can hide. */
+      $("batch-ship-from-form").classList.add("hidden");
     }
   } catch (e) {
     $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
@@ -1208,6 +1305,13 @@ async function prefillListing() {
   $("p-fulfillment").value = pre.fulfillment;
   $("p-payment").value = pre.payment;
   $("p-return").value = pre.return;
+  /* v32: package fields restore from the draft (per draft, never from
+     the preset — framed and unframed parcels differ). */
+  $("p-weight").value = draft.package_weight_value || "";
+  $("p-weight-unit").value = draft.package_weight_unit || "OUNCE";
+  $("p-length").value = draft.package_length || "";
+  $("p-width").value = draft.package_width || "";
+  $("p-height").value = draft.package_height || "";
   /* Remember the restored category pair so later saves keep its display
      name when the number is untouched. */
   pickedCat = pre.category_id
@@ -1513,6 +1617,12 @@ $("btn-publish").addEventListener("click", async () => {
       best_offer: $("p-best-offer").checked,
       best_offer_auto_decline: $("p-bo-decline").value.trim(),
       best_offer_auto_accept: $("p-bo-accept").value.trim(),
+      /* v32: package weight + size for calculated shipping policies. */
+      package_weight_value: $("p-weight").value.trim(),
+      package_weight_unit: $("p-weight-unit").value,
+      package_length: $("p-length").value.trim(),
+      package_width: $("p-width").value.trim(),
+      package_height: $("p-height").value.trim(),
     };
     await postPublish(body);
   } catch (e) {
@@ -1558,6 +1668,26 @@ async function postPublish(body) {
     $("ship-from-form").classList.remove("hidden");
     return "needs-address";
   }
+  /* v32: the stored sign-in was granted before the app could read
+     shipping policies. Show the plain message + the one-tap Connect
+     button; nothing is wiped, and the publish can be retried after
+     the fresh consent. */
+  if (r.needs_scope_reconnect) {
+    const el = $("publish-error");
+    el.textContent = r.error || "The app needs one new permission to read your shipping policies.";
+    el.classList.remove("hidden");
+    $("scope-reconnect-box").classList.remove("hidden");
+    return "needs-scope";
+  }
+  /* v32: the shipping policy number is unusable. Offer the current
+     policies as a one-tap pick; picking one re-posts the confirmed
+     publish with the picked number. */
+  if (r.needs_policy_pick) {
+    pendingPublishBody = body;
+    renderPolicyPick(r.policies || [], r.error || "");
+    $("policy-pick-form").classList.remove("hidden");
+    return "needs-pick";
+  }
   draft.ebay_listing_id = r.listing_id;
   draft.ebay_listing_url = r.listing_url;
   const ok = $("publish-ok");
@@ -1566,6 +1696,62 @@ async function postPublish(body) {
   ok.classList.remove("hidden");
   prefillListing();
   return "listed";
+}
+
+/* v32: plain label for a policy cost type, for the pick list. */
+function policyTypeLabel(costType) {
+  if (costType === "CALCULATED") return "calculated (needs package weight)";
+  if (costType === "FLAT_RATE") return "flat rate";
+  if (costType === "NOT_SPECIFIED") return "local pickup only";
+  return "unknown type";
+}
+
+function renderPolicyPick(policies, message) {
+  $("policy-pick-msg").textContent = message ||
+    "That shipping policy number no longer works. Pick one below.";
+  const list = $("policy-pick-list");
+  list.innerHTML = "";
+  $("policy-pick-error").classList.add("hidden");
+  if (!policies.length) {
+    list.innerHTML = "<p class='hint'>No shipping policies found on your account. Create one in Seller Hub first.</p>";
+    return;
+  }
+  policies.forEach((p) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "ghost";
+    b.textContent = (p.name || "Unnamed policy") + " — " +
+      policyTypeLabel(p.cost_type) + " (" + p.id + ")";
+    b.addEventListener("click", () => pickPolicy(p.id));
+    list.appendChild(b);
+  });
+}
+
+async function pickPolicy(policyId) {
+  const errEl = $("policy-pick-error");
+  errEl.classList.add("hidden");
+  if (!pendingPublishBody) return;
+  /* The listing was already confirmed (title, price, category) before
+     the first attempt, and this re-post carries exactly that body with
+     the picked policy number — so the pick itself authorizes
+     continuing that confirmed publish, and no second confirmation
+     dialog is shown. The picked number also saves into the draft
+     (the listing page's own autosave) for this listing. */
+  $("p-fulfillment").value = policyId;
+  await saveDraft();
+  $("publish-spinner").classList.remove("hidden");
+  try {
+    const body = Object.assign({}, pendingPublishBody,
+                               { fulfillment_policy_id: policyId });
+    const outcome = await postPublish(body);
+    if (outcome === "listed") $("policy-pick-form").classList.add("hidden");
+    /* "needs-pick" can recur only if the picked policy itself turns
+       out unusable; the form stays open with the fresh list then. */
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove("hidden");
+  } finally {
+    $("publish-spinner").classList.add("hidden");
+  }
 }
 
 $("btn-ship-from").addEventListener("click", async () => {
@@ -1604,6 +1790,9 @@ $("btn-ship-from").addEventListener("click", async () => {
 function hidePublishMsg() {
   $("publish-error").classList.add("hidden");
   $("publish-ok").classList.add("hidden");
+  /* v32: fresh attempt, so the scope box and pick form reset too. */
+  $("scope-reconnect-box").classList.add("hidden");
+  $("policy-pick-form").classList.add("hidden");
 }
 
 /* ---------- v2: eBay connect banner ---------- */

@@ -111,9 +111,26 @@ EBAY_API = "https://api.ebay.com"
 # through eBay's Media API instead, authorized with the same OAuth user
 # token; the Media methods require the sell.inventory scope, which the
 # token below already holds (base api_scope alone is NOT enough).
+# v32: sell.account lets the app READ the seller's fulfillment (shipping)
+# policies itself (Account API getFulfillmentPolicy/list) so a bad or
+# calculated shipping policy is caught before publish instead of failing
+# with 25007. eBay's method pages list sell.account as a standard
+# authorization-code scope (no Developer Central approval step found);
+# a fresh consent is still required, because a refresh token can never
+# gain a scope it was not granted with.
 EBAY_SCOPES = ("https://api.ebay.com/oauth/api_scope "
                "https://api.ebay.com/oauth/api_scope/sell.inventory "
-               "https://api.ebay.com/oauth/api_scope/sell.listing")
+               "https://api.ebay.com/oauth/api_scope/sell.listing "
+               "https://api.ebay.com/oauth/api_scope/sell.account")
+
+# v32: plain words when the stored token was granted before sell.account
+# was added (a refresh can never add a scope, and the policy read then
+# answers 403). Shown instead of a bare "expired" or scope error, and
+# never wipes anything but the unusable tokens (the reconnect replaces
+# them). The button in the app is labeled "Connect eBay".
+SCOPE_RECONNECT_MSG = (
+    "The app needs one new permission to read your shipping policies. "
+    "Tap Connect eBay and approve it.")
 
 # eBay Media API (production only; not supported in Sandbox).
 EBAY_MEDIA_API = "https://apim.ebay.com/commerce/media/v1_beta"
@@ -374,6 +391,21 @@ def _ebay_access_token():
         raise RuntimeError(f"Could not reach eBay: {exc}")
     if resp.status_code != 200:
         _clear_ebay_tokens()
+        # v32: eBay's own Authorization doc says a refresh scope must be
+        # equal to or a subset of the consent scopes — so a refresh that
+        # now asks for sell.account (added after the old consent) fails
+        # with a scope error, not an expiry. Name that plainly instead of
+        # calling the sign-in "expired": the fix is one fresh consent.
+        try:
+            err_body = resp.json()
+        except ValueError:
+            err_body = {}
+        err_text = ""
+        if isinstance(err_body, dict):
+            err_text = str(err_body.get("error_description", "")
+                           or err_body.get("error", ""))
+        if "scope" in err_text.lower():
+            raise RuntimeError(SCOPE_RECONNECT_MSG)
         raise RuntimeError(
             "Your eBay sign-in expired and could not be renewed. "
             "Tap Connect eBay again in this browser.")
@@ -435,6 +467,31 @@ def _plain_ebay_error(resp):
             (msg[:220] if msg else f"error {resp.status_code}"))
 
 
+class _EbayApiError(RuntimeError):
+    """An eBay HTTP error with its status + errorId attached (v32).
+    Still a RuntimeError, so every existing handler keeps catching it;
+    new code (the v32 policy check) can tell a 403 (token lacks the
+    sell.account scope) from a 404 (policy ID not found) without
+    sniffing message text. Network failures stay plain RuntimeError
+    (no status), so callers must use getattr(exc, "status", None)."""
+
+    def __init__(self, message, status=None, error_id=""):
+        super().__init__(message)
+        self.status = status
+        self.error_id = error_id
+
+
+def _ebay_error_id(resp):
+    """Best-effort errorId from an eBay error reply, "" when unparseable.
+    Used only to attach to _EbayApiError; the surfaced message text
+    still comes from _plain_ebay_error, unchanged."""
+    try:
+        errs = resp.json().get("errors") or []
+        return str(errs[0].get("errorId", "")) if errs else ""
+    except (ValueError, AttributeError):
+        return ""
+
+
 def _ebay_call(method, path, token, payload=None):
     try:
         resp = requests.request(method, EBAY_API + path,
@@ -448,16 +505,20 @@ def _ebay_call(method, path, token, payload=None):
         raise RuntimeError(f"Could not reach eBay: {exc}")
     if resp.status_code == 401:
         _clear_ebay_tokens()
-        raise RuntimeError(
-            "Your eBay sign-in stopped working. Tap Connect eBay again in this browser.")
+        raise _EbayApiError(
+            "Your eBay sign-in stopped working. Tap Connect eBay again in this browser.",
+            status=401, error_id=_ebay_error_id(resp))
     if resp.status_code == 403:
         # v30 (audit F7): do NOT clear on 403 — a scope error is not fixed
         # by reconnecting with the same scopes. Surface eBay's message +
         # errorId (including the 190013 permission naming in
         # _plain_ebay_error) instead.
-        raise RuntimeError(_plain_ebay_error(resp))
+        raise _EbayApiError(_plain_ebay_error(resp),
+                            status=403, error_id=_ebay_error_id(resp))
     if resp.status_code >= 400:
-        raise RuntimeError(_plain_ebay_error(resp))
+        raise _EbayApiError(_plain_ebay_error(resp),
+                            status=resp.status_code,
+                            error_id=_ebay_error_id(resp))
     if resp.status_code == 204 or not resp.text.strip():
         return {}
     try:
@@ -1045,6 +1106,196 @@ def _resolve_merchant_location_key(token, ship_from=None):
         "then list.")
 
 
+class _NeedsScopeReconnect(RuntimeError):
+    """The stored token was granted before sell.account was added, so
+    the Account API policy read answers 403. The fix is one fresh
+    consent (a refresh can never add a scope). The wrappers map this to
+    a needs_scope_reconnect signal + the plain message — never a blind
+    token wipe (v30 audit F7: a 403 surfaces, it does not clear)."""
+
+
+class _NeedsFulfillmentPolicyChoice(RuntimeError):
+    """The shipping policy ID the publish would send is unusable (not
+    found, or for another marketplace, or offering no shippable domestic
+    service). Carries the account's current EBAY_US fulfillment policies
+    (plain dicts: id, name, cost_type, marketplace) so the app can offer
+    a one-tap pick instead of a dead-end error. Policy IDs are seller
+    config, not secrets — the status endpoint already exposes them."""
+
+    def __init__(self, message, policies):
+        super().__init__(message)
+        self.policies = policies
+
+
+def _policy_cost_type(policy):
+    """'CALCULATED', 'FLAT_RATE', 'NOT_SPECIFIED', or None, from a
+    FulfillmentPolicy dict (official Account API type: each
+    ShippingOption's costType says whether flat-rate or calculated
+    shipping is used). Only the DOMESTIC option decides: the app only
+    lists in the US, so an international option never stands in for a
+    missing domestic service. None means the policy has no domestic
+    option at all."""
+    if not isinstance(policy, dict):
+        return None
+    opts = policy.get("shippingOptions") or []
+    for opt in opts:
+        if isinstance(opt, dict) \
+                and str(opt.get("optionType", "")).upper() == "DOMESTIC":
+            ct = str(opt.get("costType", "") or "").strip().upper()
+            if ct:
+                return ct
+    return None
+
+
+def _policy_pick_entry(policy):
+    """One pick-list row for a FulfillmentPolicy dict."""
+    return {"id": str(policy.get("fulfillmentPolicyId", "") or "").strip(),
+            "name": str(policy.get("name", "") or "").strip(),
+            "cost_type": _policy_cost_type(policy),
+            "marketplace": str(policy.get("marketplaceId", "") or "").strip()}
+
+
+def _read_fulfillment_policy(token, policy_id):
+    """Return (matched_policy_or_None, current_EBAY_US_policies).
+
+    Single read first (GET /sell/account/v1/fulfillment_policy/{id});
+    on any miss (404 or an empty body) fall back to the EBAY_US list
+    (GET .../fulfillment_policy?marketplace_id=EBAY_US) and match by ID
+    there. A 403 on either call means the token lacks sell.account and
+    raises _NeedsScopeReconnect. Network failures propagate untouched
+    (never misread as "policy not found")."""
+    try:
+        body = _ebay_call(
+            "GET", f"/sell/account/v1/fulfillment_policy/{policy_id}", token)
+        if isinstance(body, dict) and body.get("fulfillmentPolicyId"):
+            return body, None
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            raise _NeedsScopeReconnect(SCOPE_RECONNECT_MSG)
+        # Any other single-read failure (404 included) falls through
+        # to the list, which is the authoritative "does it exist" check.
+    listing = None
+    try:
+        listing = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US",
+            token)
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            raise _NeedsScopeReconnect(SCOPE_RECONNECT_MSG)
+        raise
+    policies = []
+    if isinstance(listing, dict):
+        for p in (listing.get("fulfillmentPolicies") or []):
+            if isinstance(p, dict):
+                policies.append(p)
+    for p in policies:
+        if str(p.get("fulfillmentPolicyId", "")).strip() == policy_id:
+            return p, policies
+    return None, policies
+
+
+def _validate_package(raw):
+    """Clean a package weight + size block into eBay's
+    packageWeightAndSize shape (official Inventory API model:
+    dimensions {height, length, width, unit INCH} + weight {value,
+    unit POUND/OUNCE}). Every field is required when any is given — a
+    half-filled block is worse than none for calculated shipping — and
+    nothing is ever defaulted or invented: the weight must be real.
+    Generous sanity caps (150 lbs, 108 in) catch unit typos (grams typed
+    as pounds) without blocking any real print parcel."""
+    if not isinstance(raw, dict):
+        raise _PublishValidationError(
+            "Enter the package weight and dimensions.")
+    weight_raw = str(raw.get("weight_value", "") or "").strip()
+    unit = str(raw.get("weight_unit", "") or "").strip().upper()
+    dims = {}
+    for key in ("length", "width", "height"):
+        dims[key] = str(raw.get(key, "") or "").strip()
+    if not weight_raw or unit not in ("POUND", "OUNCE") \
+            or not all(dims.values()):
+        raise _PublishValidationError(
+            "Enter the package weight (with pounds or ounces) and all "
+            "three dimensions in inches.")
+    try:
+        weight = float(weight_raw)
+        length = float(dims["length"])
+        width = float(dims["width"])
+        height = float(dims["height"])
+    except ValueError:
+        raise _PublishValidationError(
+            "Package weight and dimensions must be numbers.")
+    if not (weight > 0 and length > 0 and width > 0 and height > 0):
+        raise _PublishValidationError(
+            "Package weight and dimensions must be above zero.")
+    pounds = weight if unit == "POUND" else weight / 16.0
+    if pounds > 150 or length > 108 or width > 108 or height > 108:
+        raise _PublishValidationError(
+            "That weight or size looks too large — check the numbers.")
+    return {"dimensions": {"height": height, "length": length,
+                           "width": width, "unit": "INCH"},
+            "weight": {"value": weight, "unit": unit}}
+
+
+def _check_fulfillment_policy(token, fulfillment_id, package):
+    """Policy gate for a publish (v32, runs before offer creation).
+
+    Returns (cost_type, package_block_or_None) where package_block is
+    sent on the inventory item only for CALCULATED policies. Raises:
+    _NeedsScopeReconnect (token lacks sell.account),
+    _NeedsFulfillmentPolicyChoice (ID stale, wrong marketplace, or no
+    shippable domestic service — with the current policies to pick
+    from), or _PublishValidationError (CALCULATED policy with no package
+    block, or a half-filled block). FLAT_RATE proceeds with no block
+    (a flat price never uses weight, so an entered block is validated
+    for typos but not sent)."""
+    policy, policies = _read_fulfillment_policy(token, fulfillment_id)
+    if policy is None:
+        raise _NeedsFulfillmentPolicyChoice(
+            "That shipping policy number is no longer on your eBay "
+            "account. Pick one below.",
+            [_policy_pick_entry(p) for p in (policies or [])])
+    marketplace = str(policy.get("marketplaceId", "") or "").strip()
+    if marketplace and marketplace != "EBAY_US":
+        raise _NeedsFulfillmentPolicyChoice(
+            f"That shipping policy is for {marketplace}, not EBAY_US. "
+            "Pick one of your US shipping policies below.",
+            [_policy_pick_entry(p) for p in (policies or [])])
+    cost_type = _policy_cost_type(policy)
+    if cost_type == "CALCULATED":
+        if package is None:
+            raise _PublishValidationError(
+                "Your shipping policy charges by weight, so eBay needs "
+                "the package weight and dimensions. Enter them under "
+                "Package weight and size, then list again.")
+        return cost_type, _validate_package(package)
+    if cost_type == "FLAT_RATE":
+        if package is not None:
+            _validate_package(package)  # flag typos, but do not send it
+        return cost_type, None
+    raise _NeedsFulfillmentPolicyChoice(
+        "That shipping policy offers no shippable service (local pickup "
+        "only, or no domestic option). Pick a shipping policy below.",
+        [_policy_pick_entry(p) for p in (policies or [])])
+
+
+def _draft_package(d):
+    """A draft's saved package block (v32 listing-page fields), or None
+    when nothing was entered. Mirrors the single-publish assembly: any
+    field filled means the block is passed along for validation; a
+    half-filled block is rejected there, never silently completed."""
+    raw = {k: str(d.get(k, "") or "").strip() for k in (
+        "package_weight_value", "package_weight_unit",
+        "package_length", "package_width", "package_height")}
+    if not any(raw.values()):
+        return None
+    return {"weight_value": raw["package_weight_value"],
+            "weight_unit": raw["package_weight_unit"],
+            "length": raw["package_length"],
+            "width": raw["package_width"],
+            "height": raw["package_height"]}
+
+
 def _do_publish(d, f, ship_from=None):
     """Create the live eBay listing for draft d. Shared by single publish
     and batch publish so both paths behave identically.
@@ -1053,6 +1304,9 @@ def _do_publish(d, f, ship_from=None):
     description, price_val (float), condition, condition_details,
     category_id, fulfillment_id, payment_id, return_id (any of the three
     may be empty — they fall back to .env here), attributes (dict),
+    best_offer_terms (dict or None), package (dict or None: the
+    listing-page weight + size block, validated by the v32 policy gate
+    and sent on the inventory item only for calculated policies).
     best_offer_terms (dict or None). Policy ids still empty after the
     .env fallback raise _PublishValidationError, as do a missing title,
     category, condition value, or photos. ship_from, when given, is the
@@ -1103,6 +1357,16 @@ def _do_publish(d, f, ship_from=None):
     # gets _NeedsShipFromAddress and shows the address form.
     merchant_location_key = _resolve_merchant_location_key(token, ship_from)
 
+    # v32: shipping-policy gate, before any photo work for the same
+    # fail-fast reason. Reads the policy the offer would send: flat
+    # proceeds, calculated requires a real package block (no defaults),
+    # a stale/wrong-marketplace/unshippable policy raises a pick signal,
+    # and a token without sell.account raises the reconnect signal.
+    # The returned block goes on the inventory item below, and only for
+    # calculated policies (a flat price never uses weight).
+    policy_cost_type, package_block = _check_fulfillment_policy(
+        token, fulfillment_id, f.get("package"))
+
     sku = "la" + d["id"]
     # 1. photos -> eBay-hosted URLs (Media API photo service).
     image_urls = []
@@ -1149,6 +1413,11 @@ def _do_publish(d, f, ship_from=None):
         inventory_item["condition"] = condition
     if condition_details:
         inventory_item["conditionDescription"] = condition_details
+    # v32: calculated shipping prices from the package, so the block
+    # goes on the inventory item (official Inventory API model); flat
+    # policies never receive one.
+    if package_block:
+        inventory_item["packageWeightAndSize"] = package_block
     _ebay_call("PUT", f"/sell/inventory/v1/inventory_item/{sku}", token,
                inventory_item)
 
@@ -1191,6 +1460,15 @@ def _do_publish(d, f, ship_from=None):
             low_exc = str(exc).lower()
             if "25002" not in low_exc and not ("already" in low_exc
                                                and "offer" in low_exc):
+                # v32: a 25007 here means the fulfillment policy the
+                # offer sent was rejected after the gate passed (policy
+                # changed mid-flight, or a subtler policy issue). Name
+                # the exact policy ID + type as read, so diagnosis is
+                # instant instead of another guessing round.
+                if "25007" in low_exc:
+                    raise RuntimeError(
+                        f"{exc} [Shipping policy sent: {fulfillment_id} "
+                        f"({policy_cost_type or 'unknown type'})]")
                 raise
             existing = _ebay_call("GET", f"/sell/inventory/v1/offer?sku={sku}", token)
             offers = existing.get("offers") if isinstance(existing, dict) else None
@@ -1203,8 +1481,16 @@ def _do_publish(d, f, ship_from=None):
         _save_draft(d)
 
     # 4. publish
-    published = _ebay_call(
-        "POST", f"/sell/inventory/v1/offer/{offer_id}/publish", token)
+    try:
+        published = _ebay_call(
+            "POST", f"/sell/inventory/v1/offer/{offer_id}/publish", token)
+    except RuntimeError as exc:
+        # v32: same 25007 naming as the offer step above.
+        if "25007" in str(exc).lower():
+            raise RuntimeError(
+                f"{exc} [Shipping policy sent: {fulfillment_id} "
+                f"({policy_cost_type or 'unknown type'})]")
+        raise
     listing_id = str(published.get("listingId", ""))
     if not listing_id:
         raise RuntimeError("eBay accepted the listing but did not return a listing "
@@ -1299,6 +1585,21 @@ def api_ebay_publish():
     if not photos:
         return jsonify({"error": "This draft has no photos."}), 400
 
+    # v32: package weight + size for calculated shipping policies.
+    # Only assembled when at least one field is filled; _do_publish
+    # validates a partial block and requires the full block for
+    # calculated policies. Never defaulted — the weight must be real.
+    package = None
+    _pkg_raw = {k: str(body.get(k, "") or "").strip() for k in (
+        "package_weight_value", "package_weight_unit",
+        "package_length", "package_width", "package_height")}
+    if any(_pkg_raw.values()):
+        package = {"weight_value": _pkg_raw["package_weight_value"],
+                   "weight_unit": _pkg_raw["package_weight_unit"],
+                   "length": _pkg_raw["package_length"],
+                   "width": _pkg_raw["package_width"],
+                   "height": _pkg_raw["package_height"]}
+
     try:
         listing_id, listing_url = _do_publish(d, {
             "title": title,
@@ -1312,6 +1613,7 @@ def api_ebay_publish():
             "return_id": return_id,
             "attributes": attributes,
             "best_offer_terms": best_offer_terms,
+            "package": package,
         }, ship_from=body.get("ship_from")
           if isinstance(body.get("ship_from"), dict) else None)
     except _PublishValidationError as exc:
@@ -1322,6 +1624,18 @@ def api_ebay_publish():
         # v31: not a failure — the app shows the one-time ship-from
         # address form and re-posts with it; the publish then proceeds.
         return jsonify({"needs_ship_from": True}), 200
+    except _NeedsScopeReconnect as exc:
+        # v32: not a failure — the app shows the plain message + the
+        # Connect eBay button; one fresh consent grants sell.account
+        # and the publish can be retried.
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except _NeedsFulfillmentPolicyChoice as exc:
+        # v32: not a failure — the app offers the current policies as
+        # a one-tap pick and re-posts with the picked ID.
+        return jsonify({"needs_policy_pick": True,
+                        "policies": exc.policies,
+                        "error": str(exc)}), 200
     except RuntimeError as exc:
         return jsonify({"error": str(exc)}), 502
     return jsonify({"listing_id": listing_id, "listing_url": listing_url})
@@ -1349,6 +1663,9 @@ def api_ebay_batch_publish():
     preset = _load_preset() or {}
     ship_from = body.get("ship_from") \
         if isinstance(body.get("ship_from"), dict) else None
+    # v32: a policy pick from the one-tap list overrides preset/.env
+    # for the whole re-run (same pattern as the ship-from re-run).
+    fulfillment_override = str(body.get("fulfillment_policy_id", "") or "").strip()
     results = []
     for raw_id in ids:
         draft_id = str(raw_id or "")
@@ -1388,11 +1705,15 @@ def api_ebay_batch_publish():
                 "condition": str(d.get("condition", "") or "").strip(),
                 "condition_details": str(d.get("condition_details", "") or "").strip()[:1000],
                 "category_id": category_id,
-                "fulfillment_id": str(preset.get("fulfillment_policy_id", "") or "").strip(),
+                "fulfillment_id": fulfillment_override or str(preset.get("fulfillment_policy_id", "") or "").strip(),
                 "payment_id": str(preset.get("payment_policy_id", "") or "").strip(),
                 "return_id": str(preset.get("return_policy_id", "") or "").strip(),
                 "attributes": dict(d.get("attributes") or {}),
                 "best_offer_terms": terms,
+                # v32: batch drafts carry their saved package block
+                # (listing-page fields, per draft — framed and unframed
+                # parcels differ, so this is never a preset).
+                "package": _draft_package(d),
             }, ship_from=ship_from)
         except _NeedsShipFromAddress as exc:
             # v31: one draft hitting the empty-location wall tells the
@@ -1401,6 +1722,23 @@ def api_ebay_batch_publish():
             # with it (already-listed drafts are skipped above).
             results.append({"draft_id": d["id"], "title": title, "ok": False,
                             "needs_ship_from": True, "error": str(exc)})
+            break
+        except _NeedsScopeReconnect as exc:
+            # v32: the token lacks sell.account, so every draft would
+            # hit the same wall. Stop here; the app shows the plain
+            # message and the user reconnects once, then re-runs.
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "needs_scope_reconnect": True,
+                            "error": str(exc)})
+            break
+        except _NeedsFulfillmentPolicyChoice as exc:
+            # v32: the stored shipping policy is unusable for every
+            # draft in the run. Stop here; the app offers the current
+            # policies as a one-tap pick and re-runs with the pick.
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "needs_policy_pick": True,
+                            "policies": exc.policies,
+                            "error": str(exc)})
             break
         except RuntimeError as exc:
             # Covers validation, auth, and eBay-side failures alike: each
@@ -1560,6 +1898,17 @@ def api_draft_save(draft_id):
     for key in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id"):
         if key in body:
             d[key] = str(body[key])[:30]
+    # v32: package weight + size save with the same draft autosave.
+    # Deliberately NOT part of the preset (framed and unframed parcels
+    # differ), so these keys live only on the draft.
+    for key in ("package_weight_value", "package_length",
+                "package_width", "package_height"):
+        if key in body:
+            d[key] = str(body[key])[:20]
+    if "package_weight_unit" in body:
+        u = str(body["package_weight_unit"]).strip().upper()
+        if u in ("POUND", "OUNCE"):
+            d["package_weight_unit"] = u
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)

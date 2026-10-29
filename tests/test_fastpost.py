@@ -64,6 +64,17 @@ def _ebay_patches(fail_sku=None):
             # v30 (audit F2): the publish helper resolves a merchant
             # location before offering; the fixture seller has one.
             return {"locations": [{"merchantLocationKey": "LOC1"}]}
+        if method == "GET" and path.startswith("/sell/account/v1/fulfillment_policy"):
+            # v32: the publish helper reads the shipping policy before
+            # offering. The fixture seller's policy is flat-rate, so no
+            # package block is needed. Dummy IDs only.
+            flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
+                    "marketplaceId": "EBAY_US",
+                    "shippingOptions": [{"optionType": "DOMESTIC",
+                                         "costType": "FLAT_RATE"}]}
+            if "?" in path:
+                return {"fulfillmentPolicies": [flat]}
+            return flat
         if method == "GET":
             return {}
         raise AssertionError("unexpected eBay call %s %s" % (method, path))

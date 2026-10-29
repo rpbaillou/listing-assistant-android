@@ -203,6 +203,17 @@ class PublishChainTest(unittest.TestCase):
             return self.behavior.get("existing_offers", {"offers": []})
         if method == "GET" and path.startswith("/sell/listing/v1/item/"):
             return {}
+        if method == "GET" and path.startswith("/sell/account/v1/fulfillment_policy"):
+            # v32: the publish helper reads the shipping policy before
+            # offering. The fixture seller's policy is flat-rate, so no
+            # package block is needed. Dummy IDs only.
+            flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
+                    "marketplaceId": "EBAY_US",
+                    "shippingOptions": [{"optionType": "DOMESTIC",
+                                         "costType": "FLAT_RATE"}]}
+            if "?" in path:
+                return {"fulfillmentPolicies": [flat]}
+            return flat
         raise AssertionError(f"unexpected eBay call {method} {path}")
 
     def _run(self, fields=None, env_key=""):

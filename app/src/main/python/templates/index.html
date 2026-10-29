@@ -124,6 +124,29 @@
       <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
     </details>
 
+    <!-- v32: package weight + size. Only needed when the shipping policy
+         charges by weight (Calculated); flat-rate shipping ignores it.
+         No defaults anywhere — the weight must be real, never invented.
+         Saved per draft (framed and unframed parcels differ), never as
+         a usual setting. -->
+    <details>
+      <summary>Package weight and size (only if your shipping policy charges by weight)</summary>
+      <label>Package weight</label>
+      <input id="p-weight" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 4">
+      <label>Weight unit</label>
+      <select id="p-weight-unit">
+        <option value="OUNCE">ounces</option>
+        <option value="POUND">pounds</option>
+      </select>
+      <label>Length (inches)</label>
+      <input id="p-length" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 12">
+      <label>Width (inches)</label>
+      <input id="p-width" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 9">
+      <label>Height (inches)</label>
+      <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
+      <p class="hint">Only needed if your shipping policy is Calculated (price based on weight). Leave blank for flat-rate shipping.</p>
+    </details>
+
     <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
     <p class="hint">Saves the condition, category, policy numbers, and Best Offer settings above as your usual settings. Next time they fill in by themselves; re-saving replaces them.</p>
     <div id="preset-note" class="note hidden"></div>
@@ -156,6 +179,25 @@
       <p class="hint">Country: United States. The app only lists in the US.</p>
       <div id="ship-from-error" class="error hidden"></div>
       <button id="btn-ship-from" class="primary big" type="button">Create shop location and list</button>
+    </div>
+
+    <!-- v32: one-tap shipping-policy pick. Shown only when the policy
+         number the publish would send is unusable (deleted, wrong
+         marketplace, or no shippable service). The message names the
+         problem; picking one re-posts the publish that was already
+         confirmed above. -->
+    <div id="policy-pick-form" class="hidden">
+      <p id="policy-pick-msg" class="hint"></p>
+      <div id="policy-pick-list"></div>
+      <div id="policy-pick-error" class="error hidden"></div>
+    </div>
+
+    <!-- v32: scope reconnect box. Shown only when the stored sign-in
+         was granted before the app could read shipping policies. One
+         fresh consent grants the permission; nothing else is wiped. -->
+    <div id="scope-reconnect-box" class="hidden">
+      <p class="hint">The app needs one new permission to read your shipping policies.</p>
+      <a class="primary btnlink" href="/api/ebay/connect">Connect eBay</a>
     </div>
 
     <h3>Or list manually, like before</h3>
@@ -221,6 +263,21 @@
       <p class="hint">Country: United States. The app only lists in the US.</p>
       <div id="batch-ship-from-error" class="error hidden"></div>
       <button id="btn-batch-ship-from" class="primary" type="button">Create shop location and post these</button>
+    </div>
+    <!-- v32: batch version of the one-tap shipping-policy pick. Same
+         rules as the listing-page form: picking one re-runs the batch
+         that was already confirmed above, with the picked policy. -->
+    <div id="batch-policy-pick-form" class="hidden">
+      <p id="batch-policy-pick-msg" class="hint"></p>
+      <div id="batch-policy-pick-list"></div>
+      <div id="batch-policy-pick-error" class="error hidden"></div>
+    </div>
+    <!-- v32: batch version of the scope reconnect box. The batch has no
+         connect button of its own, so this one links to the same
+         consent flow; re-run the batch after approving. -->
+    <div id="batch-scope-box" class="hidden">
+      <p class="hint">The app needs one new permission to read your shipping policies. Approve it, then run the batch again.</p>
+      <a class="primary btnlink" href="/api/ebay/connect">Connect eBay</a>
     </div>
     <button id="btn-batch-done" class="primary hidden" type="button">Back to drafts</button>
   </section>
