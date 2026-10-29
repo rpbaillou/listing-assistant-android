@@ -95,7 +95,7 @@ class ScopeTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 302)
         self.assertIn("sell.account", resp.headers["Location"])
 
-    def test_refresh_scope_failure_names_new_permission(self):
+    def test_refresh_scope_failure_raises_typed_signal(self):
         err = _fake_resp(400, {"error": "invalid_scope",
                                "error_description":
                                    "scope exceeds the granted scope"})
@@ -106,7 +106,10 @@ class ScopeTest(unittest.TestCase):
                                                 "expires_at": 0}), \
                 mock.patch.object(m.requests, "post", return_value=err), \
                 mock.patch.object(m, "_clear_ebay_tokens") as clear:
-            with self.assertRaises(RuntimeError) as ctx:
+            # v33: the scope failure must carry the typed signal (it
+            # subclasses RuntimeError, so the old assertion still
+            # passes, but only the type carries the frontend flag).
+            with self.assertRaises(m._NeedsScopeReconnect) as ctx:
                 m._ebay_access_token()
         clear.assert_called_once()
         self.assertEqual(str(ctx.exception), m.SCOPE_RECONNECT_MSG)

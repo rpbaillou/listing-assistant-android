@@ -405,7 +405,12 @@ def _ebay_access_token():
             err_text = str(err_body.get("error_description", "")
                            or err_body.get("error", ""))
         if "scope" in err_text.lower():
-            raise RuntimeError(SCOPE_RECONNECT_MSG)
+            # v33: the scope failure must carry the typed signal, not a
+            # bare RuntimeError — otherwise the endpoints return the
+            # message without the flag and the app hides the Connect
+            # button (the live v1.31 gap). The class is defined below
+            # (line ~1109); Python resolves it at call time.
+            raise _NeedsScopeReconnect(SCOPE_RECONNECT_MSG)
         raise RuntimeError(
             "Your eBay sign-in expired and could not be renewed. "
             "Tap Connect eBay again in this browser.")
@@ -1346,6 +1351,12 @@ def _do_publish(d, f, ship_from=None):
         raise _PublishValidationError("This draft has no photos.")
     try:
         token = _ebay_access_token()
+    except _NeedsScopeReconnect:
+        # v33: the scope signal subclasses RuntimeError, so it needs
+        # its own clause before the broad catch below — converting it
+        # to _EbayAuthError would strip the flag and hide the Connect
+        # button again (the live v1.31 gap).
+        raise
     except RuntimeError as exc:
         raise _EbayAuthError(str(exc))
 
@@ -1619,6 +1630,12 @@ def api_ebay_publish():
     except _PublishValidationError as exc:
         return jsonify({"error": str(exc)}), 400
     except _EbayAuthError as exc:
+        # v33: defense in depth — a scope message converted to an auth
+        # error anywhere upstream must still carry the flag, or the
+        # Connect button stays hidden (the live v1.31 gap).
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": str(exc)}), 200
         return jsonify({"error": str(exc)}), 400
     except _NeedsShipFromAddress:
         # v31: not a failure — the app shows the one-time ship-from
@@ -1637,6 +1654,11 @@ def api_ebay_publish():
                         "policies": exc.policies,
                         "error": str(exc)}), 200
     except RuntimeError as exc:
+        # v33: same defense — a bare scope raise must never surface
+        # without the flag.
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": str(exc)}), 200
         return jsonify({"error": str(exc)}), 502
     return jsonify({"listing_id": listing_id, "listing_url": listing_url})
 
@@ -1741,6 +1763,14 @@ def api_ebay_batch_publish():
                             "error": str(exc)})
             break
         except RuntimeError as exc:
+            # v33: a bare scope raise must carry the flag and stop the
+            # run (every draft would hit the same wall), like the
+            # _NeedsScopeReconnect branch above — never a bare error.
+            if str(exc) == SCOPE_RECONNECT_MSG:
+                results.append({"draft_id": d["id"], "title": title, "ok": False,
+                                "needs_scope_reconnect": True,
+                                "error": str(exc)})
+                break
             # Covers validation, auth, and eBay-side failures alike: each
             # is reported per draft and never stops the rest.
             results.append({"draft_id": d["id"], "title": title, "ok": False,

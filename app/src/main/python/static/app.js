@@ -965,7 +965,10 @@ async function runBatch(shipFrom, fulfillmentOverride) {
       signals.needsAddress = true;
       row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
         '<div class="bp batch-skip">Needs a shop location: enter your ship-from address below.</div>';
-    } else if (r.needs_scope_reconnect) {
+    } else if (r.needs_scope_reconnect || isScopeReconnectText(r.error)) {
+      /* v33: the text check is defense in depth — a row carrying the
+         scope message without the flag still reveals the batch
+         Connect button (the live v1.31 gap, batch side). */
       signals.needsScope = true;
       row.innerHTML = '<div class="bt">' + esc(r.title) + "</div>" +
         '<div class="bp batch-skip">' + esc(r.error || "Needs a new eBay permission.") + "</div>";
@@ -1073,6 +1076,11 @@ $("btn-batch-confirm").addEventListener("click", async () => {
     }
   } catch (e) {
     $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
+    /* v33: a scope message reaching this generic display must still
+       reveal the batch Connect button. */
+    if (isScopeReconnectText(e.message)) {
+      $("batch-scope-box").classList.remove("hidden");
+    }
     $("btn-batch-done").classList.remove("hidden");
   } finally {
     $("batch-progress").classList.add("hidden");
@@ -1629,6 +1637,11 @@ $("btn-publish").addEventListener("click", async () => {
     const el = $("publish-error");
     el.textContent = e.message;
     el.classList.remove("hidden");
+    /* v33: same defense as postPublish — a scope message reaching
+       this generic display must still reveal the Connect button. */
+    if (isScopeReconnectText(e.message)) {
+      $("scope-reconnect-box").classList.remove("hidden");
+    }
   } finally {
     $("publish-spinner").classList.add("hidden");
     $("btn-publish").disabled = false;
@@ -1657,12 +1670,38 @@ function readShipFrom(prefix) {
    confirmed listing, plus the address — nothing else changes. */
 let pendingPublishBody = null;
 
+/* v33: defense in depth — the scope message text itself must reveal
+   the Connect button, even if a server response ever carries it
+   without the needs_scope_reconnect flag (the live v1.31 gap: the
+   message showed but the button stayed hidden). The substring mirrors
+   the server's SCOPE_RECONNECT_MSG; the wording is unchanged
+   server-side, so contains-matching also survives any wrapping. */
+function isScopeReconnectText(text) {
+  return typeof text === "string" &&
+    text.indexOf("needs one new permission to read your shipping policies") !== -1;
+}
+
 async function postPublish(body) {
-  const r = await api("/api/ebay/publish", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  let r;
+  try {
+    r = await api("/api/ebay/publish", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    /* v33: a thrown scope message (flag missing) still shows the
+       message + the Connect button, then reports needs-scope like the
+       flag path, so every postPublish caller behaves the same. */
+    if (isScopeReconnectText(e.message)) {
+      const el = $("publish-error");
+      el.textContent = e.message;
+      el.classList.remove("hidden");
+      $("scope-reconnect-box").classList.remove("hidden");
+      return "needs-scope";
+    }
+    throw e;
+  }
   if (r.needs_ship_from) {
     pendingPublishBody = body;
     $("ship-from-form").classList.remove("hidden");
