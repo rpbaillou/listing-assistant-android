@@ -99,15 +99,18 @@ EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID", "").strip()
 EBAY_AUTH_URL = "https://auth.ebay.com/oauth2/authorize"
 EBAY_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 EBAY_API = "https://api.ebay.com"
-# v2.1: the base scope covers the Trading API (picture hosting via IAF token);
-# the two sell scopes cover the Sell Inventory / Listing APIs.
+# v29: eBay's Trading API call UploadSiteHostedPictures was DECOMMISSIONED
+# Sept 30, 2026 (deprecated Nov 6, 2025) — it now answers a plain gateway
+# 404 for every format, so no Trading upload path remains. Photos go
+# through eBay's Media API instead, authorized with the same OAuth user
+# token; the Media methods require the sell.inventory scope, which the
+# token below already holds (base api_scope alone is NOT enough).
 EBAY_SCOPES = ("https://api.ebay.com/oauth/api_scope "
                "https://api.ebay.com/oauth/api_scope/sell.inventory "
                "https://api.ebay.com/oauth/api_scope/sell.listing")
 
-# eBay's own picture hosting lives in the classic Trading API (XML).
-EBAY_TRADING_API = "https://api.ebay.com/ws/api.dll"
-EBAY_TRADING_COMPAT_LEVEL = "1451"
+# eBay Media API (production only; not supported in Sandbox).
+EBAY_MEDIA_API = "https://apim.ebay.com/commerce/media/v1_beta"
 
 MAX_PHOTOS = 24
 MAX_FILE_MB = 15
@@ -447,7 +450,7 @@ def _resp_bytes(resp):
     return b""
 
 
-def _picture_hosting_error(resp, token):
+def _media_api_error(resp, token):
     """Error text that never discards what eBay sent: HTTP status plus the
     first ~300 characters of eBay's reply body. The reply never contains
     our token or photo data (those went in the request, not the reply),
@@ -457,7 +460,7 @@ def _picture_hosting_error(resp, token):
     if token:
         text = text.replace(token, "[removed]")
     snippet = (": " + text[:300]) if text else ""
-    return (f"eBay picture hosting answered with error {resp.status_code}"
+    return (f"eBay photo service answered with error {resp.status_code}"
             f"{snippet}.")
 
 
@@ -482,112 +485,96 @@ def _picture_content_type(raw, photo_path):
             ".tif": "image/tiff", ".tiff": "image/tiff"}.get(ext, "image/jpeg")
 
 
-def _build_picture_upload(photo_path, picture_name):
-    """Build the multipart EPS upload for one photo.
+def _ebay_upload_picture(photo_path, token):
+    """Upload one photo to eBay's Media API (create_image_from_file) and
+    return the EPS imageUrl for the listing's imageUrls.
 
-    Returns (files, xml) where files is the requests files dict: the XML
-    request FIRST ('XML Payload', payload.xml, text/xml) with
-    PictureName + PictureSet and NO PictureData, then the photo's RAW
-    bytes ('dummy', filename, detected content type). This is the
-    multipart form eBay's photo layer wants (same shape as the hendt
-    ebay-api library's UploadSiteHostedPictures example); the base64
-    PictureData mode fails at that layer in 2026 with HTTP 404.
-    requests generates the multipart boundary; it must never be set
-    by hand, and the raw bytes are passed as bytes so a retry sends
-    the identical request.
-    """
+    This replaces the decommissioned Trading API call
+    UploadSiteHostedPictures (dead Sept 30, 2026): that call answers a
+    plain gateway 404 for every request format now, so no Trading upload
+    path remains. Request: POST apim.ebay.com/commerce/media/v1_beta/
+    image/create_image_from_file, Bearer user token (sell.inventory
+    scope), multipart/form-data with form key "image" = the photo's raw
+    bytes, no JSON payload. Response: 201 Created; the create body holds
+    imageUrl + expirationDate, and imageUrl is the address that goes in
+    the listing — NEVER the Location header URI or the bare image_id
+    (those are not listing image URLs). If the create body has no
+    imageUrl, fall back to GET image/{id} from the Location header and
+    use that response's imageUrl. If both fail, raise naming what was
+    missing — never proceed with a bad URL.
+
+    Error handling (v25 pattern, adapted): one automatic retry on
+    5xx/empty-body only, never on 4xx or a parsed error; 401/403 clears
+    the tokens and tells him to reconnect (a 403 naming error 190013
+    means the token lacks the sell.inventory photo permission, said
+    plainly). Photo bytes and the token never appear in a message."""
     with open(photo_path, "rb") as f:
         raw = f.read()
-    name = "".join(c for c in picture_name if c.isalnum() or c in "-_")[:60] or "photo"
-    xml = (
-        '<?xml version="1.0" encoding="utf-8"?>'
-        '<UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
-        f"<PictureName>{name}</PictureName>"
-        "<PictureSet>Supersize</PictureSet>"
-        "</UploadSiteHostedPicturesRequest>"
-    )
-    ext = os.path.splitext(photo_path)[1].lower()
-    if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
-                   ".tif", ".tiff"):
-        ext = ".jpg"
-    files = {
-        "XML Payload": ("payload.xml", xml.encode("utf-8"), "text/xml"),
-        "dummy": (name + ext, raw, _picture_content_type(raw, photo_path)),
-    }
-    return files, xml
-
-
-def _ebay_upload_picture(photo_path, token, picture_name):
-    """Upload one photo to eBay's own picture hosting (Trading API
-    UploadSiteHostedPictures, authorized with the OAuth user token in the
-    X-EBAY-API-IAF-TOKEN header). Returns the public FullURL."""
-    import xml.etree.ElementTree as ET
-    files, _xml = _build_picture_upload(photo_path, picture_name)
-    # One automatic retry (same photo, same request) when the failure is
-    # transient: HTTP 5xx, an empty body, or a garbled reply at HTTP 200.
-    # No hosted URL was returned on those failures, so nothing can be
-    # duplicated in the listing. Never retried: 4xx rejections and
-    # parsed Ack=Failure (real rejections, handled below as before).
-    root = None
+    filename = os.path.basename(photo_path) or "photo.jpg"
+    content_type = _picture_content_type(raw, photo_path)
     for attempt in range(2):
         try:
             resp = requests.post(
-                EBAY_TRADING_API,
-                headers={"X-EBAY-API-CALL-NAME": "UploadSiteHostedPictures",
-                         "X-EBAY-API-SITEID": "0",
-                         "X-EBAY-API-COMPATIBILITY-LEVEL": EBAY_TRADING_COMPAT_LEVEL,
-                         "X-EBAY-API-IAF-TOKEN": token},
-                files=files,
+                EBAY_MEDIA_API + "/image/create_image_from_file",
+                headers={"Authorization": "Bearer " + token},
+                files={"image": (filename, raw, content_type)},
                 timeout=120)
         except requests.RequestException as exc:
-            raise RuntimeError(f"Could not reach eBay picture hosting: {exc}")
+            raise RuntimeError(f"Could not reach eBay photo service: {exc}")
         if resp.status_code >= 500:
             if attempt == 0:
                 continue
-            raise RuntimeError(_picture_hosting_error(resp, token))
-        body = _resp_bytes(resp)
-        if not body.strip():
-            if resp.status_code == 200 and attempt == 0:
-                continue
-            if resp.status_code in (401, 403):
-                _clear_ebay_tokens()
-                raise RuntimeError(
-                    "Your eBay sign-in stopped working (or is missing the new picture "
-                    "permission). Tap Connect eBay again in this browser.")
-            raise RuntimeError(_picture_hosting_error(resp, token))
-        try:
-            root = ET.fromstring(body)
-        except ET.ParseError:
-            if resp.status_code == 200 and attempt == 0:
-                continue
-            if resp.status_code in (401, 403):
-                _clear_ebay_tokens()
-                raise RuntimeError(
-                    "Your eBay sign-in stopped working (or is missing the new picture "
-                    "permission). Tap Connect eBay again in this browser.")
-            raise RuntimeError(_picture_hosting_error(resp, token))
-        break
-    ns = {"e": "urn:ebay:apis:eBLBaseComponents"}
-    ack = (root.findtext("e:Ack", default="", namespaces=ns) or "").lower()
-    if ack not in ("success", "warning"):
-        msg = (root.findtext("e:Errors/e:LongMessage", default="", namespaces=ns)
-               or root.findtext("e:Errors/e:ShortMessage", default="", namespaces=ns))
-        low = msg.lower()
-        if resp.status_code in (401, 403) or "iaf" in low or "token" in low \
-                or "auth" in low or "scope" in low:
+            raise RuntimeError(_media_api_error(resp, token))
+        if resp.status_code in (401, 403):
             _clear_ebay_tokens()
+            detail = _resp_bytes(resp).decode("utf-8", "replace")
+            if resp.status_code == 403 and ("190013" in detail
+                                            or "nauthorized" in detail.lower()):
+                raise RuntimeError(
+                    "Your eBay sign-in is missing the photo permission "
+                    "(sell.inventory). Tap Connect eBay again in this "
+                    "browser to grant it.")
             raise RuntimeError(
-                "Your eBay sign-in stopped working (or is missing the new picture "
-                "permission). Tap Connect eBay again in this browser.")
-        raise RuntimeError(
-            "eBay picture hosting said: " + (msg[:220] if msg else
-                                             f"error {resp.status_code}"))
-    url = root.findtext("e:SiteHostedPictureDetails/e:FullURL",
-                        default="", namespaces=ns)
-    if not url:
-        raise RuntimeError(
-            "eBay hosted the photo but did not return its address. Try again.")
-    return url.strip()
+                "Your eBay sign-in stopped working. "
+                "Tap Connect eBay again in this browser.")
+        if resp.status_code == 201:
+            try:
+                body = resp.json()
+            except ValueError:
+                body = {}
+            url = (body.get("imageUrl") or "").strip() if isinstance(body, dict) else ""
+            if url:
+                return url
+            # Fallback: resolve the image id from the Location header.
+            loc = (resp.headers or {}).get("Location", "") or ""
+            image_id = loc.rstrip("/").rsplit("/", 1)[-1] if loc else ""
+            if image_id:
+                try:
+                    got = requests.get(
+                        EBAY_MEDIA_API + "/image/" + image_id,
+                        headers={"Authorization": "Bearer " + token},
+                        timeout=60)
+                except requests.RequestException:
+                    got = None
+                if got is not None and got.status_code == 200:
+                    try:
+                        got_body = got.json()
+                    except ValueError:
+                        got_body = {}
+                    url = (got_body.get("imageUrl") or "").strip() \
+                        if isinstance(got_body, dict) else ""
+                    if url:
+                        return url
+            raise RuntimeError(
+                "eBay accepted the photo but did not return its address. "
+                "Try again.")
+        # Any other status: a 4xx is a real rejection (never retried); an
+        # empty body is treated as transient and retried once.
+        if not _resp_bytes(resp).strip():
+            if attempt == 0:
+                continue
+        raise RuntimeError(_media_api_error(resp, token))
+    raise RuntimeError("eBay photo service did not answer. Try again.")
 
 
 def _app_token():
@@ -884,7 +871,7 @@ def api_ebay_category_suggest():
 def api_ebay_category_aspects():
     """Item specifics eBay wants for a category (required + recommended).
 
-    Used by the publish panel to render mandatory fields. Never errors hard:
+    Used by the listing page to render mandatory fields. Never errors hard:
     when eBay can't be reached the UI falls back to today's behavior.
     """
     body = request.get_json(force=True) or {}
@@ -952,12 +939,12 @@ def _do_publish(d, f):
         raise _EbayAuthError(str(exc))
 
     sku = "la" + d["id"]
-    # 1. photos -> eBay-hosted URLs (Trading API picture hosting, no third party)
+    # 1. photos -> eBay-hosted URLs (Media API photo service).
     image_urls = []
     for i, rel in enumerate(photos, 1):
         full = os.path.join(PHOTOS_DIR, rel)
         if os.path.isfile(full):
-            image_urls.append(_ebay_upload_picture(full, token, f"{sku}-{i}"))
+            image_urls.append(_ebay_upload_picture(full, token))
     if not image_urls:
         raise RuntimeError("No photos could be uploaded. Try again.")
 
@@ -1068,8 +1055,8 @@ def api_ebay_publish():
     title = str(body.get("title", d.get("title", ""))).strip()[:80]
     description = str(body.get("description", d.get("description", ""))).strip()
     price_raw = str(body.get("price", d.get("price", ""))).strip()
-    # v6: condition comes from the step-4 dropdown, falling back to the draft's
-    # condition field (step 2). Empty means unset: we do NOT default to NEW,
+    # v6: condition comes from the listing page, falling back to the draft's
+    # condition field. Empty means unset: we do NOT default to NEW,
     # because silently calling a used item "new" misleads the buyer. eBay gets
     # no condition value in that case; if the category requires one, eBay's own
     # error message says so in plain words.
@@ -1086,7 +1073,7 @@ def api_ebay_publish():
     return_id = str(body.get("return_policy_id")
                     or d.get("return_policy_id")
                     or EBAY_RETURN_POLICY_ID).strip()
-    # v8: step-4 aspect fields (required/recommended item specifics) arrive in
+    # v8: listing-page aspect fields (required/recommended item specifics) arrive in
     # the body and overlay the draft's attributes.
     attributes = dict(d.get("attributes") or {})
     body_attrs = body.get("attributes")
@@ -1108,7 +1095,7 @@ def api_ebay_publish():
         return jsonify({"error": "The three policy numbers are missing. Add them in .env "
                                  "or type them in the boxes (setup guide: Connect eBay)."}), 400
     # v9: best offer. The toggle and optional auto prices come from the
-    # publish panel, falling back to the draft's saved values. Toggle off =
+    # listing page, falling back to the draft's saved values. Toggle off =
     # today's behavior, unchanged (no bestOfferTerms sent).
     best_offer = bool(body.get("best_offer", d.get("best_offer", False)))
     decline_raw = str(body.get("best_offer_auto_decline",
@@ -1155,7 +1142,7 @@ def api_ebay_batch_publish():
     The confirmation screen in the app is the review: this endpoint only
     ever publishes drafts the user confirmed there. One draft failing
     never stops the rest. The category comes from the batch screen
-    (v27: drafts may now carry a saved category number, but batch still
+    (v29: drafts carry a saved category number from the listing page, but batch still
     uses the one number entered for the whole batch); policies come from
     the saved preset when one exists, otherwise .env (via the helper's
     fallback).
@@ -1358,61 +1345,21 @@ def api_draft_save(draft_id):
     for key in ("best_offer_auto_decline", "best_offer_auto_accept"):
         if key in body:
             d[key] = str(body[key])[:20]
-    if "attributes" in body and isinstance(body["attributes"], dict):
-        d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
-    _save_draft(d)
-    return jsonify({"draft": d})
-
-
-@app.route("/api/drafts/<draft_id>/publish-fields", methods=["POST"])
-def api_draft_publish_fields(draft_id):
-    """v27: save the publish panel's fields into the draft, so a category
-    number, policy number, or other panel choice survives an app restart
-    or update. The panel is session-only otherwise: a Suggest pick lived
-    only in the page, and an update wiped it, so the next List tap failed
-    with 'Pick an eBay category first' even though he had picked one.
-
-    Merge-only, whitelisted: only keys present in the body are touched,
-    and only listing settings — never photos, title, description, live
-    listing state, or any credential/token. Present-but-empty clears a
-    scalar field; for attributes it removes that key. Invalid conditions
-    are ignored, mirroring the draft PUT handler, so a bad write can
-    never corrupt the draft. Failures here must never block listing:
-    the client saves best-effort and the publish payload always carries
-    the panel's current values anyway."""
-    d = _load_draft(draft_id)
-    if d is None:
-        return jsonify({"error": "Draft not found."}), 404
-    body = request.get_json(force=True) or {}
-    cat = str(body.get("category_id", "") or "").strip()
+    # v29: the listing page's eBay fields live in the draft itself (this
+    # replaced the v27 separate publish-fields endpoint): the category
+    # number + name and the three policy numbers save here with the same
+    # draft autosave as everything else, so no separate panel-save chain
+    # can lose them. Unknown keys are ignored, so secrets can never be
+    # written through this endpoint.
     if "category_id" in body:
-        d["category_id"] = cat[:20]
+        d["category_id"] = str(body["category_id"])[:20]
     if "category_name" in body:
-        d["category_name"] = str(body.get("category_name", "") or "").strip()[:200]
-    if "condition" in body:
-        c = str(body["condition"]).strip()
-        if not c or c in {v for v, _ in CONDITIONS}:
-            d["condition"] = c
-    if "price" in body:
-        d["price"] = str(body["price"])[:20]
+        d["category_name"] = str(body["category_name"])[:200]
     for key in ("fulfillment_policy_id", "payment_policy_id", "return_policy_id"):
         if key in body:
             d[key] = str(body[key])[:30]
-    if "best_offer" in body:
-        d["best_offer"] = bool(body["best_offer"])
-    for key in ("best_offer_auto_decline", "best_offer_auto_accept"):
-        if key in body:
-            d[key] = str(body[key])[:20]
     if "attributes" in body and isinstance(body["attributes"], dict):
-        attrs = dict(d.get("attributes") or {})
-        for k, v in body["attributes"].items():
-            k = str(k)[:80]
-            v = str(v).strip()
-            if v:
-                attrs[k] = v[:200]
-            else:
-                attrs.pop(k, None)
-        d["attributes"] = attrs
+        d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)
     return jsonify({"draft": d})
 

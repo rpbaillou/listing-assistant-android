@@ -434,6 +434,7 @@ $("btn-analyze").addEventListener("click", async () => {
     selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
     const { draft: d } = await api("/api/analyze", { method: "POST", body: fd });
     loadDraftIntoForm(d);
+    await prefillListing();
     show("step-draft");
   } catch (err) {
     showError(err.message);
@@ -446,7 +447,7 @@ $("btn-analyze").addEventListener("click", async () => {
 /* ---------- v24: quick post (skip AI) ---------- */
 /* Same photo upload as Identify, but the server starts a BLANK draft —
    no Gemini call, no AI wait. He types the title himself in step 2,
-   then the normal Review → step 4 flow takes over. */
+   then the listing page takes over, prefilled with his usual settings. */
 $("btn-quick-post").addEventListener("click", async () => {
   hideError();
   $("btn-quick-post").disabled = true;
@@ -455,6 +456,7 @@ $("btn-quick-post").addEventListener("click", async () => {
     selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
     const { draft: d } = await api("/api/quick-post", { method: "POST", body: fd });
     loadDraftIntoForm(d);
+    await prefillListing();
     show("step-draft");
   } catch (err) {
     showError(err.message);
@@ -528,6 +530,7 @@ function collectForm() {
     const v = row.querySelector(".av").value.trim();
     if (k) attrs[k] = v;
   });
+  const cid = $("p-category").value.trim();
   return {
     title: $("f-title").value.trim(),
     category: $("f-category").value.trim(),
@@ -536,8 +539,16 @@ function collectForm() {
     condition_details: $("f-condition-details").value.trim(),
     price: $("f-price").value.trim(),
     attributes: attrs,
-    /* v9: best offer lives in step 4 (p- ids) but joins the same autosave —
-       the elements always exist in the DOM, visible or not. */
+    /* v29: the listing page holds every eBay field, so the draft
+       autosave carries them all — category number + name (the name
+       only when the number still equals the picked one, so a hand-typed
+       number never inherits a stale name), the three policy numbers,
+       and Best Offer. No separate panel-save chain exists anymore. */
+    category_id: cid,
+    category_name: cid && cid === pickedCat.id ? pickedCat.name : "",
+    fulfillment_policy_id: $("p-fulfillment").value.trim(),
+    payment_policy_id: $("p-payment").value.trim(),
+    return_policy_id: $("p-return").value.trim(),
     best_offer: $("p-best-offer").checked,
     best_offer_auto_decline: $("p-bo-decline").value.trim(),
     best_offer_auto_accept: $("p-bo-accept").value.trim(),
@@ -576,21 +587,6 @@ async function saveDraft() {
    app switch, screen off). Uses keepalive so the request survives the page
    going away. Fire-and-forget: nothing to await here. */
 function flushSave() {
-  /* v27: flush a pending panel save too, but only if the panel was
-     actually shown this session — never from unopened defaults. */
-  if (publishDirty && ebayPanelShown && draft) {
-    publishDirty = false;
-    clearTimeout(publishTimer);
-    publishTimer = null;
-    try {
-      fetch("/api/drafts/" + draft.id + "/publish-fields", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(collectPublishFields()),
-        keepalive: true,
-      }).catch(() => {});
-    } catch (e) { /* best-effort */ }
-  }
   if (!saveDirty || !draft) {
     clearTimeout(saveTimer);
     saveTimer = null;
@@ -659,44 +655,14 @@ $("btn-reanalyze").addEventListener("click", async () => {
   } catch (err) { alert(err.message); }
 });
 
-$("btn-to-review").addEventListener("click", async () => {
-  await saveDraft();
-  renderReview();
-  show("step-review");
-});
 
-/* ---------- step 3: review ---------- */
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-function renderReview() {
-  const d = Object.assign({}, draft, collectForm());
-  let attrs = "";
-  Object.entries(d.attributes || {}).forEach(([k, v]) => {
-    attrs += "<dt>" + esc(k) + "</dt><dd>" + esc(v) + "</dd>";
-  });
-  $("review-card").innerHTML =
-    "<h3>" + esc(d.title || "(no title)") + "</h3>" +
-    "<p><b>Price:</b> " + (d.price ? "$" + esc(d.price) : "(not set)") + "</p>" +
-    "<p><b>Category:</b> " + esc(d.category || "(not set)") + "</p>" +
-    "<p><b>Condition:</b> " + esc(conditionLabel(d.condition) || "(not set)") + "</p>" +
-    (d.condition_details ? "<p><b>Condition details:</b> " + esc(d.condition_details).replace(/\n/g, "<br>") + "</p>" : "") +
-    /* v9: show best offer status in the review so it's confirmed before step 4. */
-    (d.best_offer ? "<p><b>Best Offer:</b> on" +
-      (d.best_offer_auto_decline ? " (auto-decline under $" + esc(d.best_offer_auto_decline) + ")" : "") +
-      (d.best_offer_auto_accept ? " (auto-accept $" + esc(d.best_offer_auto_accept) + "+)" : "") +
-      "</p>" : "") +
-    "<p>" + esc(d.description).replace(/\n/g, "<br>") + "</p>" +
-    (attrs ? "<dl>" + attrs + "</dl>" : "") +
-    "<p><b>Photos:</b> " + (d.photos || []).length + "</p>";
-}
-
-$("btn-back-edit").addEventListener("click", () => show("step-draft"));
-$("btn-to-handoff").addEventListener("click", () => { renderEbayStep(); show("step-handoff"); });
-
-/* ---------- step 4: handoff ---------- */
+/* v29: the Review step is gone — the listing page itself is the review,
+   and the Post button's confirmation dialog is the final stop. */
 async function copyText(text, okMsg) {
   try {
     await navigator.clipboard.writeText(text);
@@ -780,7 +746,7 @@ $("btn-drafts").addEventListener("click", async (e) => {
          break cleanly between them, never mid-string. "Listed on eBay"
          is a separate span so it can wrap to the next line cleanly.
          v24: a tick box (batch posting) and a Post button (straight to
-         review) join the row. Listed drafts get no Post button — they are
+         the listing page) join the row. Listed drafts get no Post button — they are
          already live, and the publish step refuses them anyway. */
       row.innerHTML =
         '<input type="checkbox" class="draft-check" data-id="' + d.id +
@@ -794,31 +760,33 @@ $("btn-drafts").addEventListener("click", async (e) => {
       row.querySelector(".secondary").addEventListener("click", async () => {
         const { draft: full } = await api("/api/drafts/" + d.id);
         loadDraftIntoForm(full);
+        await prefillListing();
         show("step-draft");
       });
       const postBtn = row.querySelector(".post");
       if (postBtn) {
         postBtn.addEventListener("click", async () => {
-          /* v24: straight to the Review screen — photos, title, price and
+          /* v29: straight to the listing page — photos, title, price and
              everything else come from the draft, no re-picking, no AI.
-             Nothing goes live from here: Review → step 4 → List button
-             still stand between him and a live listing. */
+             Nothing goes live from here: the listing page's Post button
+             plus its confirmation dialog still stand between him and a
+             live listing. */
           const { draft: full } = await api("/api/drafts/" + d.id);
           loadDraftIntoForm(full);
-          renderReview();
+          await prefillListing();
           const notes = [];
-          if (!String(full.price || "").trim())
+          if (!String($("f-price").value || "").trim())
             notes.push("Price is not set — add it before listing.");
-          if (!String(full.category || "").trim())
-            notes.push("Category is not set — pick one with Suggest in step 4.");
+          if (!$("p-category").value.trim())
+            notes.push("Category is not set — pick one with Suggest below.");
+          const note = $("listing-note");
           if (notes.length) {
-            const card = $("review-card");
-            const note = document.createElement("div");
-            note.className = "note";
             note.textContent = notes.join(" ");
-            card.insertBefore(note, card.firstChild);
+            note.classList.remove("hidden");
+          } else {
+            note.classList.add("hidden");
           }
-          show("step-review");
+          show("step-draft");
         });
       }
       row.querySelector(".del").addEventListener("click", async () => {
@@ -842,7 +810,8 @@ $("btn-close-drafts").addEventListener("click", () => show("step-photos"));
 /* One confirmation list IS the review for the batch: nothing posts
    without it. Drafts without a price, or already live, are excluded
    with a plain reason. One category number applies to the whole batch
-   (drafts never store a category number, so it is picked here). */
+   (drafts now carry a saved number from the listing page, but batch
+   still uses its own entered number for the whole batch). */
 let batchIncluded = [];
 
 function updateBatchConfirm() {
@@ -1017,16 +986,16 @@ let ebayStatus = null;
 // appears in this file.
 const WORKING_RUNAME = "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz";
 
-/* v27: pure publish-panel prefill. Precedence is draft first, then the
+/* v29: pure listing-page prefill. Precedence is draft first, then the
    "usual settings" preset, then .env defaults — so a category number or
    policy number saved into the draft survives an app restart or update,
    and the preset only fills fields the draft lacks (the "applied" list
    names exactly what the preset filled, never what the draft supplied).
-   form carries the step-2 DOM values (condition, price): a keystroke
-   typed moments before opening step 4 is newer than the last autosave,
+   form carries the listing-page DOM values (condition, price): a keystroke
+   typed moments before opening the listing page is newer than the last autosave,
    so it wins over the draft for those two fields. Pure on purpose:
    node tests pin this precedence without a DOM. */
-function panelPrefill(draftObj, preset, defaults, form) {
+function listingPrefill(draftObj, preset, defaults, form) {
   const d = draftObj || {};
   const p = preset || {};
   const def = defaults || {};
@@ -1066,79 +1035,36 @@ function panelPrefill(draftObj, preset, defaults, form) {
   return out;
 }
 
-/* v27: publish-panel persistence state. pickedCat tracks the last
-   Suggest pick (or restored saved pair) so the display name survives
-   re-saves when the number is untouched; the name is only sent when the
-   input still equals the picked number, so a hand-typed number never
-   inherits a stale name. ebayPanelShown guards the page-hide flush:
-   panel fields must only ever save after the panel has actually been
-   shown in this session, never from their unopened defaults. */
+/* v29: pickedCat tracks the last Suggest pick (or restored saved pair)
+   so the display name survives re-saves when the number is untouched;
+   the name is only sent when the input still equals the picked number,
+   so a hand-typed number never inherits a stale name. All listing-page
+   fields save through the draft's own autosave now — there is no
+   separate panel-save chain anymore. */
 let pickedCat = { id: "", name: "" };
-let ebayPanelShown = false;
-let publishDirty = false;
-let publishTimer = null;
 
-function collectPublishFields() {
-  const cid = $("p-category").value.trim();
-  return {
-    category_id: cid,
-    category_name: cid && cid === pickedCat.id ? pickedCat.name : "",
-    condition: $("p-condition").value,
-    price: $("p-price").value.trim(),
-    fulfillment_policy_id: $("p-fulfillment").value.trim(),
-    payment_policy_id: $("p-payment").value.trim(),
-    return_policy_id: $("p-return").value.trim(),
-    best_offer: $("p-best-offer").checked,
-    best_offer_auto_decline: $("p-bo-decline").value.trim(),
-    best_offer_auto_accept: $("p-bo-accept").value.trim(),
-    attributes: collectAspects(),
-  };
-}
-
-async function savePublishFields() {
-  if (!draft || !ebayPanelShown) return;
-  clearTimeout(publishTimer);
-  publishTimer = null;
-  try {
-    const { draft: d } = await api("/api/drafts/" + draft.id + "/publish-fields", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(collectPublishFields()),
-    });
-    draft = d;
-    publishDirty = false;
-    /* Keep the step-2 form in sync so a later step-2 autosave cannot
-       resurrect the pre-panel condition or price. */
-    const fc = $("f-condition");
-    if (fc &&
-        Array.from(fc.options || []).some((o) => o.value === $("p-condition").value)) {
-      fc.value = $("p-condition").value;
-    }
-    if ($("f-price")) $("f-price").value = $("p-price").value;
-  } catch (e) { /* panel saves are best-effort; List still sends everything */ }
-}
-
-function schedulePublishSave() {
-  publishDirty = true;
-  clearTimeout(publishTimer);
-  publishTimer = setTimeout(savePublishFields, 1200);
-}
-
-async function renderEbayStep() {
-  const box = $("ebay-status");
-  $("publish-panel").classList.add("hidden");
+async function prefillListing() {
+  /* v29: fills the listing page's eBay fields when a draft opens and
+     renders the eBay status line. Draft first, preset second, .env
+     defaults last (listingPrefill). Never throws: a failed status or
+     preset fetch leaves the page as loaded from the draft. */
+  if (!draft) return;
   $("publish-error").classList.add("hidden");
   $("publish-ok").classList.add("hidden");
+  $("listing-note").classList.add("hidden");
+  const box = $("ebay-status");
   try {
     ebayStatus = await api("/api/ebay/status");
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0'>Could not check eBay status.</p>";
+    $("btn-publish").classList.remove("hidden");
     return;
   }
   if (!ebayStatus.ebay_configured) {
     box.innerHTML = "<p style='margin:0'><b>eBay is not set up yet.</b></p>" +
       "<p class='hint'>Add your eBay App ID and Cert ID to the .env file " +
       "(setup guide: Connect eBay), then restart the app. The manual copy buttons below still work.</p>";
+    $("btn-publish").classList.add("hidden");
     return;
   }
   if (!ebayStatus.connected) {
@@ -1176,48 +1102,40 @@ async function renderEbayStep() {
         }
       });
     }
+    $("btn-publish").classList.add("hidden");
     return;
   }
-  if (draft && draft.ebay_listing_id) {
+  const alreadyLive = !!(draft && draft.ebay_listing_id);
+  if (alreadyLive) {
     box.innerHTML = "<p style='margin:0'><b>This draft is already live on eBay.</b></p>" +
       "<p class='hint'><a href='" + draft.ebay_listing_url + "' target='_blank'>View your listing</a>" +
       " · item " + esc(draft.ebay_listing_id) + "</p>";
-    return;
+    $("btn-publish").classList.add("hidden");
+  } else {
+    let statusHtml = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
+      "<p class='hint runame-line'>Sign-in name in use: " + esc((ebayStatus.runame || "").trim()) + "</p>";
+    if (!ebayStatus.policies_configured) {
+      // v29: unlike the old panel, the listing page lets him TYPE the
+      // missing policy numbers right here, so the Post button stays —
+      // the server still refuses a post with numbers missing.
+      statusHtml += "<p class='hint'>Still needed: shop policy numbers — type them under Shop policy numbers below, or set them in .env.</p>";
+    }
+    box.innerHTML = statusHtml;
+    $("btn-publish").classList.remove("hidden");
   }
-  const missing = [];
-  if (!ebayStatus.policies_configured) missing.push("shop policy numbers");
-  if (missing.length) {
-    box.innerHTML = "<p style='margin:0'><b>eBay is connected.</b> Still needed: " +
-      esc(missing.join(" and ")) + ". See the setup guide (Connect eBay).</p>";
-    return;
-  }
-  box.innerHTML = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
-    "<p class='hint runame-line'>Sign-in name in use: " + esc((ebayStatus.runame || "").trim()) + "</p>";
-  // prefill the publish panel
-  const sel = $("p-condition");
-  sel.innerHTML = "";
-  const pick = document.createElement("option");
-  pick.value = ""; pick.textContent = "— Pick one —";
-  sel.appendChild(pick);
-  (ebayStatus.conditions || []).forEach((c) => {
-    const o = document.createElement("option");
-    o.value = c.value; o.textContent = c.label;
-    sel.appendChild(o);
-  });
-  // v27: draft first, preset second, .env defaults last (panelPrefill).
-  // A category number saved into the draft is restored here, so List
-  // works straight away after an update or restart — no re-pick.
+  // Prefill the listing page's eBay fields: a category number saved into
+  // the draft is restored here, so Post works straight away after an
+  // update or restart — no re-pick.
   const cur = collectForm();
   let preset = null;
   try {
     const r = await api("/api/preset");
     preset = r.preset;
   } catch (e) { preset = null; }
-  const pre = panelPrefill(draft || {}, preset, ebayStatus.policy_defaults || {},
-    { condition: cur.condition, price: $("f-price").value || "" });
-  sel.value = pre.condition;
-  $("condition-reminder").classList.toggle("hidden", !!pre.condition);
-  $("p-price").value = pre.price;
+  const pre = listingPrefill(draft || {}, preset, ebayStatus.policy_defaults || {},
+    { condition: cur.condition, price: cur.price });
+  $("f-condition").value = pre.condition;
+  $("f-price").value = pre.price;
   $("p-best-offer").checked = pre.best_offer;
   $("p-bo-decline").value = pre.best_offer_auto_decline;
   $("p-bo-accept").value = pre.best_offer_auto_accept;
@@ -1227,8 +1145,8 @@ async function renderEbayStep() {
   $("p-fulfillment").value = pre.fulfillment;
   $("p-payment").value = pre.payment;
   $("p-return").value = pre.return;
-  /* v27: remember the restored category pair so later panel saves keep
-     its display name when the number is untouched. */
+  /* Remember the restored category pair so later saves keep its display
+     name when the number is untouched. */
   pickedCat = pre.category_id
     ? { id: pre.category_id, name: pre.category_name } : { id: "", name: "" };
   const catSaved = $("cat-saved");
@@ -1245,15 +1163,12 @@ async function renderEbayStep() {
       ") — change anything before listing.";
     note.classList.remove("hidden");
   }
-  ebayPanelShown = true;
-  publishDirty = false;
-  $("publish-panel").classList.remove("hidden");
-  /* v27: a restored category number also restores its required-details
+  /* A restored category number also restores its required-details
      section (prefilled from the draft's saved specifics). */
   if (pre.category_id) loadCategoryAspects();
 }
 
-/* v24: save the current publish-panel values as the one usual-settings
+/* v24: save the current listing-page values as the one usual-settings
    preset. Re-saving overwrites it. The note confirms what was saved. */
 $("btn-save-preset").addEventListener("click", async () => {
   const note = $("preset-note");
@@ -1262,7 +1177,7 @@ $("btn-save-preset").addEventListener("click", async () => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        condition: $("p-condition").value,
+        condition: $("f-condition").value,
         category_id: $("p-category").value.trim(),
         fulfillment_policy_id: $("p-fulfillment").value.trim(),
         payment_policy_id: $("p-payment").value.trim(),
@@ -1299,7 +1214,7 @@ $("btn-cat-suggest").addEventListener("click", async () => {
       const b = document.createElement("button");
       b.type = "button"; b.className = "ghost sug";
       b.textContent = s.name + " (" + s.id + ")";
-      b.addEventListener("click", () => {
+      b.addEventListener("click", async () => {
         $("p-category").value = s.id;
         pickedCat = { id: s.id, name: s.name };
         const cs = $("cat-saved");
@@ -1307,7 +1222,7 @@ $("btn-cat-suggest").addEventListener("click", async () => {
         cs.classList.remove("hidden");
         box.classList.add("hidden");
         loadCategoryAspects(); /* v8: fetch what eBay requires for this category */
-        savePublishFields(); /* v27: a Suggest pick saves immediately */
+        await saveDraft(); /* v29: a Suggest pick saves immediately, through the draft autosave */
       });
       box.appendChild(b);
     });
@@ -1317,14 +1232,15 @@ $("btn-cat-suggest").addEventListener("click", async () => {
 });
 
 /* v8: also check when a category number is typed in by hand. */
-/* v27: a hand-edited number hides the saved-name line (the name belongs
-   to the old number); the save itself only sends a name when the input
-   still equals the picked number, so a typed number never inherits one. */
+/* v29: a hand-edited number hides the saved-name line (the name belongs
+   to the old number); the draft save itself only sends a name when the
+   input still equals the picked number, so a typed number never
+   inherits one. */
 function onCategoryEdited() {
   if ($("p-category").value.trim() !== pickedCat.id) {
     $("cat-saved").classList.add("hidden");
   }
-  schedulePublishSave();
+  scheduleSave();
 }
 $("p-category").addEventListener("change", () => {
   onCategoryEdited();
@@ -1332,23 +1248,21 @@ $("p-category").addEventListener("change", () => {
 });
 $("p-category").addEventListener("input", onCategoryEdited);
 
-/* v27: every other panel field persists into the draft on change. */
-$("p-condition").addEventListener("change", schedulePublishSave);
-$("p-price").addEventListener("input", schedulePublishSave);
+/* v29: the listing page's eBay fields join the draft autosave.
+   Condition and price already autosave through their f-* listeners. */
 ["p-fulfillment", "p-payment", "p-return"].forEach((id) => {
-  $(id).addEventListener("input", schedulePublishSave);
+  $(id).addEventListener("input", scheduleSave);
 });
-$("required-aspects").addEventListener("input", schedulePublishSave);
+$("required-aspects").addEventListener("input", scheduleSave);
 
 /* v9: best offer toggle shows/hides the auto-price fields; all three join
    the draft autosave (checkbox fires "change", prices fire "input"). */
 $("p-best-offer").addEventListener("change", () => {
   $("best-offer-fields").classList.toggle("hidden", !$("p-best-offer").checked);
   scheduleSave();
-  schedulePublishSave();
 });
 ["p-bo-decline", "p-bo-accept"].forEach((id) => {
-  $(id).addEventListener("input", () => { scheduleSave(); schedulePublishSave(); });
+  $(id).addEventListener("input", scheduleSave);
 });
 
 /* v9: client-side mirror of the server's best-offer rules. Returns a
@@ -1484,9 +1398,8 @@ function validateAspects() {
 $("btn-publish").addEventListener("click", async () => {
   hidePublishMsg();
   if (!draft) return;
-  /* v27: persist the panel first, fire-and-forget — List never waits
-     for the save (its payload already carries every panel value). */
-  savePublishFields();
+  /* v29: save the draft first so what posts is exactly what is on disk. */
+  await saveDraft();
   /* v8: eBay's required item specifics must be filled before listing. */
   const missing = validateAspects();
   if (missing.length) {
@@ -1500,14 +1413,23 @@ $("btn-publish").addEventListener("click", async () => {
   const boErr = checkBestOffer($("p-best-offer").checked,
                                $("p-bo-decline").value,
                                $("p-bo-accept").value,
-                               parseFloat($("p-price").value));
+                               parseFloat($("f-price").value));
   if (boErr) {
     const el = $("publish-error");
     el.textContent = boErr;
     el.classList.remove("hidden");
     return;
   }
-  if (!confirm("Create a REAL live eBay listing for this item now?")) return;
+  /* v29: the final confirmation IS the review stop — title, price and
+     category, confirmed before any eBay call creates a listing. */
+  const catNum = $("p-category").value.trim();
+  const catLabel = (catNum && catNum === pickedCat.id && pickedCat.name)
+    ? pickedCat.name + " (" + catNum + ")" : (catNum || "(not set)");
+  if (!confirm("Create a REAL live eBay listing?\n\n" +
+      ($("f-title").value.trim() || "(no title)") + "\n" +
+      "Price: $" + $("f-price").value.trim() + "\n" +
+      "Category: " + catLabel + "\n\n" +
+      "This goes live immediately.")) return;
   $("publish-spinner").classList.remove("hidden");
   $("btn-publish").disabled = true;
   try {
@@ -1515,14 +1437,14 @@ $("btn-publish").addEventListener("click", async () => {
       draft_id: draft.id,
       title: $("f-title").value.trim(),
       description: $("f-description").value.trim(),
-      price: $("p-price").value.trim(),
-      condition: $("p-condition").value,
+      price: $("f-price").value.trim(),
+      condition: $("f-condition").value,
       condition_details: $("f-condition-details").value.trim(),
       category_id: $("p-category").value.trim(),
       fulfillment_policy_id: $("p-fulfillment").value.trim(),
       payment_policy_id: $("p-payment").value.trim(),
       return_policy_id: $("p-return").value.trim(),
-      /* v8: step-4 aspect fields overlay the draft's attributes server-side. */
+      /* v8: listing-page aspect fields overlay the draft's attributes server-side. */
       attributes: Object.assign({}, draft.attributes || {}, collectAspects()),
       /* v9: best offer settings. */
       best_offer: $("p-best-offer").checked,
@@ -1540,7 +1462,7 @@ $("btn-publish").addEventListener("click", async () => {
     ok.innerHTML = "It is live! <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" +
       "<br>Item number: " + esc(r.listing_id);
     ok.classList.remove("hidden");
-    renderEbayStep();
+    prefillListing();
   } catch (e) {
     const el = $("publish-error");
     el.textContent = e.message;
@@ -1572,7 +1494,7 @@ function hidePublishMsg() {
   const flag = q.get("ebay");
   if (flag) {
     if (flag === "connected") {
-      el.textContent = "eBay is connected. You can now list straight from step 4.";
+      el.textContent = "eBay is connected. You can now list straight from the listing page.";
     } else {
       el.textContent = "eBay connection did not finish. Try Connect eBay again in this browser.";
       el.className = "banner";

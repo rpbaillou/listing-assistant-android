@@ -48,10 +48,12 @@
     <div id="spinner" class="spinner hidden">Asking the AI to look at your photos… this takes about 20 seconds.</div>
   </section>
 
-  <!-- STEP 2: draft -->
+  <!-- STEP 2: the listing page (v29: everything about the listing lives
+       here — the separate publish panel is gone, so no field can be
+       lost between pages; the draft's own save keeps it all). -->
   <section id="step-draft" class="step hidden">
-    <h2>2. Check and edit the draft</h2>
-    <p class="hint">Everything here is editable. Tap any field to fix it.</p>
+    <h2>2. Your listing</h2>
+    <p class="hint">Everything about the listing lives here. Fill it in, check it, then post it below.</p>
     <div id="draft-photos" class="thumbs small"></div>
 
     <label>Title <span id="title-count" class="count">0/80</span></label>
@@ -91,82 +93,50 @@
     </div>
     <p class="hint">Opens eBay with your title pre-filled so you can see what similar items sold for. Sign in on eBay if it asks. For 3-year history and real Best Offer prices, use Product Research in the eBay app or Seller Hub.</p>
 
-    <div class="btnrow">
-      <button id="btn-reanalyze" class="ghost" type="button">Ask AI again</button>
-      <button id="btn-to-review" class="primary" type="button">Review →</button>
+    <label>eBay category number</label>
+    <div class="pricerow">
+      <input id="p-category" type="text" inputmode="numeric" placeholder="e.g. 178893">
+      <button id="btn-cat-suggest" class="secondary" type="button">Suggest</button>
     </div>
-  </section>
+    <div id="cat-suggestions" class="suggestbox hidden"></div>
+    <div id="cat-saved" class="hint hidden"></div>
+    <p class="hint">Tap Suggest to get eBay's category numbers for your title, then tap the right one.</p>
+    <div id="required-aspects"></div>
 
-  <!-- STEP 3: review -->
-  <section id="step-review" class="step hidden">
-    <h2>3. Review</h2>
-    <p class="hint">Read it once. Nothing is listed until you tap the list button in step 4.</p>
-    <div id="review-card" class="card"></div>
-    <div class="btnrow">
-      <button id="btn-back-edit" class="ghost" type="button">← Back to edit</button>
-      <button id="btn-to-handoff" class="primary" type="button">Looks good →</button>
+    <label class="checkline"><input id="p-best-offer" type="checkbox"> Let buyers make offers (Best Offer)</label>
+    <div id="best-offer-fields" class="hidden">
+      <p class="hint">eBay handles the haggling for you. Leave both blank to review every offer yourself.</p>
+      <label>Automatically say no to offers under ($)</label>
+      <input id="p-bo-decline" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 20.00">
+      <label>Automatically say yes to offers of ($) and up</label>
+      <input id="p-bo-accept" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
+      <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
-  </section>
 
-  <!-- STEP 4: list on eBay -->
-  <section id="step-handoff" class="step hidden">
-    <h2>4. List it on eBay</h2>
+    <details>
+      <summary>Shop policy numbers (usually set once)</summary>
+      <label>Shipping policy number</label>
+      <input id="p-fulfillment" type="text" inputmode="numeric">
+      <label>Payment policy number</label>
+      <input id="p-payment" type="text" inputmode="numeric">
+      <label>Return policy number</label>
+      <input id="p-return" type="text" inputmode="numeric">
+      <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
+    </details>
+
+    <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
+    <p class="hint">Saves the condition, category, policy numbers, and Best Offer settings above as your usual settings. Next time they fill in by themselves; re-saving replaces them.</p>
+    <div id="preset-note" class="note hidden"></div>
+    <div id="listing-note" class="note hidden"></div>
 
     <div id="ebay-status" class="card">
       <p class="hint" style="margin:0">Checking eBay connection…</p>
     </div>
 
-    <div id="publish-panel" class="hidden">
-      <h3>One-tap listing</h3>
-      <p class="hint">This creates a <b>real, live</b> fixed-price listing on eBay. Double-check everything above first.</p>
-      <div id="preset-note" class="note hidden"></div>
-
-      <label>Condition</label>
-      <select id="p-condition"></select>
-      <p id="condition-reminder" class="hint hidden">You haven't set a condition yet — add it in step 2 so buyers know exactly what they're getting.</p>
-
-      <label>eBay category number</label>
-      <div class="pricerow">
-        <input id="p-category" type="text" inputmode="numeric" placeholder="e.g. 178893">
-        <button id="btn-cat-suggest" class="secondary" type="button">Suggest</button>
-      </div>
-      <div id="cat-suggestions" class="suggestbox hidden"></div>
-      <div id="cat-saved" class="hint hidden"></div>
-      <p class="hint">Tap Suggest to get eBay's category numbers for your title, then tap the right one.</p>
-      <div id="required-aspects"></div>
-
-      <label>Price ($)</label>
-      <input id="p-price" type="number" min="0.01" step="0.01" inputmode="decimal">
-
-      <label class="checkline"><input id="p-best-offer" type="checkbox"> Let buyers make offers (Best Offer)</label>
-      <div id="best-offer-fields" class="hidden">
-        <p class="hint">eBay handles the haggling for you. Leave both blank to review every offer yourself.</p>
-        <label>Automatically say no to offers under ($)</label>
-        <input id="p-bo-decline" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 20.00">
-        <label>Automatically say yes to offers of ($) and up</label>
-        <input id="p-bo-accept" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
-        <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
-      </div>
-
-      <details>
-        <summary>Shop policy numbers (usually set once)</summary>
-        <label>Shipping policy number</label>
-        <input id="p-fulfillment" type="text" inputmode="numeric">
-        <label>Payment policy number</label>
-        <input id="p-payment" type="text" inputmode="numeric">
-        <label>Return policy number</label>
-        <input id="p-return" type="text" inputmode="numeric">
-        <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
-      </details>
-
-      <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
-      <p class="hint">Saves the condition, category, policy numbers, and Best Offer settings above as your usual settings. Next time they fill in by themselves; re-saving replaces them.</p>
-
-      <div id="publish-error" class="error hidden"></div>
-      <div id="publish-ok" class="ok hidden"></div>
-      <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
-      <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
-    </div>
+    <div id="publish-error" class="error hidden"></div>
+    <div id="publish-ok" class="ok hidden"></div>
+    <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
+    <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
     <h3>Or list manually, like before</h3>
     <div class="btnrow wrap">
@@ -176,7 +146,10 @@
       <a id="btn-photos-zip" class="secondary btnlink" href="#">Download photos (.zip)</a>
     </div>
     <div id="copy-ok" class="ok hidden">Copied. Paste it into eBay.</div>
-    <button id="btn-new" class="primary big" type="button">Start a new item</button>
+    <div class="btnrow">
+      <button id="btn-reanalyze" class="ghost" type="button">Ask AI again</button>
+      <button id="btn-new" class="primary big" type="button">Start a new item</button>
+    </div>
   </section>
 
   <!-- drafts drawer -->
@@ -187,7 +160,7 @@
       <button id="btn-batch-open" class="primary" type="button">Post selected</button>
       <button id="btn-close-drafts" class="ghost" type="button">← Back to start</button>
     </div>
-    <p class="hint">Tick drafts, then Post selected to list several at once. Or tap Post on one draft to jump straight to its review.</p>
+    <p class="hint">Tick drafts, then Post selected to list several at once. Or tap Post on one draft to open its listing page.</p>
   </section>
 
   <!-- v24: batch posting — one confirmation list is the review -->
