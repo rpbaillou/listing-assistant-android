@@ -238,14 +238,29 @@ const fakeFile = (name) => new File(["x"], name, { type: "image/jpeg" });
   check("draft camera snap uploads to the draft endpoint",
     fetchCalls.some((c) => String(c.url) === "/api/drafts/d9/photos"));
 
-  // Editor mode plumbing: draft mode sets the draft index, step-1 mode clears it.
-  $("editor-canvas").getContext = () => noopCtx();
-  sandbox.beginEditWithImage({ naturalWidth: 100, naturalHeight: 80 }, "blob:x", -1, 2);
-  check("draft editor mode sets the draft index",
-    ctx("editDraftIndex") === 2 && !hidden("editor"));
-  sandbox.closeEditor();
-  check("closeEditor resets the draft index + hides the editor",
-    ctx("editDraftIndex") === -1 && hidden("editor"));
+  // Pixel-editor handoff (Nov 3 decision): draft Edit hands the photo to
+  // the phone's editor via the bridge — never the in-app editor — with a
+  // plain fallback when the bridge is absent, and a photos-only refresh
+  // the app calls after a good edit returns.
+  ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg'] };");
+  const editCalls = [];
+  sandbox.window.Android = { editDraftPhoto: (id, rel, i) => { editCalls.push([id, rel, i]); } };
+  sandbox.editDraftPhotoInPixel(1);
+  check("draft Edit calls the phone-editor bridge with id, photo, and slot",
+    editCalls.length === 1 && editCalls[0][0] === "d9" &&
+    editCalls[0][1] === "d9/2.jpg" && editCalls[0][2] === 1);
+  $("editor").classList.add("hidden");
+  sandbox.editDraftPhotoInPixel(1);
+  check("draft Edit never opens the in-app editor", hidden("editor"));
+  delete sandbox.window.Android;
+  sandbox.editDraftPhotoInPixel(0);
+  check("draft Edit without the bridge shows a plain error, never silent",
+    !$("draft-photo-error").classList.contains("hidden") &&
+    $("draft-photo-error").textContent.includes("needs the app"));
+  fetchQueue.push({ draft: { id: "d9", photos: ["d9/1.jpg", "d9/2.jpg", "d9/3.jpg"] } });
+  await sandbox.reloadDraftPhotosOnly();
+  check("photos-only refresh re-renders thumbnails from the draft fetch",
+    $("draft-photos").children.length === 3);
 
   console.log(failures === 0 ? "multi-photo: all pass" : "multi-photo: " + failures + " FAILURES");
   process.exit(failures === 0 ? 0 : 1);

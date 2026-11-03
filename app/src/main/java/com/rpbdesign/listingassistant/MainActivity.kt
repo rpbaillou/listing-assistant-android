@@ -43,6 +43,15 @@ class MainActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraPhoto: File? = null
     private var pendingCameraPhotoUri: Uri? = null
+    /** v36: Pixel-editor handoff state. Set when Edit on a listing photo
+     *  launches the phone's editor; cleared when its result returns. */
+    private var pendingEditDraftId: String? = null
+    private var pendingEditIndex: Int = -1
+    private var pendingEditIn: File? = null
+    private var pendingEditInUri: Uri? = null
+    private var pendingEditOut: File? = null
+    private var pendingEditOutUri: Uri? = null
+    private var pendingEditOrig: ByteArray? = null
     private var updateDialog: AlertDialog? = null
     private var soldPricesOverlay: View? = null
     private var soldPricesWebView: WebView? = null
@@ -448,6 +457,18 @@ class MainActivity : Activity() {
             runOnUiThread { launchCameraForJs() }
         }
 
+        /** v36: listing-photo Edit hands the photo to the phone's own
+         *  photo editor (Nov 3 decision: his Pixel camera app editor,
+         *  NOT a limited in-app editor). No package is hardcoded — the
+         *  system resolves ACTION_EDIT, which on his Pixel opens his
+         *  camera app editor. Runs on the JS-interface thread; the
+         *  launch itself does network on a worker thread and posts UI
+         *  work back, so no thread assumption breaks. */
+        @JavascriptInterface
+        fun editDraftPhoto(draftId: String, rel: String, index: Int) {
+            launchPixelEditor(draftId, rel, index)
+        }
+
         /** v15: JS bridge entry for the update check, kept so any page
          *  still calling it works. Delegates to the shared MainActivity
          *  handler that the v20 native menu item calls too. */
@@ -812,11 +833,191 @@ class MainActivity : Activity() {
     private fun isSoldPricesPopupOpen(): Boolean = soldPricesOverlay != null
 
     @Deprecated("Kept simple on purpose: no AndroidX needed.")
+    /** v36: Pixel-editor handoff. Downloads the draft photo from the
+     *  local Flask server, hands a copy to the system editor with a
+     *  writable output file, and on return posts the edited bytes back
+     *  over the same draft slot (replace endpoint). The original is
+     *  never touched until edited bytes come back. */
+    private fun launchPixelEditor(draftId: String, rel: String, index: Int) {
+        Thread {
+            try {
+                val orig = downloadLocalPhoto(rel)
+                if (orig == null) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Couldn't open that photo for editing.", Toast.LENGTH_LONG).show()
+                    }
+                    return@Thread
+                }
+                val dir = CameraPhotoProvider.cameraDir(this)
+                val stamp = System.currentTimeMillis()
+                val inFile = File(dir, "edit_in_$stamp.jpg").apply { writeBytes(orig) }
+                val outFile = File(dir, "edit_out_$stamp.jpg").apply { createNewFile() }
+                val inUri = CameraPhotoProvider.uriFor(this, inFile)
+                val outUri = CameraPhotoProvider.uriFor(this, outFile)
+                pendingEditDraftId = draftId
+                pendingEditIndex = index
+                pendingEditIn = inFile
+                pendingEditInUri = inUri
+                pendingEditOut = outFile
+                pendingEditOutUri = outUri
+                pendingEditOrig = orig
+                runOnUiThread {
+                    val intent = Intent(Intent.ACTION_EDIT).apply {
+                        setDataAndType(inUri, "image/jpeg")
+                        putExtra(android.provider.MediaStore.EXTRA_OUTPUT, outUri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    }
+                    if (intent.resolveActivity(packageManager) == null) {
+                        clearPendingEdit()
+                        Toast.makeText(this, "No photo editor found on this phone.", Toast.LENGTH_LONG).show()
+                        return@runOnUiThread
+                    }
+                    packageManager
+                        .queryIntentActivities(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+                        .forEach {
+                            grantUriPermission(it.activityInfo.packageName, inUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            grantUriPermission(it.activityInfo.packageName, outUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                        }
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(intent, EDIT_PHOTO_REQUEST)
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this, "Couldn't open that photo for editing.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    /** v36: clear editor-handoff state, revoke URI grants, delete temp
+     *  files so no edited copy lingers. */
+    private fun clearPendingEdit() {
+        pendingEditInUri?.let {
+            revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        pendingEditOutUri?.let {
+            revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        pendingEditIn?.delete()
+        pendingEditOut?.delete()
+        pendingEditDraftId = null
+        pendingEditIndex = -1
+        pendingEditIn = null
+        pendingEditInUri = null
+        pendingEditOut = null
+        pendingEditOutUri = null
+        pendingEditOrig = null
+    }
+
+    /** v36: fetch one draft photo's bytes from the local Flask server
+     *  (same origin the WebView uses). Null on any failure. */
+    private fun downloadLocalPhoto(rel: String): ByteArray? {
+        return try {
+            val conn = URL("http://127.0.0.1:5050/photos/$rel").openConnection() as HttpURLConnection
+            conn.connectTimeout = 10000
+            conn.readTimeout = 30000
+            try {
+                if (conn.responseCode != HttpURLConnection.HTTP_OK) null
+                else conn.inputStream.readBytes()
+            } finally {
+                conn.disconnect()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** v36: POST edited bytes over one draft slot. True only on HTTP 200. */
+    private fun postEditedPhoto(draftId: String, index: Int, jpeg: ByteArray): Boolean {
+        return try {
+            val boundary = "----ListingAssistantEdit" + System.currentTimeMillis()
+            val conn = URL("http://127.0.0.1:5050/api/drafts/$draftId/photos/$index/replace").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 10000
+            conn.readTimeout = 60000
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            conn.outputStream.use { out ->
+                out.write("--$boundary\r\n".toByteArray())
+                out.write("Content-Disposition: form-data; name=\"photo\"; filename=\"edited.jpg\"\r\n".toByteArray())
+                out.write("Content-Type: image/jpeg\r\n\r\n".toByteArray())
+                out.write(jpeg)
+                out.write("\r\n--$boundary--\r\n".toByteArray())
+                out.flush()
+            }
+            val ok = conn.responseCode == HttpURLConnection.HTTP_OK
+            conn.disconnect()
+            ok
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** v36: resolve the editor's return into edited bytes, then save
+     *  them over the same draft slot. Resolution order covers how
+     *  editors actually behave: (1) the EXTRA_OUTPUT file has bytes,
+     *  (2) the result carries a URI, (3) the input file itself changed
+     *  (in-place editors that ignore EXTRA_OUTPUT). Anything else keeps
+     *  the original untouched and says so — never a silent loss. A
+     *  cancelled edit is silent, like a cancelled camera snap. */
+    private fun handlePixelEditResult(resultCode: Int, data: Intent?) {
+        val draftId = pendingEditDraftId
+        val index = pendingEditIndex
+        val inFile = pendingEditIn
+        val outFile = pendingEditOut
+        val orig = pendingEditOrig
+        val edited: ByteArray? = try {
+            if (resultCode != Activity.RESULT_OK || draftId == null || index < 0) {
+                null
+            } else if (outFile != null && outFile.length() > 0L) {
+                outFile.readBytes()
+            } else {
+                val returned = data?.data?.let { uri ->
+                    try { contentResolver.openInputStream(uri)?.use { it.readBytes() } } catch (_: Exception) { null }
+                }
+                if (returned != null && returned.isNotEmpty()) {
+                    returned
+                } else if (inFile != null && inFile.length() > 0L && orig != null) {
+                    val now = inFile.readBytes()
+                    if (!now.contentEquals(orig)) now else null
+                } else {
+                    null
+                }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            clearPendingEdit()
+        }
+        if (edited == null) {
+            if (resultCode == Activity.RESULT_OK) {
+                Toast.makeText(this, "The editor didn't return a photo. Your original is unchanged.", Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        val id = draftId ?: return
+        Thread {
+            val ok = postEditedPhoto(id, index, edited)
+            runOnUiThread {
+                if (ok) {
+                    webView.evaluateJavascript("reloadDraftPhotosOnly()", null)
+                } else {
+                    Toast.makeText(this, "Couldn't save the edited photo. Your original is unchanged.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         // v14: Take photo button -> Android.openCamera() (JS interface).
         if (requestCode == CAMERA_JS_REQUEST) {
             handleCameraJsResult(resultCode, data)
+            return
+        }
+        // v36: Pixel-editor return -> edited bytes into the same draft slot.
+        if (requestCode == EDIT_PHOTO_REQUEST) {
+            handlePixelEditResult(resultCode, data)
             return
         }
         if (requestCode == FILE_CHOOSER_REQUEST) {
@@ -937,6 +1138,9 @@ class MainActivity : Activity() {
          *  capture attribute, so isCaptureEnabled() is false and v12 fell back
          *  to the gallery. */
         private const val CAMERA_JS_REQUEST = 1002
+
+        /** v36: listing-photo Edit -> phone's editor result. */
+        private const val EDIT_PHOTO_REQUEST = 1003
 
         /**
          * v5: reads the item price off an eBay item page. Multiple fallback

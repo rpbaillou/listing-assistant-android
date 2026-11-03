@@ -168,7 +168,6 @@ function clampCropRect(rect, bw, bh, minSize) {
 }
 
 let editIndex = -1;
-let editDraftIndex = -1; /* v36: >= 0 while editing a LISTING-page photo (draft.photos[i]); -1 for step-1 photos */
 let editImg = null;      /* full-res source image (<=1600px) */
 let editImgUrl = null;   /* object URL for editImg, revoked on close */
 let editRot = 0;         /* 0/90/180/270, clockwise */
@@ -305,55 +304,58 @@ function rotateEditor(delta) {
 $("btn-edit-rotl").addEventListener("click", () => rotateEditor(-90));
 $("btn-edit-rotr").addEventListener("click", () => rotateEditor(90));
 
-/* v36: shared editor open, used by step-1 photos (stepIndex >= 0,
-   draftIndex -1) and listing-page photos (stepIndex -1, draftIndex >= 0).
-   The crop/rotate math below never learns which kind it is. */
-function beginEditWithImage(img, url, stepIndex, draftIndex) {
-  editIndex = stepIndex;
-  editDraftIndex = draftIndex;
-  editRot = 0;
-  editDrag = null;
-  editImg = img;
-  editImgUrl = url;
-  editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-  $("editor").classList.remove("hidden");
-  document.body.style.overflow = "hidden";
-  drawEditor();
+/* v36: hand a listing photo to the phone's own photo editor (Nov 3
+   decision: his Pixel camera app editor, NOT a limited in-app editor).
+   The app opens the system edit screen for that photo; when the editor
+   returns, the edited photo replaces the original in the same slot
+   (see reloadDraftPhotosOnly, called by the app after a good save).
+   The photo is never edited in place here — the original stays until
+   the edited version comes back. */
+function editDraftPhotoInPixel(i) {
+  const p = (draft && draft.photos) ? draft.photos[i] : null;
+  if (!p || !draft.id) return;
+  if (window.Android && typeof window.Android.editDraftPhoto === "function") {
+    window.Android.editDraftPhoto(draft.id, p, i);
+  } else {
+    showDraftPhotoError("Photo editing needs the app — please open this page in the Listing Assistant app.");
+  }
+}
+
+/* v36: re-read the draft's photos after the phone's editor returns a
+   good edit (called by the app, not by any button). Only the thumbnails
+   refresh — typed fields are never touched, so unsaved edits survive. */
+async function reloadDraftPhotosOnly() {
+  if (!draft || !draft.id) return;
+  try {
+    const res = await api("/api/drafts/" + draft.id);
+    draft = res.draft;
+    renderDraftPhotos(draft);
+  } catch (e) {
+    showDraftPhotoError("Couldn't refresh the photos. Reopen the listing to see the edited photo.");
+  }
 }
 
 function openEditor(i) {
   const entry = selectedFiles[i];
   if (!entry) return;
+  editIndex = i;
+  editRot = 0;
+  editDrag = null;
   const url = URL.createObjectURL(entry.blob);
   const img = new Image();
-  img.onload = () => { beginEditWithImage(img, url, i, -1); };
+  img.onload = () => {
+    editImg = img;
+    editImgUrl = url;
+    editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+    $("editor").classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+    drawEditor();
+  };
   img.onerror = () => {
     URL.revokeObjectURL(url);
     showError("Couldn't open that photo for editing.");
   };
   img.src = url;
-}
-
-/* v36: edit a listing-page photo. The bytes come from the server, and
-   Save uploads the edited image back over the same stored file, so
-   ordering and publish inclusion never change. */
-async function openDraftEditor(i) {
-  const p = (draft && draft.photos) ? draft.photos[i] : null;
-  if (!p) return;
-  try {
-    const res = await fetch("/photos/" + p);
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => { beginEditWithImage(img, url, -1, i); };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      showDraftPhotoError("Couldn't open that photo for editing.");
-    };
-    img.src = url;
-  } catch (e) {
-    showDraftPhotoError("Couldn't open that photo for editing.");
-  }
 }
 
 function closeEditor() {
@@ -363,13 +365,12 @@ function closeEditor() {
   editImg = null;
   editImgUrl = null;
   editIndex = -1;
-  editDraftIndex = -1;
   editDrag = null;
 }
 $("btn-edit-cancel").addEventListener("click", closeEditor);
 
 $("btn-edit-save").addEventListener("click", async () => {
-  if (!editImg || (editIndex < 0 && editDraftIndex < 0)) return;
+  if (!editImg || editIndex < 0) return;
   const btn = $("btn-edit-save");
   btn.disabled = true;
   try {
@@ -393,29 +394,15 @@ $("btn-edit-save").addEventListener("click", async () => {
     oc.getContext("2d").drawImage(rc, cx, cy, cw, ch, 0, 0, cw, ch);
     const blob = await new Promise((res) => oc.toBlob(res, "image/jpeg", 0.85));
     if (!blob) throw new Error("save failed");
-    if (editDraftIndex >= 0) {
-      /* v36: listing-page photo — upload over the same stored file. */
-      if (!draft || !draft.id) throw new Error("no draft");
-      const fd = new FormData();
-      fd.append("photo", blob, "edited.jpg");
-      const res = await api("/api/drafts/" + draft.id + "/photos/" + editDraftIndex + "/replace",
-        { method: "POST", body: fd });
-      draft = res.draft;
-      renderDraftPhotos(draft);
-      closeEditor();
-      hideDraftPhotoError();
-    } else {
-      const entry = selectedFiles[editIndex];
-      if (entry.url) URL.revokeObjectURL(entry.url);
-      entry.blob = blob;
-      entry.url = URL.createObjectURL(blob);
-      renderThumbs();
-      closeEditor();
-      hideError();
-    }
+    const entry = selectedFiles[editIndex];
+    if (entry.url) URL.revokeObjectURL(entry.url);
+    entry.blob = blob;
+    entry.url = URL.createObjectURL(blob);
+    renderThumbs();
+    closeEditor();
+    hideError();
   } catch (e) {
-    if (editDraftIndex >= 0) showDraftPhotoError("Couldn't save that edit. Try again.");
-    else showError("Couldn't save that edit. Try again.");
+    showError("Couldn't save that edit. Try again.");
   } finally {
     btn.disabled = false;
   }
@@ -591,7 +578,7 @@ function renderDraftPhotos(d) {
     e.className = "thumb-edit";
     e.textContent = "Edit";
     e.setAttribute("aria-label", "Edit this photo");
-    e.addEventListener("click", () => openDraftEditor(i));
+    e.addEventListener("click", () => editDraftPhotoInPixel(i));
     wrap.appendChild(img);
     wrap.appendChild(e);
     box.appendChild(wrap);

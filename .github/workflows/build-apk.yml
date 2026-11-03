@@ -24,6 +24,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # v36: Chaquopy's build needs a real Python 3.12, which
+      # ubuntu-latest no longer ships (Nov 3, 2026: the v36 build
+      # failed at installDebugPythonRequirements with "Couldn't find
+      # Python 3.12"). Install it explicitly so the build does not
+      # depend on the runner image's Python.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
