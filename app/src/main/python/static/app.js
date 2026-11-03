@@ -2172,7 +2172,10 @@ function refreshShippingChooser() {
   if (!selected) {
     line.textContent = "";
   } else if (match) {
-    line.textContent = shippingTypeLine(match.cost_type);
+    /* v41: a pickup-only policy has no cost type; label it honestly
+       instead of "Unknown type." (the gate still flags it at List). */
+    line.textContent = match.cost_type ? shippingTypeLine(match.cost_type)
+      : (match.local_pickup ? "Local pickup only." : "Unknown type.");
   } else {
     line.textContent = "Details not loaded yet.";
   }
@@ -2272,6 +2275,341 @@ $("btn-ship-from").addEventListener("click", async () => {
     $("publish-spinner").classList.add("hidden");
     $("btn-ship-from").disabled = false;
   }
+});
+
+/* v41: create a shipping policy in the app (choose-or-create). The
+   form is full options, all editable, nothing defaulted from a name:
+   flat rate or calculated, US plus worldwide self-ship
+   international, local pickup. eBay International Shipping is an
+   account setting, not a policy field, so the form says so instead
+   of faking it. Review-before-create is mandatory: nothing is
+   created until the seller confirms the exact policy. The server
+   re-validates before any POST, so a client/server mismatch only
+   costs a round trip, never a bad policy. Top-level function
+   declarations (not const arrows) so the node harness can call them
+   directly, like the v35 chooser functions. */
+let createServicesFetched = false;
+let createServices = { domestic: [], international: [] };
+let pendingCreateForm = null;
+let createRetry = false;
+
+function createServiceLabel(code) {
+  const labels = { "USPSPriority": "USPS Priority Mail",
+                   "FedEx2Day": "FedEx 2 Day",
+                   "UPS3rdDay": "UPS 3 Day Select" };
+  return labels[code] || code;
+}
+
+function populateServiceSelect(selId, services) {
+  const sel = $(selId);
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "— Pick a service —";
+  sel.appendChild(ph);
+  (services || []).forEach((s) => {
+    const o = document.createElement("option");
+    o.value = s.code;
+    o.textContent = s.label || createServiceLabel(s.code);
+    sel.appendChild(o);
+  });
+  const other = document.createElement("option");
+  other.value = "__OTHER__";
+  other.textContent = "Other (type the code)";
+  sel.appendChild(other);
+  sel.value = "";
+}
+
+function refreshCreateFormVisibility() {
+  const pickupOnly = $("pc-pickup-only").checked;
+  $("pc-domestic").classList.toggle("hidden", pickupOnly);
+  $("pc-intl").classList.toggle("hidden", pickupOnly || !$("pc-international").checked);
+  $("pc-handling-wrap").classList.toggle("hidden", pickupOnly);
+  const domFlat = $("pc-dom-cost-type").value !== "CALCULATED";
+  $("pc-dom-cost-1-wrap").classList.toggle("hidden", !domFlat);
+  $("pc-dom-cost-2-wrap").classList.toggle("hidden", !domFlat);
+  $("pc-intl-cost-1-wrap").classList.toggle("hidden", $("pc-intl-cost-type").value === "CALCULATED");
+  $("pc-intl-cost-2-wrap").classList.toggle("hidden", $("pc-intl-cost-type").value === "CALCULATED");
+  ["dom-service-1", "dom-service-2", "intl-service-1", "intl-service-2"].forEach((key) => {
+    $("pc-" + key + "-other").classList.toggle("hidden", $("pc-" + key).value !== "__OTHER__");
+  });
+}
+
+function validCreateCost(v) {
+  if (v === "" || v === null || v === undefined) return false;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 && n <= 10000;
+}
+
+function collectPolicyCreateForm() {
+  /* Reads the create form into the server's form JSON + errors.
+     Mirrors the server validation; empty stays empty and errors
+     instead of being defaulted. */
+  const errors = [];
+  const form = {};
+  form.name = ($("pc-name").value || "").trim();
+  if (!form.name) errors.push("Give the new policy a name.");
+  form.description = ($("pc-description").value || "").trim();
+  if (form.description.length > 250) errors.push("Keep the policy description under 250 characters.");
+  form.pickup_only = !!$("pc-pickup-only").checked;
+  form.local_pickup = !!$("pc-local-pickup").checked;
+  form.ship_international = !!$("pc-international").checked && !form.pickup_only;
+  if (!form.pickup_only) {
+    form.dom_cost_type = $("pc-dom-cost-type").value;
+    form.dom_service_1 = $("pc-dom-service-1").value || "";
+    form.dom_service_1_other = ($("pc-dom-service-1-other").value || "").trim();
+    form.dom_service_2 = $("pc-dom-service-2").value || "";
+    form.dom_service_2_other = ($("pc-dom-service-2-other").value || "").trim();
+    form.dom_cost_1 = ($("pc-dom-cost-1").value || "").trim();
+    form.dom_cost_2 = ($("pc-dom-cost-2").value || "").trim();
+    form.dom_free_shipping = form.dom_cost_type === "FLAT_RATE" && !!$("pc-dom-free-1").checked;
+    if (!createServiceResolved("dom", 1, form)) errors.push("Pick a shipping service for US shipping.");
+    if (form.dom_cost_type === "FLAT_RATE") {
+      if (!form.dom_free_shipping && !validCreateCost(form.dom_cost_1)) errors.push("Enter the cost for US service 1, or check Free shipping.");
+      if (form.dom_service_2 && !validCreateCost(form.dom_cost_2)) errors.push("Enter the cost for US service 2.");
+    }
+    if (form.ship_international) {
+      form.intl_cost_type = $("pc-intl-cost-type").value;
+      form.intl_service_1 = $("pc-intl-service-1").value || "";
+      form.intl_service_1_other = ($("pc-intl-service-1-other").value || "").trim();
+      form.intl_service_2 = $("pc-intl-service-2").value || "";
+      form.intl_service_2_other = ($("pc-intl-service-2-other").value || "").trim();
+      form.intl_cost_1 = ($("pc-intl-cost-1").value || "").trim();
+      form.intl_cost_2 = ($("pc-intl-cost-2").value || "").trim();
+      if (!createServiceResolved("intl", 1, form)) errors.push("Pick a shipping service for international shipping.");
+      if (form.intl_cost_type === "FLAT_RATE") {
+        if (!validCreateCost(form.intl_cost_1)) errors.push("Enter the cost for international service 1.");
+        if (form.intl_service_2 && !validCreateCost(form.intl_cost_2)) errors.push("Enter the cost for international service 2.");
+      }
+    }
+    form.handling_days = ($("pc-handling").value || "").trim();
+    const days = Number(form.handling_days);
+    if (form.handling_days === "" || !Number.isInteger(days) || days < 0 || days > 30) {
+      errors.push("Enter the handling time in business days (0 to 30).");
+    }
+  }
+  return { form: form, errors: errors };
+}
+
+function createServiceResolved(prefix, n, form) {
+  const v = form[prefix + "_service_" + n] || "";
+  if (v === "__OTHER__") return !!(form[prefix + "_service_" + n + "_other"] || "").trim();
+  return !!v;
+}
+
+function createServiceCodeFor(prefix, n, form) {
+  const v = form[prefix + "_service_" + n] || "";
+  if (v === "__OTHER__") return form[prefix + "_service_" + n + "_other"] || "";
+  return v;
+}
+
+function createServiceDisplay(prefix, n, form) {
+  const code = createServiceCodeFor(prefix, n, form);
+  if (!code) return "";
+  const list = prefix === "dom" ? createServices.domestic : createServices.international;
+  const found = (list || []).find((s) => s.code === code);
+  return found ? (found.label || createServiceLabel(code)) : code;
+}
+
+function createFlatCostText(form, prefix, n) {
+  if (form[prefix + "_cost_type"] === "CALCULATED") return " (calculated)";
+  if (prefix === "dom" && n === 1 && form.dom_free_shipping) return " (free shipping)";
+  const v = Number(form[prefix + "_cost_" + n]);
+  return " ($" + (Number.isFinite(v) ? v.toFixed(2) : form[prefix + "_cost_" + n]) + ")";
+}
+
+function createReviewLines(form) {
+  /* Plain summary lines for the review screen, in the order the
+     policy will be created. Seller-typed text is escaped: it is
+     rendered as HTML. */
+  const lines = [];
+  lines.push("Name: " + esc(form.name));
+  if (form.description) lines.push("Description: " + esc(form.description));
+  if (form.pickup_only) {
+    lines.push("Local pickup only (no shipping).");
+    return lines;
+  }
+  lines.push("US shipping: " + (form.dom_cost_type === "CALCULATED" ? "calculated (by weight)" : "flat rate") + ".");
+  lines.push("US service 1: " + esc(createServiceDisplay("dom", 1, form)) + createFlatCostText(form, "dom", 1) + ".");
+  if (form.dom_service_2) lines.push("US service 2: " + esc(createServiceDisplay("dom", 2, form)) + createFlatCostText(form, "dom", 2) + ".");
+  if (form.local_pickup) lines.push("Also offers local pickup.");
+  if (form.ship_international) {
+    lines.push("International shipping (worldwide, you ship it yourself): " + (form.intl_cost_type === "CALCULATED" ? "calculated (by weight)" : "flat rate") + ".");
+    lines.push("International service 1: " + esc(createServiceDisplay("intl", 1, form)) + createFlatCostText(form, "intl", 1) + ".");
+    if (form.intl_service_2) lines.push("International service 2: " + esc(createServiceDisplay("intl", 2, form)) + createFlatCostText(form, "intl", 2) + ".");
+  }
+  lines.push("Handling time: " + esc(form.handling_days) + " business days.");
+  return lines;
+}
+
+function showCreateReview() {
+  const collected = collectPolicyCreateForm();
+  const errEl = $("policy-create-error");
+  errEl.classList.add("hidden");
+  if (collected.errors.length) {
+    errEl.textContent = collected.errors.join(" ");
+    errEl.classList.remove("hidden");
+    return;
+  }
+  pendingCreateForm = collected.form;
+  createRetry = false;
+  $("pc-review-text").innerHTML = createReviewLines(collected.form).map((l) => "<p style='margin:0'>" + l + "</p>").join("");
+  const warn = $("pc-review-warning");
+  if (collected.form.pickup_only) {
+    warn.textContent = "Local pickup only — this policy cannot ship a listing. The publish check will flag it if you try to list with it.";
+    warn.classList.remove("hidden");
+  } else if (collected.form.dom_cost_type === "CALCULATED"
+             && (!$("p-weight").value || !$("p-length").value || !$("p-width").value || !$("p-height").value)) {
+    warn.textContent = "Calculated: enter this item's package weight and size under Shipping before listing, or the publish check will stop you.";
+    warn.classList.remove("hidden");
+  } else {
+    warn.classList.add("hidden");
+  }
+  $("policy-create-form").classList.add("hidden");
+  $("policy-create-review").classList.remove("hidden");
+}
+
+function cancelCreateForm() {
+  /* Cancel discards: no policy created, draft untouched, form cleared. */
+  pendingCreateForm = null;
+  createRetry = false;
+  $("policy-create-form").classList.add("hidden");
+  $("policy-create-review").classList.add("hidden");
+  $("policy-create-error").classList.add("hidden");
+  ["pc-name", "pc-description", "pc-dom-service-1-other", "pc-dom-service-2-other",
+   "pc-dom-cost-1", "pc-dom-cost-2", "pc-intl-service-1-other", "pc-intl-service-2-other",
+   "pc-intl-cost-1", "pc-intl-cost-2", "pc-handling"].forEach((id) => { $(id).value = ""; });
+  ["pc-pickup-only", "pc-local-pickup", "pc-international", "pc-dom-free-1"].forEach((id) => { $(id).checked = false; });
+  $("pc-dom-cost-type").value = "FLAT_RATE";
+  $("pc-intl-cost-type").value = "FLAT_RATE";
+  ["pc-dom-service-1", "pc-dom-service-2", "pc-intl-service-1", "pc-intl-service-2"].forEach((id) => { $(id).value = ""; });
+  refreshCreateFormVisibility();
+}
+
+async function openCreateForm() {
+  const errEl = $("policy-create-error");
+  errEl.classList.add("hidden");
+  $("policy-create-note").classList.add("hidden");
+  $("policy-create-review").classList.add("hidden");
+  $("policy-create-form").classList.remove("hidden");
+  $("policy-create-form").scrollIntoView();
+  if (!createServicesFetched) {
+    try {
+      const r = await api("/api/ebay/shipping-services");
+      if (r.needs_scope_reconnect) {
+        errEl.innerHTML = "<p style='margin:0'>" + esc(r.error ||
+          "The app needs one new permission to read your shipping policies.") +
+          "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
+        errEl.classList.remove("hidden");
+        return;
+      }
+      createServices = { domestic: r.domestic || [], international: r.international || [] };
+      createServicesFetched = true;
+      populateServiceSelect("pc-dom-service-1", createServices.domestic);
+      populateServiceSelect("pc-dom-service-2", createServices.domestic);
+      populateServiceSelect("pc-intl-service-1", createServices.international);
+      populateServiceSelect("pc-intl-service-2", createServices.international);
+    } catch (e) {
+      errEl.innerHTML = "<p style='margin:0'>" + esc(e.message) +
+        "</p><p class='hint'><button id='btn-pc-services-retry' class='ghost' type='button'>Try again</button></p>";
+      errEl.classList.remove("hidden");
+      const retry = $("btn-pc-services-retry");
+      if (retry) retry.addEventListener("click", () => { createServicesFetched = false; openCreateForm(); });
+    }
+  }
+  refreshCreateFormVisibility();
+}
+
+async function confirmCreatePolicy() {
+  /* Direct fetch, not api(): api() throws away the response flags
+     this flow needs (name_taken, unconfirmed, needs_scope_reconnect).
+     The review screen already froze the form, so this sends exactly
+     what was confirmed — Back + Review rebuilds it after any edit. */
+  if (!pendingCreateForm) return;
+  const errEl = $("policy-create-error");
+  errEl.classList.add("hidden");
+  const btn = $("btn-pc-confirm");
+  btn.disabled = true;
+  try {
+    const body = Object.assign({}, pendingCreateForm, { retry: createRetry });
+    const r = await fetch("/api/ebay/fulfillment-policies/create",
+                          { method: "POST", body: JSON.stringify(body) });
+    const text = await r.text();
+    let data = {};
+    try { data = text ? JSON.parse(text) : {}; } catch (e) { data = {}; }
+    if (!r.ok) {
+      if (data.needs_scope_reconnect) {
+        errEl.innerHTML = "<p style='margin:0'>" + esc(data.error ||
+          "The app needs one new permission to read your shipping policies.") +
+          "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
+        errEl.classList.remove("hidden");
+        $("policy-create-review").classList.add("hidden");
+        $("policy-create-form").classList.remove("hidden");
+        return;
+      }
+      if (data.name_taken) {
+        /* Name taken: back to the form WITH values intact, so he
+           renames instead of retyping. */
+        errEl.textContent = data.error || "That name is already used on your eBay account. Pick a different name.";
+        errEl.classList.remove("hidden");
+        $("policy-create-review").classList.add("hidden");
+        $("policy-create-form").classList.remove("hidden");
+        $("pc-name").focus();
+        return;
+      }
+      if (data.unconfirmed) {
+        /* Lost reply: stay on the review, arm the retry flag — the
+           next Create tap re-reads by name first, so it reuses a
+           lost success instead of duplicating. */
+        createRetry = true;
+        errEl.textContent = data.error;
+        errEl.classList.remove("hidden");
+        return;
+      }
+      throw new Error(data.error || ("Request failed (" + r.status + ")"));
+    }
+    if (data.needs_scope_reconnect) {
+      errEl.innerHTML = "<p style='margin:0'>" + esc(data.error ||
+        "The app needs one new permission to read your shipping policies.") +
+        "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
+      errEl.classList.remove("hidden");
+      $("policy-create-review").classList.add("hidden");
+      $("policy-create-form").classList.remove("hidden");
+      return;
+    }
+    if (!data.policy_id) throw new Error(data.error || "eBay did not return the new policy.");
+    shippingPolicies = data.policies || [];
+    renderShippingDropdown();
+    pendingCreateForm = null;
+    createRetry = false;
+    $("policy-create-review").classList.add("hidden");
+    $("policy-create-form").classList.add("hidden");
+    await selectShippingPolicy(data.policy_id);
+    const note = $("policy-create-note");
+    note.textContent = "Policy created and selected.";
+    note.classList.remove("hidden");
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove("hidden");
+    $("policy-create-review").classList.add("hidden");
+    $("policy-create-form").classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("btn-create-policy").addEventListener("click", openCreateForm);
+$("btn-pc-review").addEventListener("click", showCreateReview);
+$("btn-pc-confirm").addEventListener("click", confirmCreatePolicy);
+$("btn-pc-back").addEventListener("click", () => {
+  $("policy-create-review").classList.add("hidden");
+  $("policy-create-form").classList.remove("hidden");
+});
+$("btn-pc-cancel").addEventListener("click", cancelCreateForm);
+$("btn-pc-cancel-2").addEventListener("click", cancelCreateForm);
+["pc-pickup-only", "pc-local-pickup", "pc-international", "pc-dom-cost-type", "pc-intl-cost-type",
+ "pc-dom-service-1", "pc-dom-service-2", "pc-intl-service-1", "pc-intl-service-2"].forEach((id) => {
+  $(id).addEventListener("change", refreshCreateFormVisibility);
 });
 
 function hidePublishMsg() {

@@ -142,6 +142,62 @@ name: a policy named "Calculated 2lb" does NOT set 2 lb). A stale,
 wrong-marketplace, or unshippable policy raises the one-tap pick. A
 token without `sell.account` raises the reconnect signal.
 
+## Shipping policies — creating one in the app (v41)
+
+Sources:
+- https://www.developer.ebay.com/api-docs/sell/account/types/api:FulfillmentPolicyRequest
+- https://www.developer.ebay.com/api-docs/sell/account/types/api:ShippingService
+- eBay Knowledge Base: how to set up free shipping / worldwide
+  shipping (createFulfillmentPolicy, ShippingOption elements).
+
+- Create: `POST /sell/account/v1/fulfillment_policy` with a
+  `FulfillmentPolicyRequest` body. Success returns the
+  `getFulfillmentPolicy` URI in the `Location` header and the new
+  policy's ID in the response payload. The app's HTTP helper returns
+  the body, not headers, so the ID is read from the payload and
+  falls back to a get-by-name read (names are unique).
+- Request fields: `name` (required, unique — a reuse answers 409 /
+  error 20418), `marketplaceId` (`EBAY_US`), `handlingTime`
+  (conditionally required when shipping options are offered; NOT
+  applicable for local-pickup-only or freight), `localPickup`,
+  `description` (max 250, seller-only, never shown to buyers),
+  `shippingOptions[]`.
+- Each `ShippingOption` has `optionType` (`DOMESTIC` /
+  `INTERNATIONAL`), `costType` (`FLAT_RATE` / `CALCULATED`), and
+  `shippingServices[]`. Each `ShippingService` has
+  `shippingServiceCode` (required, predefined enum value),
+  `shippingCost` (required for flat-rate, omitted for calculated;
+  auto `0.0` on the first domestic service when `freeShipping` is
+  true), `freeShipping` (only the first domestic service may be
+  true; international must be false), and `shipToLocations`
+  (worldwide self-ship international: `regionIncluded` of
+  `[{"regionName": "Worldwide", "regionType": "WORLDWIDE"}]` on the
+  service, per eBay's own worldwide-shipping guide).
+- `globalShipping` is EBAY_GB only and is NEVER sent for EBAY_US.
+- eBay International Shipping is an ACCOUNT-level setting, not a
+  policy field: if a US seller's account is opted in, eBay adds it
+  automatically to listings where international shipping is
+  available, and the seller may still specify individual
+  international services in a policy. The app's form therefore
+  offers self-ship international services plus a plain note about
+  eIS, and never fakes an eIS enrollment.
+- Create needs the full `sell.account` scope (added v32); a 403
+  maps to the reconnect signal.
+- App enforcement (v41): the create form is full options (flat and
+  calculated, US plus worldwide international, local pickup), all
+  editable, nothing defaulted from a name. Review-before-create is
+  mandatory: the exact policy shows for confirm, and nothing is
+  created without it. The server re-validates before any POST. A
+  name-taken 409 gives a plain message and keeps the form values
+  for renaming. A network failure with unknown outcome re-reads by
+  name before any retry, so a lost success is reused instead of
+  duplicated; if nothing is found it reports unconfirmed (check
+  Seller Hub before retrying). After creation the dropdown
+  refreshes from a fresh list and selects the new policy for the
+  current draft; the List-time policy gate still runs at List
+  (calculated still requires the package then). Editing existing
+  policies is out of scope.
+
 ## Photos — Media API (replaces the decommissioned Trading call)
 
 Source: Media API `createImageFromFile`

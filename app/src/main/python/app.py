@@ -1309,7 +1309,12 @@ def _policy_pick_entry(policy):
     return {"id": str(policy.get("fulfillmentPolicyId", "") or "").strip(),
             "name": str(policy.get("name", "") or "").strip(),
             "cost_type": _policy_cost_type(policy),
-            "marketplace": str(policy.get("marketplaceId", "") or "").strip()}
+            "marketplace": str(policy.get("marketplaceId", "") or "").strip(),
+            # v41: localPickup flag so the chooser can label a
+            # pickup-only policy (which has no cost type) honestly
+            # instead of "Unknown type." The gate still reads the raw
+            # policy dict, so this display flag changes no gate logic.
+            "local_pickup": bool(policy.get("localPickup"))}
 
 
 def _read_fulfillment_policy(token, policy_id):
@@ -1946,6 +1951,403 @@ def api_ebay_fulfillment_policies():
             if isinstance(p, dict):
                 policies.append(_policy_pick_entry(p))
     return jsonify({"policies": policies})
+
+
+# v41: create a shipping policy inside the app (choose-or-create).
+# Official Account API sources (see docs/ebay-listing-requirements.md):
+# - POST /sell/account/v1/fulfillment_policy (createFulfillmentPolicy).
+# - FulfillmentPolicyRequest: name, marketplaceId, handlingTime
+#   (conditionally required when shipping options are offered; NOT
+#   applicable for local-pickup-only or freight), localPickup,
+#   description (max 250, seller-only), shippingOptions[].
+# - ShippingOption: optionType DOMESTIC/INTERNATIONAL, costType
+#   FLAT_RATE/CALCULATED, shippingServices[].
+# - ShippingService: shippingServiceCode (required, predefined enum),
+#   shippingCost (required for flat-rate, omitted for calculated;
+#   auto 0.00 on the first domestic service when freeShipping true),
+#   freeShipping (only the first domestic service may be true;
+#   international must be false), shipToLocations.regionIncluded
+#   (worldwide: [{"regionName": "Worldwide",
+#   "regionType": "WORLDWIDE"}] on the service).
+# - globalShipping is EBAY_GB only and is NEVER sent for EBAY_US.
+# - eBay International Shipping is an ACCOUNT-level setting, not a
+#   policy field: if the account is opted in, eBay adds it
+#   automatically. This form's international option is self-ship
+#   international (services the seller ships himself), and the form
+#   says so in plain words. Nothing here fakes eIS enrollment.
+# - A name already used answers 409 / error 20418.
+# - Create needs the full sell.account scope (added v32); a 403 maps
+#   to the reconnect signal, never to a blind token wipe.
+# - _ebay_call returns the body, not headers, so the Location header
+#   is unavailable: the created ID comes from the response payload,
+#   falling back to a get-by-name read (names are unique).
+
+SERVICE_LABELS = {
+    "USPSPriority": "USPS Priority Mail",
+    "FedEx2Day": "FedEx 2 Day",
+    "UPS3rdDay": "UPS 3 Day Select",
+}
+
+# Service codes attested in eBay's own ShippingService type page
+# examples. The runtime harvest (below) is the main source; these
+# three are included so the dropdown is never empty on an account
+# whose existing policies carry no service codes.
+DOCUMENTED_DOMESTIC_SERVICES = ["USPSPriority", "FedEx2Day", "UPS3rdDay"]
+
+
+def _harvest_shipping_services(policies):
+    """Service codes actually on the account, split by option type.
+
+    Returns {"domestic": [{"code", "label"}], "international": [...]}.
+    Codes come from the account's own policies (proven valid there);
+    the documented set is added to domestic. Labels are plain names
+    for known codes; an unknown code shows as itself (still meaningful).
+    """
+    domestic = {}
+    international = {}
+    for p in (policies or []):
+        if not isinstance(p, dict):
+            continue
+        for opt in (p.get("shippingOptions") or []):
+            if not isinstance(opt, dict):
+                continue
+            opt_type = str(opt.get("optionType", "") or "").strip().upper()
+            if opt_type == "DOMESTIC":
+                bucket = domestic
+            elif opt_type == "INTERNATIONAL":
+                bucket = international
+            else:
+                continue
+            for svc in (opt.get("shippingServices") or []):
+                if isinstance(svc, dict):
+                    code = str(svc.get("shippingServiceCode", "") or "").strip()
+                    if code:
+                        bucket[code] = SERVICE_LABELS.get(code, code)
+    for code in DOCUMENTED_DOMESTIC_SERVICES:
+        domestic.setdefault(code, SERVICE_LABELS.get(code, code))
+
+    def rows(bucket):
+        return [{"code": c, "label": bucket[c]} for c in sorted(bucket)]
+
+    return {"domestic": rows(domestic), "international": rows(international)}
+
+
+def _money_value(raw):
+    """A flat shipping cost as a two-decimal USD string, or raise."""
+    try:
+        value = float(str(raw or "").strip())
+    except (TypeError, ValueError):
+        raise _PublishValidationError(
+            "Enter the shipping cost as a number, like 12.50.")
+    if not value > 0:
+        raise _PublishValidationError(
+            "Enter the shipping cost, or check Free shipping.")
+    if value > 10000:
+        raise _PublishValidationError(
+            "That shipping cost looks too large — check the number.")
+    return f"{value:.2f}"
+
+
+def _create_service_code(form, prefix, n):
+    """Resolve service n's code: dropdown value, or Other + typed code.
+
+    Returns the code string, or None when nothing was picked/typed.
+    """
+    value = str(form.get(f"{prefix}_service_{n}", "") or "").strip()
+    if not value:
+        return None
+    if value == "__OTHER__":
+        typed = str(form.get(f"{prefix}_service_{n}_other", "") or "").strip()
+        return typed or None
+    return value
+
+
+def _build_shipping_option(form, prefix):
+    """One ShippingOption dict for `prefix` ('dom'/'intl').
+
+    Form keys per prefix: <prefix>_cost_type, <prefix>_service_1/2,
+    <prefix>_service_1/2_other, <prefix>_cost_1/2,
+    <prefix>_free_shipping (domestic service 1, flat rate only).
+    Raises _PublishValidationError with plain words on any bad field.
+    """
+    domestic = (prefix == "dom")
+    where = "US shipping." if domestic else "international shipping."
+    cost_type = str(form.get(prefix + "_cost_type", "") or "").strip().upper()
+    if cost_type not in ("FLAT_RATE", "CALCULATED"):
+        raise _PublishValidationError(
+            "Pick flat rate or calculated for " + where)
+    services = []
+    for n in (1, 2):
+        code = _create_service_code(form, prefix, n)
+        if code is None:
+            if n == 1:
+                raise _PublishValidationError(
+                    "Pick a shipping service for " + where)
+            continue
+        entry = {"shippingServiceCode": code}
+        if cost_type == "FLAT_RATE":
+            if (domestic and n == 1
+                    and form.get(prefix + "_free_shipping")):
+                # Official rule: freeShipping only on the first
+                # domestic service; eBay zeroes its cost automatically.
+                entry["shippingCost"] = {"currency": "USD", "value": "0.00"}
+                entry["freeShipping"] = True
+            else:
+                entry["shippingCost"] = {
+                    "currency": "USD",
+                    "value": _money_value(form.get(f"{prefix}_cost_{n}"))}
+                # Official rule: international freeShipping is false,
+                # and only the first domestic service may ever be free.
+                entry["freeShipping"] = False
+        if not domestic:
+            # Worldwide self-ship international (eBay KB shape, on the
+            # service). eBay International Shipping is NOT set here:
+            # it is account-level, never a policy field for EBAY_US.
+            entry["shipToLocations"] = {
+                "regionIncluded": [{"regionName": "Worldwide",
+                                    "regionType": "WORLDWIDE"}]}
+        services.append(entry)
+    return {"optionType": "DOMESTIC" if domestic else "INTERNATIONAL",
+            "costType": cost_type,
+            "shippingServices": services}
+
+
+def _build_fulfillment_policy_body(form):
+    """Validate the create-policy form into a FulfillmentPolicyRequest.
+
+    `form` is the JSON dict from the listing page (all values from
+    proper controls, nothing defaulted from a name). Raises
+    _PublishValidationError with plain words on any bad field.
+    Pure: no network, no token — unit-tested directly.
+    """
+    if not isinstance(form, dict):
+        raise _PublishValidationError("Fill in the new policy form first.")
+    name = str(form.get("name", "") or "").strip()
+    if not name:
+        raise _PublishValidationError("Give the new policy a name.")
+    if len(name) > 100:
+        raise _PublishValidationError(
+            "Keep the policy name under 100 characters.")
+    description = str(form.get("description", "") or "").strip()
+    if len(description) > 250:
+        raise _PublishValidationError(
+            "Keep the policy description under 250 characters.")
+    pickup_only = bool(form.get("pickup_only"))
+    body = {"name": name, "marketplaceId": "EBAY_US"}
+    if description:
+        body["description"] = description
+    if pickup_only:
+        # No shipping options at all: the List-time gate flags this
+        # policy as unusable for a shipped listing (preserved v32/v35
+        # behavior); the review screen warns about it in plain words.
+        # handlingTime is not applicable for pickup-only (official
+        # type page), so it is omitted, not guessed.
+        body["localPickup"] = True
+        return body
+    if form.get("local_pickup"):
+        body["localPickup"] = True
+    options = [_build_shipping_option(form, "dom")]
+    if form.get("ship_international"):
+        options.append(_build_shipping_option(form, "intl"))
+    handling_raw = str(form.get("handling_days", "") or "").strip()
+    try:
+        days = int(handling_raw)
+    except (TypeError, ValueError):
+        raise _PublishValidationError(
+            "Enter the handling time in business days (0 to 30).")
+    if days < 0 or days > 30:
+        raise _PublishValidationError(
+            "Handling time must be 0 to 30 business days.")
+    # Official TimeDuration shape: business days from cleared payment
+    # to the carrier scan.
+    body["handlingTime"] = {"unit": "DAY", "value": days}
+    body["shippingOptions"] = options
+    return body
+
+
+def _fulfillment_policy_by_name(token, name):
+    """Return the policy dict with this exact name, or None.
+
+    GET .../fulfillment_policy/get_by_policy_name with marketplace_id
+    + name. A 404 means no such policy; any other failure propagates
+    (never misread as "not found").
+    """
+    qs = urlencode({"marketplace_id": "EBAY_US", "name": name})
+    try:
+        body = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy/get_by_policy_name?" + qs,
+            token)
+    except _EbayApiError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    if isinstance(body, dict) and body.get("fulfillmentPolicyId"):
+        return body
+    return None
+
+
+def _account_token_or_response():
+    """(token, None) for Account API calls, or (None, response) on error.
+
+    Mirrors the GET policies handler's mapping: scope signal for a
+    stale token, 400 for an auth failure, 502 for anything else —
+    never a bare error, never a blind token wipe.
+    """
+    try:
+        return _ebay_access_token(), None
+    except _NeedsScopeReconnect as exc:
+        return None, (jsonify({"needs_scope_reconnect": True,
+                               "error": str(exc)}), 200)
+    except _EbayAuthError as exc:
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return None, (jsonify({"needs_scope_reconnect": True,
+                                   "error": str(exc)}), 200)
+        return None, (jsonify({"error": str(exc)}), 400)
+    except RuntimeError as exc:
+        if str(exc) == SCOPE_RECONNECT_MSG:
+            return None, (jsonify({"needs_scope_reconnect": True,
+                                   "error": str(exc)}), 200)
+        return None, (jsonify({"error": str(exc)}), 502)
+
+
+def _create_success_response(token, policy):
+    """Fresh policy list + the created policy's ID, for the dropdown.
+
+    The list is re-read so the dropdown reflects reality (including
+    the new policy's cost type for the chooser). If the re-read misses
+    the new policy, its own entry is appended so the select still works.
+    """
+    policy_id = str(policy.get("fulfillmentPolicyId", "") or "").strip()
+    try:
+        listing = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US",
+            token)
+    except RuntimeError:
+        # Best-effort refresh only: _EbayApiError and network failures
+        # alike must not turn a successful create into a 500 — the
+        # fallback below still returns the created policy's entry.
+        listing = None
+    policies = []
+    if isinstance(listing, dict):
+        for p in (listing.get("fulfillmentPolicies") or []):
+            if isinstance(p, dict):
+                policies.append(_policy_pick_entry(p))
+    if policy_id and not any(p["id"] == policy_id for p in policies):
+        policies.append(_policy_pick_entry(policy))
+    return jsonify({"policy_id": policy_id, "policies": policies})
+
+
+@app.route("/api/ebay/shipping-services", methods=["GET"])
+def api_ebay_shipping_services():
+    """v41: service codes for the create-policy form, split by type.
+
+    Harvested from the account's own policies (proven valid there)
+    plus the documented domestic set. A 403 maps to the reconnect
+    signal, exactly like the policy list.
+    """
+    token, err = _account_token_or_response()
+    if err is not None:
+        return err
+    try:
+        listing = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US",
+            token)
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": SCOPE_RECONNECT_MSG}), 200
+        return jsonify({"error": str(exc)}), 502
+    policies = []
+    if isinstance(listing, dict):
+        for p in (listing.get("fulfillmentPolicies") or []):
+            if isinstance(p, dict):
+                policies.append(p)
+    return jsonify(_harvest_shipping_services(policies))
+
+
+@app.route("/api/ebay/fulfillment-policies/create", methods=["POST"])
+def api_ebay_fulfillment_policy_create():
+    """v41: create a shipping policy on the account, then return it.
+
+    Review-before-create lives on the listing page: this endpoint only
+    runs after the seller confirmed the exact policy. Body is the form
+    JSON (see _build_fulfillment_policy_body) plus an optional retry
+    flag. A retry first re-reads by name, so a previous attempt whose
+    reply was lost is reused instead of duplicated. A name already
+    used answers 409 with a plain message (the form keeps its values
+    client-side). A network failure with unknown outcome re-reads by
+    name too; if nothing is found it reports unconfirmed (check Seller
+    Hub before retrying) instead of assuming anything.
+    """
+    form = request.get_json(force=True) or {}
+    try:
+        body = _build_fulfillment_policy_body(form)
+    except _PublishValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    token, err = _account_token_or_response()
+    if err is not None:
+        return err
+    name = body["name"]
+    if form.get("retry"):
+        try:
+            existing = _fulfillment_policy_by_name(token, name)
+        except _EbayApiError as exc:
+            if exc.status == 403:
+                return jsonify({"needs_scope_reconnect": True,
+                                "error": SCOPE_RECONNECT_MSG}), 200
+            return jsonify({"error": str(exc)}), 502
+        except RuntimeError as exc:
+            # Network failure during the reuse read: report it plainly
+            # instead of a 500; nothing was posted in this branch.
+            return jsonify({"error": str(exc)}), 502
+        if existing is not None:
+            return _create_success_response(token, existing)
+    try:
+        created = _ebay_call(
+            "POST", "/sell/account/v1/fulfillment_policy", token, body)
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": SCOPE_RECONNECT_MSG}), 200
+        if exc.status == 409 or exc.error_id == "20418":
+            return jsonify({
+                "error": "That name is already used on your eBay account. "
+                         "Pick a different name.",
+                "name_taken": True}), 409
+        return jsonify({"error": str(exc)}), 502
+    except RuntimeError:
+        # Network failure with unknown outcome: never blind-retry.
+        # A lost success is recovered by name; anything else is
+        # reported as unconfirmed, not assumed either way.
+        try:
+            existing = _fulfillment_policy_by_name(token, name)
+        except Exception:
+            existing = None
+        if existing is not None:
+            return _create_success_response(token, existing)
+        return jsonify({
+            "error": "Could not confirm whether the policy was created. "
+                     "Check Seller Hub before trying again, so you do "
+                     "not create a duplicate.",
+            "unconfirmed": True}), 502
+    policy_id = ""
+    if isinstance(created, dict):
+        policy_id = str(created.get("fulfillmentPolicyId", "") or "").strip()
+    if not policy_id:
+        try:
+            existing = _fulfillment_policy_by_name(token, name)
+        except RuntimeError:
+            existing = None
+        if existing is not None:
+            return _create_success_response(token, existing)
+        return jsonify({
+            "error": "eBay created the policy but did not return its number. "
+                     "Refresh the shipping list and pick it by name."}), 502
+    return _create_success_response(
+        token, {"fulfillmentPolicyId": policy_id})
 
 
 @app.route("/api/ebay/category-conditions", methods=["GET"])

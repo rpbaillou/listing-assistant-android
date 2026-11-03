@@ -164,6 +164,86 @@
         <p class="hint">eBay uses this package to work out what the buyer pays for shipping. Enter the real weight and size of the parcel you will send — nothing is guessed.</p>
         <p class="hint">The policy name is just the label you gave it on eBay. Enter this item's real package weight and size here.</p>
       </div>
+      <button id="btn-create-policy" class="ghost" type="button">Create a new shipping policy</button>
+      <p id="policy-create-note" class="note hidden"></p>
+      <div id="policy-create-error" class="error hidden"></div>
+      <!-- v41: create a shipping policy in the app (choose-or-create).
+           Full options, all editable, nothing defaulted from a name:
+           flat rate or calculated, US plus worldwide self-ship
+           international, local pickup. eBay International Shipping is
+           an account setting, not a policy field, so the form says so
+           instead of faking it. Nothing is created until the seller
+           confirms the exact policy on the review below. -->
+      <div id="policy-create-form" class="hidden">
+        <h4>Create a shipping policy</h4>
+        <p class="hint">This creates a policy on your eBay account. Nothing is created until you confirm it on the review below.</p>
+        <label>Policy name</label>
+        <input id="pc-name" type="text" placeholder="e.g. Dolls calculated USPS">
+        <label>Policy description (optional)</label>
+        <input id="pc-description" type="text" maxlength="250" placeholder="Only you see this">
+        <label><input id="pc-pickup-only" type="checkbox"> Local pickup only (no shipping)</label>
+        <div id="pc-domestic">
+          <label>US shipping cost type</label>
+          <select id="pc-dom-cost-type">
+            <option value="FLAT_RATE">Flat rate</option>
+            <option value="CALCULATED">Calculated (by weight)</option>
+          </select>
+          <label>US shipping service 1</label>
+          <select id="pc-dom-service-1"></select>
+          <input id="pc-dom-service-1-other" type="text" class="hidden" placeholder="Type the eBay service code">
+          <div id="pc-dom-cost-1-wrap">
+            <label>Cost for service 1 (USD)</label>
+            <input id="pc-dom-cost-1" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 12.50">
+            <label><input id="pc-dom-free-1" type="checkbox"> Free shipping for service 1</label>
+          </div>
+          <label>US shipping service 2 (optional)</label>
+          <select id="pc-dom-service-2"></select>
+          <input id="pc-dom-service-2-other" type="text" class="hidden" placeholder="Type the eBay service code">
+          <div id="pc-dom-cost-2-wrap">
+            <label>Cost for service 2 (USD)</label>
+            <input id="pc-dom-cost-2" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 18.00">
+          </div>
+        </div>
+        <label><input id="pc-local-pickup" type="checkbox"> Also offer local pickup</label>
+        <label><input id="pc-international" type="checkbox"> Also ship internationally (you ship it yourself)</label>
+        <div id="pc-intl" class="hidden">
+          <p class="hint">eBay International Shipping is an account setting, not part of a policy. If your account is opted in, eBay adds it automatically. This section is for international shipping you handle yourself, worldwide.</p>
+          <label>International cost type</label>
+          <select id="pc-intl-cost-type">
+            <option value="FLAT_RATE">Flat rate</option>
+            <option value="CALCULATED">Calculated (by weight)</option>
+          </select>
+          <label>International service 1</label>
+          <select id="pc-intl-service-1"></select>
+          <input id="pc-intl-service-1-other" type="text" class="hidden" placeholder="Type the eBay service code">
+          <div id="pc-intl-cost-1-wrap">
+            <label>Cost for service 1 (USD)</label>
+            <input id="pc-intl-cost-1" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 25.00">
+          </div>
+          <label>International service 2 (optional)</label>
+          <select id="pc-intl-service-2"></select>
+          <input id="pc-intl-service-2-other" type="text" class="hidden" placeholder="Type the eBay service code">
+          <div id="pc-intl-cost-2-wrap">
+            <label>Cost for service 2 (USD)</label>
+            <input id="pc-intl-cost-2" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
+          </div>
+        </div>
+        <div id="pc-handling-wrap">
+          <label>Handling time (business days)</label>
+          <input id="pc-handling" type="number" min="0" max="30" step="1" inputmode="numeric" placeholder="e.g. 2">
+          <p class="hint">Business days from cleared payment to the carrier scan. Not needed for local pickup only.</p>
+        </div>
+        <button id="btn-pc-review" class="primary" type="button">Review this policy</button>
+        <button id="btn-pc-cancel" class="ghost" type="button">Cancel</button>
+      </div>
+      <div id="policy-create-review" class="hidden">
+        <h4>Check this policy before it is created</h4>
+        <div id="pc-review-text"></div>
+        <p id="pc-review-warning" class="hint hidden"></p>
+        <button id="btn-pc-confirm" class="primary" type="button">Create this policy on eBay</button>
+        <button id="btn-pc-back" class="ghost" type="button">Back to the form</button>
+        <button id="btn-pc-cancel-2" class="ghost" type="button">Cancel</button>
+      </div>
     </div>
 
     <details>
