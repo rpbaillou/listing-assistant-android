@@ -62,6 +62,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   border: 2px dashed #9db8ee; cursor: pointer;
 }
 #photo-input { display: none; }
+#draft-photo-input { display: none; }
 #camera-input { display: none; }
 .photobtns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .photobtns .filebtn { flex: 1; min-width: 0; }
@@ -70,6 +71,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 .thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
 .thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
 .thumbs.small img { width: 72px; height: 72px; }
+/* v36: draft thumbnails wrap like step-1 thumbnails so the Edit button
+   sits on the photo, not floating beside it. */
+.thumbs.small .thumb-wrap { width: 72px; height: 72px; }
 
 /* v5: remove-photo X on each chosen thumbnail */
 .thumb-wrap { position: relative; width: 96px; height: 96px; }

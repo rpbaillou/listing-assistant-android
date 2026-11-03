@@ -129,6 +129,11 @@ function renderThumbs() {
     ph.textContent = "can't preview";
     box.appendChild(ph);
   }
+  /* v36: visible count + Take another affordance, so multi-snap never
+     looks like it stopped at one. The button below the thumbnails shows
+     only once at least one photo exists. */
+  $("photo-count").textContent = photoCountTextFor(selectedFiles.length);
+  $("btn-take-another").classList.toggle("hidden", selectedFiles.length === 0);
   updateAnalyzeButton();
 }
 
@@ -163,6 +168,7 @@ function clampCropRect(rect, bw, bh, minSize) {
 }
 
 let editIndex = -1;
+let editDraftIndex = -1; /* v36: >= 0 while editing a LISTING-page photo (draft.photos[i]); -1 for step-1 photos */
 let editImg = null;      /* full-res source image (<=1600px) */
 let editImgUrl = null;   /* object URL for editImg, revoked on close */
 let editRot = 0;         /* 0/90/180/270, clockwise */
@@ -299,27 +305,55 @@ function rotateEditor(delta) {
 $("btn-edit-rotl").addEventListener("click", () => rotateEditor(-90));
 $("btn-edit-rotr").addEventListener("click", () => rotateEditor(90));
 
+/* v36: shared editor open, used by step-1 photos (stepIndex >= 0,
+   draftIndex -1) and listing-page photos (stepIndex -1, draftIndex >= 0).
+   The crop/rotate math below never learns which kind it is. */
+function beginEditWithImage(img, url, stepIndex, draftIndex) {
+  editIndex = stepIndex;
+  editDraftIndex = draftIndex;
+  editRot = 0;
+  editDrag = null;
+  editImg = img;
+  editImgUrl = url;
+  editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+  $("editor").classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  drawEditor();
+}
+
 function openEditor(i) {
   const entry = selectedFiles[i];
   if (!entry) return;
-  editIndex = i;
-  editRot = 0;
-  editDrag = null;
   const url = URL.createObjectURL(entry.blob);
   const img = new Image();
-  img.onload = () => {
-    editImg = img;
-    editImgUrl = url;
-    editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
-    $("editor").classList.remove("hidden");
-    document.body.style.overflow = "hidden";
-    drawEditor();
-  };
+  img.onload = () => { beginEditWithImage(img, url, i, -1); };
   img.onerror = () => {
     URL.revokeObjectURL(url);
     showError("Couldn't open that photo for editing.");
   };
   img.src = url;
+}
+
+/* v36: edit a listing-page photo. The bytes come from the server, and
+   Save uploads the edited image back over the same stored file, so
+   ordering and publish inclusion never change. */
+async function openDraftEditor(i) {
+  const p = (draft && draft.photos) ? draft.photos[i] : null;
+  if (!p) return;
+  try {
+    const res = await fetch("/photos/" + p);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => { beginEditWithImage(img, url, -1, i); };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      showDraftPhotoError("Couldn't open that photo for editing.");
+    };
+    img.src = url;
+  } catch (e) {
+    showDraftPhotoError("Couldn't open that photo for editing.");
+  }
 }
 
 function closeEditor() {
@@ -329,12 +363,13 @@ function closeEditor() {
   editImg = null;
   editImgUrl = null;
   editIndex = -1;
+  editDraftIndex = -1;
   editDrag = null;
 }
 $("btn-edit-cancel").addEventListener("click", closeEditor);
 
 $("btn-edit-save").addEventListener("click", async () => {
-  if (!editImg || editIndex < 0) return;
+  if (!editImg || (editIndex < 0 && editDraftIndex < 0)) return;
   const btn = $("btn-edit-save");
   btn.disabled = true;
   try {
@@ -358,25 +393,56 @@ $("btn-edit-save").addEventListener("click", async () => {
     oc.getContext("2d").drawImage(rc, cx, cy, cw, ch, 0, 0, cw, ch);
     const blob = await new Promise((res) => oc.toBlob(res, "image/jpeg", 0.85));
     if (!blob) throw new Error("save failed");
-    const entry = selectedFiles[editIndex];
-    if (entry.url) URL.revokeObjectURL(entry.url);
-    entry.blob = blob;
-    entry.url = URL.createObjectURL(blob);
-    renderThumbs();
-    closeEditor();
-    hideError();
+    if (editDraftIndex >= 0) {
+      /* v36: listing-page photo — upload over the same stored file. */
+      if (!draft || !draft.id) throw new Error("no draft");
+      const fd = new FormData();
+      fd.append("photo", blob, "edited.jpg");
+      const res = await api("/api/drafts/" + draft.id + "/photos/" + editDraftIndex + "/replace",
+        { method: "POST", body: fd });
+      draft = res.draft;
+      renderDraftPhotos(draft);
+      closeEditor();
+      hideDraftPhotoError();
+    } else {
+      const entry = selectedFiles[editIndex];
+      if (entry.url) URL.revokeObjectURL(entry.url);
+      entry.blob = blob;
+      entry.url = URL.createObjectURL(blob);
+      renderThumbs();
+      closeEditor();
+      hideError();
+    }
   } catch (e) {
-    showError("Couldn't save that edit. Try again.");
+    if (editDraftIndex >= 0) showDraftPhotoError("Couldn't save that edit. Try again.");
+    else showError("Couldn't save that edit. Try again.");
   } finally {
     btn.disabled = false;
   }
 });
 
+/* v36: shared photo-count helpers (pure, unit-tested). roomFor is how
+   many more photos fit; countText is the plain-words count line. */
+function photoRoomFor(current) { return Math.max(0, maxPhotos - current); }
+function photoCountTextFor(current) {
+  return current + " of " + maxPhotos + " photos";
+}
+
+/* v36: which screen the native camera result belongs to. "step1" is the
+   Pick photos flow; "draft" is the listing page (added photos upload
+   to the draft instead of joining the step-1 set). Set by whichever
+   Take photo button was tapped, read by onCameraPhoto. */
+let cameraTarget = "step1";
+
 /* Shared photo intake: "Choose photos" replaces the set, "Take photo"
-   appends one more (so he can snap several angles in a row). */
+   appends one more (so he can snap several angles in a row). v36: a
+   photo is NEVER silently dropped at the cap — when files do not fit,
+   the note says so in plain words. */
 async function handlePickedFiles(fileList, replace) {
-  const room = replace ? maxPhotos : Math.max(0, maxPhotos - selectedFiles.length);
-  const picked = Array.from(fileList || []).slice(0, room);
+  const room = replace ? maxPhotos : photoRoomFor(selectedFiles.length);
+  const all = Array.from(fileList || []);
+  const picked = all.slice(0, room);
+  const dropped = all.length - picked.length;
   if (replace) clearPreviews();
   skippedCount = 0;
   for (let i = 0; i < picked.length; i++) {
@@ -386,10 +452,20 @@ async function handlePickedFiles(fileList, replace) {
     selectedFiles.push({ blob: r.blob, name: r.name, url: u });
   }
   renderThumbs();
+  const notes = [];
   if (skippedCount > 0) {
+    notes.push(skippedCount + (skippedCount === 1 ? " photo" : " photos") +
+      " couldn't be read and " + (skippedCount === 1 ? "was" : "were") + " skipped.");
+  }
+  if (dropped > 0) {
+    notes.push(room === 0
+      ? "This listing already has " + maxPhotos + " photos."
+      : dropped + " more photo" + (dropped === 1 ? "" : "s") +
+        " did not fit (" + maxPhotos + " max).");
+  }
+  if (notes.length > 0) {
     const n = $("skip-note");
-    n.textContent = skippedCount + (skippedCount === 1 ? " photo" : " photos") +
-      " couldn't be read and " + (skippedCount === 1 ? "was" : "were") + " skipped.";
+    n.textContent = notes.join(" ");
     n.classList.remove("hidden");
   }
   hideError();
@@ -404,21 +480,31 @@ $("photo-input").addEventListener("change", (e) => { handlePickedFiles(e.target.
 /* v14: Take photo calls the camera directly through the app's JS interface.
    v12 used <input capture="camera">, but his phone's WebView ignores the
    capture attribute, so both buttons opened the gallery. This bypasses the
-   WebView file picker entirely. */
-$("btn-take-photo").addEventListener("click", () => {
+   WebView file picker entirely. v36: both step-1 Take buttons share this
+   path and set the camera target, so the native result routes back here. */
+function takeStep1Photo() {
+  cameraTarget = "step1";
   if (window.Android && typeof window.Android.openCamera === "function") {
     window.Android.openCamera();
   } else {
     showError("The camera needs the app — please use Choose photos instead.");
   }
-});
+}
+$("btn-take-photo").addEventListener("click", takeStep1Photo);
+$("btn-take-another").addEventListener("click", takeStep1Photo);
 
 /* Called by native code after a camera snap. dataUrl is a natively
-   downscaled JPEG (1600px, q85). Appends, so he can snap several angles. */
+   downscaled JPEG (1600px, q85). Appends, so he can snap several angles.
+   v36: routes by cameraTarget — on the listing page the snap uploads to
+   the draft instead of joining the step-1 set. */
 async function onCameraPhoto(dataUrl) {
   try {
     const blob = await (await fetch(dataUrl)).blob();
     const file = new File([blob], "camera-" + Date.now() + ".jpg", { type: "image/jpeg" });
+    if (cameraTarget === "draft") {
+      await uploadDraftPhotos([file]);
+      return;
+    }
     handlePickedFiles([file], false);
   } catch (e) {
     showError("Couldn't read that photo.");
@@ -478,13 +564,7 @@ function loadDraftIntoForm(d) {
   $("f-condition-details").value = d.condition_details || "";
   $("f-price").value = d.price || "";
   updateCount();
-  const box = $("draft-photos");
-  box.innerHTML = "";
-  (d.photos || []).forEach((p) => {
-    const img = document.createElement("img");
-    img.src = "/photos/" + p;
-    box.appendChild(img);
-  });
+  renderDraftPhotos(d);
   renderAttrs(d.attributes || {});
   const notes = $("ai-notes");
   if (d.identification_notes) {
@@ -493,6 +573,86 @@ function loadDraftIntoForm(d) {
   } else notes.classList.add("hidden");
   $("btn-photos-zip").href = "/api/drafts/" + d.id + "/photos.zip";
 }
+
+/* v36: draft thumbnails on the listing page. Every photo — existing or
+   added — gets an Edit button into the same editor step 1 uses, so added
+   photos are never second-class. Count line mirrors the step-1 count. */
+function renderDraftPhotos(d) {
+  const box = $("draft-photos");
+  box.innerHTML = "";
+  (d.photos || []).forEach((p, i) => {
+    const wrap = document.createElement("div");
+    wrap.className = "thumb-wrap";
+    const img = document.createElement("img");
+    img.src = "/photos/" + p;
+    img.alt = "Listing photo " + (i + 1);
+    const e = document.createElement("button");
+    e.type = "button";
+    e.className = "thumb-edit";
+    e.textContent = "Edit";
+    e.setAttribute("aria-label", "Edit this photo");
+    e.addEventListener("click", () => openDraftEditor(i));
+    wrap.appendChild(img);
+    wrap.appendChild(e);
+    box.appendChild(wrap);
+  });
+  $("draft-photo-count").textContent = photoCountTextFor((d.photos || []).length);
+}
+
+function showDraftPhotoError(msg) {
+  const el = $("draft-photo-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+function hideDraftPhotoError() { $("draft-photo-error").classList.add("hidden"); }
+
+/* v36: append files to the loaded draft (listing-page intake). Appends
+   only — the server never replaces or reorders existing photos, and the
+   24 cap is enforced there with a plain message, not a silent drop. */
+async function uploadDraftPhotos(files) {
+  if (!draft || !draft.id) return;
+  hideDraftPhotoError();
+  $("draft-photo-note").classList.add("hidden");
+  const downscaled = [];
+  for (const f of files) {
+    const r = await downscaleFile(f, (draft.photos || []).length + downscaled.length);
+    if (!r.skipped) downscaled.push(r);
+  }
+  if (downscaled.length === 0) {
+    showDraftPhotoError("Couldn't read those photos.");
+    return;
+  }
+  const fd = new FormData();
+  downscaled.forEach((r) => fd.append("photos", r.blob, r.name));
+  try {
+    const res = await api("/api/drafts/" + draft.id + "/photos", { method: "POST", body: fd });
+    draft = res.draft;
+    renderDraftPhotos(draft);
+    const notes = [];
+    if (res.added) notes.push("Added " + res.added + " photo" + (res.added === 1 ? "" : "s") + ".");
+    if (res.dropped) notes.push(res.dropped + " more did not fit (" + maxPhotos + " max).");
+    if (notes.length > 0) {
+      $("draft-photo-note").textContent = notes.join(" ");
+      $("draft-photo-note").classList.remove("hidden");
+    }
+  } catch (e) {
+    showDraftPhotoError(e.message);
+  }
+}
+
+$("draft-photo-input").addEventListener("change", (e) => {
+  uploadDraftPhotos(Array.from(e.target.files || []));
+  e.target.value = ""; /* so choosing the same files again re-fires */
+});
+
+$("btn-draft-take-photo").addEventListener("click", () => {
+  cameraTarget = "draft";
+  if (window.Android && typeof window.Android.openCamera === "function") {
+    window.Android.openCamera();
+  } else {
+    showDraftPhotoError("The camera needs the app — please use Choose photos instead.");
+  }
+});
 
 function renderAttrs(attrs) {
   const box = $("attrs");
@@ -1145,6 +1305,7 @@ api("/api/config").then((c) => {
     maxPhotos = c.max_photos;
     document.querySelector("#step-photos .hint").textContent =
       "Choose up to " + c.max_photos + " photos of one item from your photo library.";
+    renderThumbs(); /* v36: refresh the count line for the real cap */
   }
 }).catch(() => {});
 

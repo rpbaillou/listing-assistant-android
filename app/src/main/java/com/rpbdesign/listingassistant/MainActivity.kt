@@ -536,13 +536,27 @@ class MainActivity : Activity() {
 
     /** Launches the camera app for the JS-interface path (no chooser). */
     private fun launchCameraForJs() {
+        // v36: never launch a second camera while one is already pending.
+        // A rapid double-tap used to overwrite pendingCameraPhoto, so the
+        // first capture's result could land on the second (still empty)
+        // temp file and deliver nothing. A fresh process always starts
+        // with null pending state, and handleCameraJsResult always clears
+        // it in finally, so this guard cannot strand the camera.
+        if (pendingCameraPhoto != null) return
         val camIntent = buildCameraIntent()
         if (camIntent == null) {
             Toast.makeText(this, "No camera app found.", Toast.LENGTH_LONG).show()
             return
         }
-        @Suppress("DEPRECATION")
-        startActivityForResult(camIntent, CAMERA_JS_REQUEST)
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(camIntent, CAMERA_JS_REQUEST)
+        } catch (_: Exception) {
+            pendingCameraPhoto?.delete()
+            pendingCameraPhoto = null
+            pendingCameraPhotoUri = null
+            Toast.makeText(this, "Couldn't open the camera.", Toast.LENGTH_LONG).show()
+        }
     }
 
     /**

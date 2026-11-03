@@ -342,6 +342,25 @@ def _gemini_identify(photo_relpaths):
     }
 
 
+def _save_image_file(fs, out_path):
+    """Normalize one uploaded photo to JPEG at out_path. Returns True when
+    the file was saved, False when it was skipped (bad extension or
+    unreadable image). Shared by new-draft uploads, draft appends, and
+    draft photo replacement, so all three store photos identically."""
+    name = secure_filename(fs.filename or "photo.jpg")
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else "jpg"
+    if ext not in {"png", "jpg", "jpeg", "webp", "gif", "heic", "heif"}:
+        return False
+    try:
+        img = Image.open(fs.stream)
+        img = img.convert("RGB")
+        img.thumbnail((1600, 1600))
+        img.save(out_path, "JPEG", quality=85)
+        return True
+    except Exception:
+        return False
+
+
 def _store_uploads(files):
     """Normalize uploaded photos to JPEG, return list of relative paths."""
     rels = []
@@ -349,22 +368,38 @@ def _store_uploads(files):
     folder = os.path.join(PHOTOS_DIR, draft_id)
     os.makedirs(folder, exist_ok=True)
     for i, fs in enumerate(files[:MAX_PHOTOS]):
-        name = secure_filename(fs.filename or f"photo{i}.jpg")
-        ext = name.rsplit(".", 1)[-1].lower() if "." in name else "jpg"
-        if ext not in {"png", "jpg", "jpeg", "webp", "gif", "heic", "heif"}:
-            continue
-        try:
-            img = Image.open(fs.stream)
-            img = img.convert("RGB")
-            img.thumbnail((1600, 1600))
-            out = os.path.join(folder, f"{i + 1}.jpg")
-            img.save(out, "JPEG", quality=85)
+        out = os.path.join(folder, f"{i + 1}.jpg")
+        if _save_image_file(fs, out):
             rels.append(f"{draft_id}/{i + 1}.jpg")
-        except Exception:
-            continue
     if not rels:
         raise RuntimeError("No usable photos found. Try JPG or PNG files.")
     return draft_id, rels
+
+
+def _append_uploads(draft, files):
+    """v36: append normalized photos to an EXISTING draft's own folder,
+    up to the 24 cap. Returns (added, dropped): dropped counts only
+    files that did not fit (unreadable files are skipped, as in
+    _store_uploads). Existing photos are never replaced or reordered;
+    new files take the next numbers in the same folder."""
+    existing = draft.get("photos") or []
+    folder = existing[0].split("/")[0] if existing else uuid.uuid4().hex[:12]
+    folder_path = os.path.join(PHOTOS_DIR, folder)
+    os.makedirs(folder_path, exist_ok=True)
+    room = MAX_PHOTOS - len(existing)
+    added = 0
+    dropped = 0
+    for fs in files:
+        if added >= room:
+            dropped += 1
+            continue
+        # existing grows on each success, so len(existing) + 1 is always
+        # the next free number (no double-count, no gaps on skips).
+        n = len(existing) + 1
+        if _save_image_file(fs, os.path.join(folder_path, f"{n}.jpg")):
+            existing.append(f"{folder}/{n}.jpg")
+            added += 1
+    return added, dropped
 
 
 # ---------------------------------------------------------------- eBay v2
@@ -2423,6 +2458,50 @@ def api_photos_zip(draft_id):
     buf.seek(0)
     return send_file(buf, mimetype="application/zip",
                      as_attachment=True, download_name=f"listing-{draft_id}-photos.zip")
+
+
+@app.route("/api/drafts/<draft_id>/photos", methods=["POST"])
+def api_draft_add_photos(draft_id):
+    """v36: append photos to an existing draft (listing-page intake).
+    Appends only — existing photos are never replaced or reordered, and
+    the 24 cap is enforced with a plain message instead of a silent drop.
+    Added photos are ordinary draft photos: same folder, same publish
+    and zip inclusion, same editor."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    files = request.files.getlist("photos")
+    if not files:
+        return jsonify({"error": "Choose at least one photo."}), 400
+    if len(d.get("photos") or []) >= MAX_PHOTOS:
+        return jsonify({"error": f"This listing already has {MAX_PHOTOS} photos."}), 400
+    added, dropped = _append_uploads(d, files)
+    if added == 0:
+        return jsonify({"error": "No usable photos found. Try JPG or PNG files."}), 400
+    _save_draft(d)
+    return jsonify({"draft": d, "added": added, "dropped": dropped})
+
+
+@app.route("/api/drafts/<draft_id>/photos/<int:index>/replace", methods=["POST"])
+def api_draft_replace_photo(draft_id, index):
+    """v36: replace one draft photo in place (listing-page editor save).
+    The replacement overwrites the same stored file, so ordering, publish
+    inclusion, and zip contents are unchanged. The index comes from the
+    draft's own stored list, never from user input, so no path tricks."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    photos = d.get("photos") or []
+    if index < 0 or index >= len(photos):
+        return jsonify({"error": "Photo not found."}), 404
+    fs = request.files.get("photo")
+    if fs is None:
+        return jsonify({"error": "Choose a photo."}), 400
+    full = os.path.join(PHOTOS_DIR, photos[index])
+    if not _save_image_file(fs, full):
+        return jsonify({"error": "That photo couldn't be read. Try a JPG or PNG file."}), 400
+    _save_draft(d)
+    return jsonify({"draft": d})
 
 
 @app.route("/photos/<path:rel>")

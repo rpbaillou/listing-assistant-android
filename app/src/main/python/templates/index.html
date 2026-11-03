@@ -40,6 +40,8 @@
     </div>
     <input id="photo-input" type="file" accept="image/*" multiple>
     <div id="thumbs" class="thumbs"></div>
+    <p id="photo-count" class="hint">0 of 24 photos</p>
+    <button id="btn-take-another" class="filebtn hidden" type="button">Take another photo</button>
     <div id="skip-note" class="hint hidden"></div>
     <div id="analyze-error" class="error hidden"></div>
     <button id="btn-analyze" class="primary big" type="button" disabled>Identify item with AI</button>
@@ -55,6 +57,14 @@
     <h2>2. Your listing</h2>
     <p class="hint">Everything about the listing lives here. Fill it in, check it, then post it below.</p>
     <div id="draft-photos" class="thumbs small"></div>
+    <div class="photobtns">
+      <label class="filebtn" for="draft-photo-input">Choose photos</label>
+      <button class="filebtn" id="btn-draft-take-photo" type="button">Take photo</button>
+    </div>
+    <input id="draft-photo-input" type="file" accept="image/*" multiple>
+    <p id="draft-photo-count" class="hint"></p>
+    <p id="draft-photo-note" class="hint hidden"></p>
+    <div id="draft-photo-error" class="error hidden"></div>
 
     <label>Title <span id="title-count" class="count">0/80</span></label>
     <input id="f-title" type="text" maxlength="80">
