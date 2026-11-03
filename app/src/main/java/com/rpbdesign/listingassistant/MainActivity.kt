@@ -44,11 +44,13 @@ class MainActivity : Activity() {
     private var pendingCameraPhoto: File? = null
     private var pendingCameraPhotoUri: Uri? = null
     /** v36: Pixel-editor handoff state. Set when Edit on a listing photo
-     *  launches the phone's editor; cleared when its result returns. */
+     *  launches the phone's editor; cleared when its result returns.
+     *  v37: the editor opens a MediaStore working copy (pendingEditMediaUri),
+     *  not the app's private provider file — v36's private URI resolved
+     *  to nothing on his Pixel. */
     private var pendingEditDraftId: String? = null
     private var pendingEditIndex: Int = -1
-    private var pendingEditIn: File? = null
-    private var pendingEditInUri: Uri? = null
+    private var pendingEditMediaUri: Uri? = null
     private var pendingEditOut: File? = null
     private var pendingEditOutUri: Uri? = null
     private var pendingEditOrig: ByteArray? = null
@@ -461,7 +463,9 @@ class MainActivity : Activity() {
          *  photo editor (Nov 3 decision: his Pixel camera app editor,
          *  NOT a limited in-app editor). No package is hardcoded — the
          *  system resolves ACTION_EDIT, which on his Pixel opens his
-         *  camera app editor. Runs on the JS-interface thread; the
+         *  camera app editor. v37: the photo goes in as a MediaStore
+         *  working copy — v36's private provider URI resolved to nothing
+         *  on his Pixel. Runs on the JS-interface thread; the
          *  launch itself does network on a worker thread and posts UI
          *  work back, so no thread assumption breaks. */
         @JavascriptInterface
@@ -833,11 +837,54 @@ class MainActivity : Activity() {
     private fun isSoldPricesPopupOpen(): Boolean = soldPricesOverlay != null
 
     @Deprecated("Kept simple on purpose: no AndroidX needed.")
-    /** v36: Pixel-editor handoff. Downloads the draft photo from the
-     *  local Flask server, hands a copy to the system editor with a
-     *  writable output file, and on return posts the edited bytes back
-     *  over the same draft slot (replace endpoint). The original is
-     *  never touched until edited bytes come back. */
+    /** v37: insert bytes into MediaStore as a WORKING COPY and return
+     *  its content://media/... URI, or null on any failure. Gallery
+     *  editors accept library links; v36's private provider URI
+     *  resolved to nothing on his Pixel. The working copy is deleted
+     *  by clearPendingEdit when the edit round ends, so his gallery
+     *  is never polluted. On Android 10+ the row is IS_PENDING while
+     *  bytes are written, then published, so the editor sees a whole
+     *  file, never a half-written one. */
+    private fun insertMediaStoreWorkingCopy(jpeg: ByteArray): Uri? {
+        return try {
+            val stamp = System.currentTimeMillis()
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, "ListingAssistant-edit-$stamp.jpg")
+                put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/ListingAssistant")
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                }
+            }
+            val uri = contentResolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
+            try {
+                contentResolver.openOutputStream(uri)?.use { it.write(jpeg) } ?: run {
+                    contentResolver.delete(uri, null, null)
+                    return null
+                }
+            } catch (_: Exception) {
+                contentResolver.delete(uri, null, null)
+                return null
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val done = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                contentResolver.update(uri, done, null, null)
+            }
+            uri
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** v37: MediaStore working-copy edit. Downloads the draft photo
+     *  from the local Flask server, inserts it into MediaStore as a
+     *  working copy, and hands that library URI to the system editor
+     *  with a writable output file as a fallback shape. On return the
+     *  edited bytes post back over the same draft slot (replace
+     *  endpoint). The draft original is never touched until edited
+     *  bytes come back. */
     private fun launchPixelEditor(draftId: String, rel: String, index: Int) {
         Thread {
             try {
@@ -848,22 +895,26 @@ class MainActivity : Activity() {
                     }
                     return@Thread
                 }
-                val dir = CameraPhotoProvider.cameraDir(this)
-                val stamp = System.currentTimeMillis()
-                val inFile = File(dir, "edit_in_$stamp.jpg").apply { writeBytes(orig) }
-                val outFile = File(dir, "edit_out_$stamp.jpg").apply { createNewFile() }
-                val inUri = CameraPhotoProvider.uriFor(this, inFile)
-                val outUri = CameraPhotoProvider.uriFor(this, outFile)
+                val mediaUri = insertMediaStoreWorkingCopy(orig)
+                if (mediaUri == null) {
+                    runOnUiThread {
+                        Toast.makeText(this, "Couldn't open that photo for editing.", Toast.LENGTH_LONG).show()
+                    }
+                    return@Thread
+                }
                 pendingEditDraftId = draftId
                 pendingEditIndex = index
-                pendingEditIn = inFile
-                pendingEditInUri = inUri
+                pendingEditMediaUri = mediaUri
+                pendingEditOrig = orig
+                val dir = CameraPhotoProvider.cameraDir(this)
+                val stamp = System.currentTimeMillis()
+                val outFile = File(dir, "edit_out_$stamp.jpg").apply { createNewFile() }
+                val outUri = CameraPhotoProvider.uriFor(this, outFile)
                 pendingEditOut = outFile
                 pendingEditOutUri = outUri
-                pendingEditOrig = orig
                 runOnUiThread {
                     val intent = Intent(Intent.ACTION_EDIT).apply {
-                        setDataAndType(inUri, "image/jpeg")
+                        setDataAndType(mediaUri, "image/jpeg")
                         putExtra(android.provider.MediaStore.EXTRA_OUTPUT, outUri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     }
@@ -875,13 +926,14 @@ class MainActivity : Activity() {
                     packageManager
                         .queryIntentActivities(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
                         .forEach {
-                            grantUriPermission(it.activityInfo.packageName, inUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            grantUriPermission(it.activityInfo.packageName, mediaUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                             grantUriPermission(it.activityInfo.packageName, outUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                         }
                     @Suppress("DEPRECATION")
                     startActivityForResult(intent, EDIT_PHOTO_REQUEST)
                 }
             } catch (_: Exception) {
+                clearPendingEdit()
                 runOnUiThread {
                     Toast.makeText(this, "Couldn't open that photo for editing.", Toast.LENGTH_LONG).show()
                 }
@@ -889,21 +941,24 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** v36: clear editor-handoff state, revoke URI grants, delete temp
-     *  files so no edited copy lingers. */
+    /** v37: clear editor-handoff state, revoke URI grants, delete the
+     *  temp output file AND the MediaStore working copy, so no edited
+     *  copy lingers in his gallery. Safe on any round end (success,
+     *  cancel, failure, no return): the edited bytes are already in
+     *  memory before this runs, and the draft original is untouched
+     *  until the replace POST succeeds. */
     private fun clearPendingEdit() {
-        pendingEditInUri?.let {
-            revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        pendingEditMediaUri?.let { mediaUri ->
+            try { contentResolver.delete(mediaUri, null, null) } catch (_: Exception) { }
+            revokeUriPermission(mediaUri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
         pendingEditOutUri?.let {
             revokeUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
-        pendingEditIn?.delete()
         pendingEditOut?.delete()
         pendingEditDraftId = null
         pendingEditIndex = -1
-        pendingEditIn = null
-        pendingEditInUri = null
+        pendingEditMediaUri = null
         pendingEditOut = null
         pendingEditOutUri = null
         pendingEditOrig = null
@@ -953,35 +1008,43 @@ class MainActivity : Activity() {
         }
     }
 
-    /** v36: resolve the editor's return into edited bytes, then save
+    /** v37: resolve the editor's return into edited bytes, then save
      *  them over the same draft slot. Resolution order covers how
-     *  editors actually behave: (1) the EXTRA_OUTPUT file has bytes,
-     *  (2) the result carries a URI, (3) the input file itself changed
-     *  (in-place editors that ignore EXTRA_OUTPUT). Anything else keeps
-     *  the original untouched and says so — never a silent loss. A
-     *  cancelled edit is silent, like a cancelled camera snap. */
+     *  editors actually behave: (1) the MediaStore working copy
+     *  changed in place (gallery editors typically edit library items
+     *  in place), (2) the result carries a URI, (3) the EXTRA_OUTPUT
+     *  file has bytes. Anything else keeps the original untouched and
+     *  says so — never a silent loss. A cancelled edit is silent, like
+     *  a cancelled camera snap. clearPendingEdit deletes the working
+     *  copy in finally; that is safe because the edited bytes are
+     *  already in memory and the draft original is untouched until the
+     *  replace POST succeeds. */
     private fun handlePixelEditResult(resultCode: Int, data: Intent?) {
         val draftId = pendingEditDraftId
         val index = pendingEditIndex
-        val inFile = pendingEditIn
+        val mediaUri = pendingEditMediaUri
         val outFile = pendingEditOut
         val orig = pendingEditOrig
         val edited: ByteArray? = try {
             if (resultCode != Activity.RESULT_OK || draftId == null || index < 0) {
                 null
-            } else if (outFile != null && outFile.length() > 0L) {
-                outFile.readBytes()
             } else {
-                val returned = data?.data?.let { uri ->
+                val mediaBytes = mediaUri?.let { uri ->
                     try { contentResolver.openInputStream(uri)?.use { it.readBytes() } } catch (_: Exception) { null }
                 }
-                if (returned != null && returned.isNotEmpty()) {
-                    returned
-                } else if (inFile != null && inFile.length() > 0L && orig != null) {
-                    val now = inFile.readBytes()
-                    if (!now.contentEquals(orig)) now else null
+                if (mediaBytes != null && mediaBytes.isNotEmpty() && orig != null && !mediaBytes.contentEquals(orig)) {
+                    mediaBytes
                 } else {
-                    null
+                    val returned = data?.data?.let { uri ->
+                        try { contentResolver.openInputStream(uri)?.use { it.readBytes() } } catch (_: Exception) { null }
+                    }
+                    if (returned != null && returned.isNotEmpty()) {
+                        returned
+                    } else if (outFile != null && outFile.length() > 0L) {
+                        outFile.readBytes()
+                    } else {
+                        null
+                    }
                 }
             }
         } catch (_: Exception) {
