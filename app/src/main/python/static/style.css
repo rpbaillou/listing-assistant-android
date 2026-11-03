@@ -72,12 +72,25 @@ button:disabled { opacity: 0.45; cursor: default; }
 .thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
 .thumbs.small img { width: 72px; height: 72px; }
 /* v36: draft thumbnails wrap like step-1 thumbnails so the Edit button
-   sits on the photo, not floating beside it. */
-.thumbs.small .thumb-wrap { width: 72px; height: 72px; }
+   sits on the photo, not floating beside it. v40: wraps grow with the
+   arrange row below the photo instead of clipping it. */
+.thumbs.small .thumb-wrap { width: 72px; }
 
 /* v5: remove-photo X on each chosen thumbnail */
-.thumb-wrap { position: relative; width: 96px; height: 96px; }
+.thumb-wrap { position: relative; width: 96px; }
 .thumb-wrap img { width: 96px; height: 96px; }
+/* v40: the image keeps its overlaid X and Edit buttons inside .thumb-img;
+   the arrange row sits below the photo, so nothing crowds the photo
+   itself. Wraps grow with the row instead of clipping it. */
+.thumb-img { position: relative; width: 96px; height: 96px; }
+.thumb-img img { display: block; width: 100%; height: 100%; }
+.thumbs.small .thumb-img { width: 72px; height: 72px; }
+.thumb-move-row { display: flex; gap: 0.25rem; margin-top: 0.35rem; }
+.thumb-move {
+  flex: 1; min-height: 30px; padding: 0; border-radius: 8px;
+  background: #fff; color: #1a1a1a; border: 1px solid #bbb;
+  font-size: 14px; cursor: pointer;
+}
 .thumb-x {
   position: absolute; top: -8px; right: -8px;
   width: 30px; height: 30px; border-radius: 50%;

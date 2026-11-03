@@ -380,8 +380,9 @@ def _append_uploads(draft, files):
     """v36: append normalized photos to an EXISTING draft's own folder,
     up to the 24 cap. Returns (added, dropped): dropped counts only
     files that did not fit (unreadable files are skipped, as in
-    _store_uploads). Existing photos are never replaced or reordered;
-    new files take the next numbers in the same folder."""
+    _store_uploads). An append never replaces existing photos; reorder
+    via the v40 move endpoint. New files take the next numbers in the
+    same folder (delete renumbers survivors first, so no gaps)."""
     existing = draft.get("photos") or []
     folder = existing[0].split("/")[0] if existing else uuid.uuid4().hex[:12]
     folder_path = os.path.join(PHOTOS_DIR, folder)
@@ -2463,10 +2464,10 @@ def api_photos_zip(draft_id):
 @app.route("/api/drafts/<draft_id>/photos", methods=["POST"])
 def api_draft_add_photos(draft_id):
     """v36: append photos to an existing draft (listing-page intake).
-    Appends only — existing photos are never replaced or reordered, and
-    the 24 cap is enforced with a plain message instead of a silent drop.
-    Added photos are ordinary draft photos: same folder, same publish
-    and zip inclusion, same editor."""
+    Appends only — an append never replaces existing photos; reorder
+    via the v40 move endpoint. The 24 cap is enforced with a plain
+    message instead of a silent drop. Added photos are ordinary draft
+    photos: same folder, same publish and zip inclusion, same editor."""
     d = _load_draft(draft_id)
     if d is None:
         return jsonify({"error": "Draft not found."}), 404
@@ -2500,6 +2501,107 @@ def api_draft_replace_photo(draft_id, index):
     full = os.path.join(PHOTOS_DIR, photos[index])
     if not _save_image_file(fs, full):
         return jsonify({"error": "That photo couldn't be read. Try a JPG or PNG file."}), 400
+    _save_draft(d)
+    return jsonify({"draft": d})
+
+
+def _safe_photo_path(rel):
+    """Resolve a draft photo rel inside PHOTOS_DIR, or None if it escapes."""
+    full = os.path.normpath(os.path.join(PHOTOS_DIR, rel))
+    base = os.path.normpath(PHOTOS_DIR)
+    if full != base and not full.startswith(base + os.sep):
+        return None
+    return full
+
+
+def _renumber_draft_photos(d):
+    """v40: renumber a draft's surviving photos to folder/1..k.jpg in order.
+
+    Delete leaves gaps (folder/1.jpg, folder/3.jpg), and _append_uploads
+    numbers the next upload len(existing)+1 — a gap would let a new
+    upload overwrite a surviving photo. Renumbering keeps the list and
+    the files in lockstep. Entries whose files are gone are dropped
+    (they can neither publish nor zip). Two-pass rename (temp names
+    first) so no rename ever clobbers a survivor."""
+    photos = d.get("photos") or []
+    if not photos:
+        return
+    folder = photos[0].split("/")[0]
+    target_dir = os.path.join(PHOTOS_DIR, folder)
+    os.makedirs(target_dir, exist_ok=True)
+    kept = []
+    seen = set()
+    for rel in photos:
+        full = _safe_photo_path(rel)
+        if full is not None and full not in seen and os.path.isfile(full):
+            seen.add(full)
+            kept.append(full)
+    temped = []
+    for i, full in enumerate(kept, 1):
+        tmp = os.path.join(os.path.dirname(full), f".tmp-renumber-{i}.jpg")
+        os.rename(full, tmp)
+        temped.append(tmp)
+    d["photos"] = []
+    for i, tmp in enumerate(temped, 1):
+        final = os.path.join(target_dir, f"{i}.jpg")
+        os.rename(tmp, final)
+        d["photos"].append(f"{folder}/{i}.jpg")
+
+
+@app.route("/api/drafts/<draft_id>/photos/<int:index>", methods=["DELETE"])
+def api_draft_delete_photo(draft_id, index):
+    """v40: delete one draft photo (listing-page Delete button). Removes
+    the entry from the draft's photo list AND the stored file, then
+    renumbers survivors so later appends never overwrite one. The draft
+    is saved; the updated draft is returned. Photo changes never touch
+    a published listing: ebay_* fields are left alone."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    photos = d.get("photos") or []
+    if index < 0 or index >= len(photos):
+        return jsonify({"error": "Photo not found."}), 404
+    rel = photos.pop(index)
+    full = _safe_photo_path(rel)
+    if full is not None and os.path.isfile(full):
+        try:
+            os.remove(full)
+        except OSError:
+            pass
+    _renumber_draft_photos(d)
+    if "/" in rel:
+        try:
+            os.rmdir(os.path.join(PHOTOS_DIR, rel.split("/")[0]))
+        except OSError:
+            pass  # folder still holds photos, or is already gone
+    _save_draft(d)
+    return jsonify({"draft": d})
+
+
+@app.route("/api/drafts/<draft_id>/photos/<int:index>/move", methods=["POST"])
+def api_draft_move_photo(draft_id, index):
+    """v40: move one draft photo left/right (listing-page arrange arrows).
+    Swaps adjacent entries in the draft's photo order and saves; publish
+    sends imageUrls in this order, so the first photo stays the main
+    one. Edge moves are plain errors; the UI hides those arrows."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    photos = d.get("photos") or []
+    if index < 0 or index >= len(photos):
+        return jsonify({"error": "Photo not found."}), 404
+    data = request.get_json(silent=True) or {}
+    direction = data.get("direction")
+    if direction == "left":
+        if index == 0:
+            return jsonify({"error": "That photo is already first."}), 400
+        photos[index - 1], photos[index] = photos[index], photos[index - 1]
+    elif direction == "right":
+        if index == len(photos) - 1:
+            return jsonify({"error": "That photo is already last."}), 400
+        photos[index + 1], photos[index] = photos[index], photos[index + 1]
+    else:
+        return jsonify({"error": "Move left or right."}), 400
     _save_draft(d)
     return jsonify({"draft": d})
 

@@ -102,6 +102,8 @@ function renderThumbs() {
   selectedFiles.forEach((entry, i) => {
     const wrap = document.createElement("div");
     wrap.className = "thumb-wrap";
+    const frame = document.createElement("div");
+    frame.className = "thumb-img";
     const img = document.createElement("img");
     img.src = entry.url;
     img.alt = "Chosen photo " + (i + 1);
@@ -118,9 +120,33 @@ function renderThumbs() {
     e.textContent = "Edit";
     e.setAttribute("aria-label", "Edit this photo");
     e.addEventListener("click", () => openEditor(i));
-    wrap.appendChild(img);
-    wrap.appendChild(x);
-    wrap.appendChild(e);
+    frame.appendChild(img);
+    frame.appendChild(x);
+    frame.appendChild(e);
+    wrap.appendChild(frame);
+    /* v40: arrange arrows below the photo (edge arrows hidden — the
+       first photo has no left, the last has no right). */
+    const row = document.createElement("div");
+    row.className = "thumb-move-row";
+    if (i > 0) {
+      const l = document.createElement("button");
+      l.type = "button";
+      l.className = "thumb-move";
+      l.textContent = "◀";
+      l.setAttribute("aria-label", "Move photo left");
+      l.addEventListener("click", () => movePhoto(i, "left"));
+      row.appendChild(l);
+    }
+    if (i < selectedFiles.length - 1) {
+      const r = document.createElement("button");
+      r.type = "button";
+      r.className = "thumb-move";
+      r.textContent = "▶";
+      r.setAttribute("aria-label", "Move photo right");
+      r.addEventListener("click", () => movePhoto(i, "right"));
+      row.appendChild(r);
+    }
+    if (row.children.length) wrap.appendChild(row);
     box.appendChild(wrap);
   });
   for (let s = 0; s < skippedCount; s++) {
@@ -144,6 +170,17 @@ function removePhoto(i) {
   selectedFiles.splice(i, 1);
   renderThumbs();
   hideError();
+}
+
+/* v40: arrange picked photos before identifying. Swaps adjacent entries
+   so the order here is the order Identify uploads (first = main). */
+function movePhoto(i, direction) {
+  const j = direction === "left" ? i - 1 : i + 1;
+  if (j < 0 || j >= selectedFiles.length) return;
+  const tmp = selectedFiles[i];
+  selectedFiles[i] = selectedFiles[j];
+  selectedFiles[j] = tmp;
+  renderThumbs();
 }
 
 /* ---------- v18: photo editor (crop + rotate) ---------- */
@@ -570,6 +607,8 @@ function renderDraftPhotos(d) {
   (d.photos || []).forEach((p, i) => {
     const wrap = document.createElement("div");
     wrap.className = "thumb-wrap";
+    const frame = document.createElement("div");
+    frame.className = "thumb-img";
     const img = document.createElement("img");
     img.src = "/photos/" + p;
     img.alt = "Listing photo " + (i + 1);
@@ -579,11 +618,78 @@ function renderDraftPhotos(d) {
     e.textContent = "Edit";
     e.setAttribute("aria-label", "Edit this photo");
     e.addEventListener("click", () => editDraftPhotoInPixel(i));
-    wrap.appendChild(img);
-    wrap.appendChild(e);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "thumb-x";
+    x.textContent = "×";
+    x.setAttribute("aria-label", "Delete this photo");
+    x.addEventListener("click", () => deleteDraftPhoto(i));
+    frame.appendChild(img);
+    frame.appendChild(x);
+    frame.appendChild(e);
+    wrap.appendChild(frame);
+    /* v40: arrange arrows below the photo (edge arrows hidden — the
+       first photo has no left, the last has no right). */
+    const row = document.createElement("div");
+    row.className = "thumb-move-row";
+    const n = (d.photos || []).length;
+    if (i > 0) {
+      const l = document.createElement("button");
+      l.type = "button";
+      l.className = "thumb-move";
+      l.textContent = "◀";
+      l.setAttribute("aria-label", "Move photo left");
+      l.addEventListener("click", () => moveDraftPhoto(i, "left"));
+      row.appendChild(l);
+    }
+    if (i < n - 1) {
+      const r = document.createElement("button");
+      r.type = "button";
+      r.className = "thumb-move";
+      r.textContent = "▶";
+      r.setAttribute("aria-label", "Move photo right");
+      r.addEventListener("click", () => moveDraftPhoto(i, "right"));
+      row.appendChild(r);
+    }
+    if (row.children.length) wrap.appendChild(row);
     box.appendChild(wrap);
   });
   $("draft-photo-count").textContent = photoCountTextFor((d.photos || []).length);
+}
+
+/* v40: delete + arrange on the listing page. Delete removes the photo
+   from the draft immediately (same precedent as the step-1 X: no confirm
+   dialog — a removed photo is re-added with Choose photos or Take
+   photo). Move swaps adjacent photos; publish sends imageUrls in this
+   order, so the first photo is the main one. */
+async function deleteDraftPhoto(i) {
+  if (!draft || !draft.id) return;
+  hideDraftPhotoError();
+  try {
+    const res = await api("/api/drafts/" + draft.id + "/photos/" + i, { method: "DELETE" });
+    draft = res.draft;
+    renderDraftPhotos(draft);
+    $("draft-photo-note").textContent = "Photo removed.";
+    $("draft-photo-note").classList.remove("hidden");
+  } catch (e) {
+    showDraftPhotoError(e.message);
+  }
+}
+
+async function moveDraftPhoto(i, direction) {
+  if (!draft || !draft.id) return;
+  hideDraftPhotoError();
+  try {
+    const res = await api("/api/drafts/" + draft.id + "/photos/" + i + "/move", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction: direction }),
+    });
+    draft = res.draft;
+    renderDraftPhotos(draft);
+  } catch (e) {
+    showDraftPhotoError(e.message);
+  }
 }
 
 function showDraftPhotoError(msg) {
@@ -594,8 +700,9 @@ function showDraftPhotoError(msg) {
 function hideDraftPhotoError() { $("draft-photo-error").classList.add("hidden"); }
 
 /* v36: append files to the loaded draft (listing-page intake). Appends
-   only — the server never replaces or reorders existing photos, and the
-   24 cap is enforced there with a plain message, not a silent drop. */
+   only — an append never replaces existing photos (reorder via the v40
+   move endpoint), and the 24 cap is enforced there with a plain
+   message, not a silent drop. */
 async function uploadDraftPhotos(files) {
   if (!draft || !draft.id) return;
   hideDraftPhotoError();
