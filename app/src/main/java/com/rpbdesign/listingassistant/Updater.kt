@@ -58,7 +58,6 @@ object Updater {
      * complete (offline, non-200, malformed file). onUpToDate/onError are
      * optional: automatic checks pass only onError (toast), manual checks
      * pass both so the user always gets an answer.
-     */
      * v38 (Nov 3, 2026): cache-busting check. v37 (1.36) went live and
      * version.json verified at 37, yet his phone on 1.35 kept saying
      * "You're on the latest version" across restarts: the menu check is

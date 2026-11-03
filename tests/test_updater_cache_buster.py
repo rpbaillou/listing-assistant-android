@@ -134,5 +134,19 @@ class TestNoSecretsInDiff(unittest.TestCase):
             self.assertNotIn(token, UPDATER_SRC.lower())
 
 
+class TestKdocStructureValid(unittest.TestCase):
+    def test_check_doc_comment_has_exactly_one_close(self):
+        # v38 first CI run failed at "Build signed APK" because the
+        # v38 note was inserted AFTER the original KDoc's closing */,
+        # leaving bare "* ..." lines outside any comment — a Kotlin
+        # syntax error no sandbox test caught (kotlinc unavailable).
+        # The check() doc comment must open once and close exactly
+        # once before "fun check(".
+        idx = UPDATER_SRC.index("fun check(")
+        doc_start = UPDATER_SRC.rindex("/**", 0, idx)
+        segment = UPDATER_SRC[doc_start:idx]
+        self.assertEqual(segment.count("*/"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
