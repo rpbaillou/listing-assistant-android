@@ -10,10 +10,17 @@
     <!-- Android 11+ package visibility: without this, resolveActivity() /
          queryIntentActivities() for other apps return null/empty, so the
          in-app camera could never find a camera app ("No camera app found.")
-         even though the phone has one. -->
+         even though the phone has one. v39: the same trap hid photo
+         editors from Edit ("No photo editor found on this phone.") on
+         both the v36 private-provider URI and the v37 MediaStore URI,
+         because ACTION_EDIT was never declared here. -->
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.EDIT" />
+            <data android:mimeType="image/*" />
         </intent>
     </queries>
 
