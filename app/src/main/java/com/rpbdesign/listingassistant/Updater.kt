@@ -59,6 +59,18 @@ object Updater {
      * optional: automatic checks pass only onError (toast), manual checks
      * pass both so the user always gets an answer.
      */
+     * v38 (Nov 3, 2026): cache-busting check. v37 (1.36) went live and
+     * version.json verified at 37, yet his phone on 1.35 kept saying
+     * "You're on the latest version" across restarts: the menu check is
+     * a straight live fetch with no throttle, no saved answer, and no
+     * app cache, and "latest" fires ONLY on a successful fetch of a
+     * versionCode <= installed — so his network/CDN edge was serving a
+     * STALE copy of version.json for 26+ minutes. A fixed URL lets any
+     * CDN/proxy cache serve the old file; a unique URL per check cannot
+     * match a cached key. So every check now appends a unique query
+     * parameter, sets no-cache headers, and disables connection caching.
+     * The toasts and the strict > comparison are unchanged.
+     */
     fun check(
         activity: Activity,
         onUpdate: (UpdateInfo) -> Unit,
@@ -68,9 +80,17 @@ object Updater {
         Thread {
             try {
                 val installedCode = installedVersionCode(activity)
-                val conn = URL(VERSION_URL).openConnection() as HttpURLConnection
+                // Unique cache key per check: raw.githubusercontent.com
+                // serves the same content with a query param (verified
+                // Nov 3, 2026), but no CDN/proxy cache can match a key it
+                // has never seen, so a stale copy can never be served.
+                val freshUrl = "$VERSION_URL?t=${System.currentTimeMillis()}"
+                val conn = URL(freshUrl).openConnection() as HttpURLConnection
                 conn.connectTimeout = 15000
                 conn.readTimeout = 15000
+                conn.useCaches = false
+                conn.setRequestProperty("Cache-Control", "no-cache")
+                conn.setRequestProperty("Pragma", "no-cache")
                 try {
                     if (conn.responseCode != 200) {
                         onError?.let { activity.runOnUiThread { it() } }
