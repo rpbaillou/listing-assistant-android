@@ -154,7 +154,8 @@ const optionValues = () => $("shipping-select").children.map((o) => o.value);
     $("shipping-type-line").textContent === "Charges by weight.");
   check("calculated shows package fields", !hidden("shipping-package"));
   check("calculated shows EMPTY package fields (never from the policy name)",
-    $("p-weight").value === "" && $("p-length").value === "" &&
+    $("p-weight-lb").value === "" && $("p-weight-oz").value === "" &&
+    $("p-length").value === "" &&
     $("p-width").value === "" && $("p-height").value === "");
   check("type line carries no ID numbers",
     !$("shipping-type-line").textContent.includes("111"));
@@ -163,7 +164,8 @@ const optionValues = () => $("shipping-select").children.map((o) => o.value);
   check("flat selects in dropdown", $("shipping-select").value === "222");
   check("flat type line states flat rate",
     $("shipping-type-line").textContent === "Flat rate.");
-  check("flat hides package fields", hidden("shipping-package"));
+  check("v42: flat still shows package fields (always visible now; the weight is saved for records, not sent)",
+    !hidden("shipping-package"));
   $("p-fulfillment").value = "999";
   sandbox.refreshShippingChooser();
   check("unknown number leaves placeholder + details line + package fields",
@@ -187,10 +189,10 @@ const optionValues = () => $("shipping-select").children.map((o) => o.value);
   sandbox.refreshShippingChooser();
   await sandbox.selectShippingPolicy("222");
   check("browse select sets the number box", $("p-fulfillment").value === "222");
-  check("browse select refreshes dropdown to flat + hides package",
+  check("browse select refreshes dropdown to flat + still shows package (v42: always visible)",
     $("shipping-select").value === "222" &&
     $("shipping-type-line").textContent === "Flat rate." &&
-    hidden("shipping-package"));
+    !hidden("shipping-package"));
   check("browse select never publishes",
     !fetchCalls.some((c) => String(c.url).includes("/api/ebay/publish")));
   check("browse select persists via draft autosave",
@@ -224,11 +226,13 @@ const optionValues = () => $("shipping-select").children.map((o) => o.value);
 
   // Package fields stay fully editable: a calculated pick never fills
   // them from the policy name, even when the draft has no values.
-  $("p-weight").value = "";
+  $("p-weight-lb").value = "";
+  $("p-weight-oz").value = "";
   $("p-length").value = "";
   await sandbox.selectShippingPolicy("111");
   check("calculated pick leaves package inputs empty for the seller to fill",
-    $("p-weight").value === "" && $("p-length").value === "");
+    $("p-weight-lb").value === "" && $("p-weight-oz").value === "" &&
+    $("p-length").value === "");
   check("option values still carry the IDs internally (app use only)",
     optionValues().includes("111") && optionValues().includes("222"));
 

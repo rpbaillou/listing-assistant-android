@@ -243,13 +243,15 @@ function setForm(o) {
     !hidden("pc-review-warning") &&
     $("pc-review-warning").textContent.includes("cannot ship"));
   setForm({ domCostType: "CALCULATED" });
-  $("p-weight").value = ""; $("p-length").value = "";
+  $("p-weight-lb").value = ""; $("p-weight-oz").value = "";
+  $("p-length").value = "";
   $("p-width").value = ""; $("p-height").value = "";
   sandbox.showCreateReview();
   check("review calculated without package warns",
     !hidden("pc-review-warning") &&
     $("pc-review-warning").textContent.includes("package weight"));
-  $("p-weight").value = "4"; $("p-length").value = "12";
+  $("p-weight-lb").value = "2"; $("p-weight-oz").value = "8";
+  $("p-length").value = "12";
   $("p-width").value = "9"; $("p-height").value = "1";
   sandbox.showCreateReview();
   check("review calculated with package shows no warning",

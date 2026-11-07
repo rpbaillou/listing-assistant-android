@@ -92,14 +92,16 @@ def main():
 
     # 2. Every flex row wraps (v21 rule).
     for sel in (".btnrow", ".pricerow", ".photobtns", ".attr-row",
-                ".draft-item", ".draft-actions", ".batch-row", ".thumbs"):
+                ".draft-item", ".draft-actions", ".batch-row", ".thumbs",
+                ".ship-row"):
         check("row wraps: %s" % sel,
               rules.get(sel, {}).get("flex-wrap") == "wrap",
               rules.get(sel, {}).get("flex-wrap", "missing"))
 
     # 3. Text/input columns can actually shrink (min-width: 0).
     for sel in (".btnrow > *", ".pricerow input", ".attr-row input",
-                ".draft-item .t", ".batch-row .bt", ".batch-row .bp"):
+                ".draft-item .t", ".batch-row .bt", ".batch-row .bp",
+                ".ship-row > *", ".ship-field"):
         check("shrinks: %s" % sel,
               rules.get(sel, {}).get("min-width") == "0",
               rules.get(sel, {}).get("min-width", "missing"))
@@ -168,6 +170,9 @@ def main():
         ("ok banner", "#145214", "#e6f7e6"),
         ("note text", "#1c1c1e", "#f2f6ff"),
         ("photo remove X", "#ffffff", "#cc0000"),
+        # v42: the open option list of every native select (Android
+        # draws it on a white sheet; the rule keeps it readable).
+        ("select options", "#ffffff", "#1c1c1e"),
     ]
     for name, fg, bg in pairs:
         ratio = contrast(fg, bg)
@@ -188,6 +193,33 @@ def main():
             ("preset apply", "/api/preset", js),
             ("date split helper", "dateHtml", js)):
         check("present: %s" % name, needle in hay)
+
+    # 10. v42 shipping flexibility: the carrier/service pickers and
+    # the lb/oz weight boxes exist; the package section is never
+    # hidden; the select-option safety net is a real rule (not just
+    # colors that happen to appear elsewhere).
+    for name, needle, hay in (
+            ("carrier picker", 'id="ship-carrier"', html),
+            ("service picker", 'id="ship-service"', html),
+            ("pounds box", 'id="p-weight-lb"', html),
+            ("ounces box", 'id="p-weight-oz"', html),
+            ("package length", 'id="p-length"', html),
+            ("carrier find endpoint", "/api/ebay/policy-for-service", js),
+            ("carrier service labels", "carrierServiceLabels", js),
+            ("lb/oz restore", "draftPackageLbOz", js),
+            ("old single weight box gone", 'id="p-weight"', html)):
+        if name == "old single weight box gone":
+            check("present: %s" % name, needle not in hay)
+        else:
+            check("present: %s" % name, needle in hay)
+    check("package section never hidden",
+          not re.search(r'id="shipping-package"[^>]*class="[^"]*hidden',
+                        html))
+    opt_rule = rules.get("select option", {})
+    check("select option rule is dark bg + light text",
+          opt_rule.get("background") == "#1c1c1e" and
+          opt_rule.get("color") in ("#ffffff", "#fff"),
+          str(opt_rule))
 
     print()
     if FAILURES:

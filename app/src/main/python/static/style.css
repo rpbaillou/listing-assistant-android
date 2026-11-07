@@ -33,6 +33,24 @@ input[type=text], input[type=number], textarea, select {
   width: 100%; padding: 0.7rem; font-size: 1rem;
   border: 1px solid #c9c9ce; border-radius: 8px; background: #fff;
 }
+/* v42 (Nov 6, 2026 standing rule): every native <select> must have
+   its <option> elements explicitly styled dark background + light
+   text. The browser draws the OPEN option list on its own white
+   sheet while the options inherit the page text color, so light
+   text on white is the trap this rule kills. This one global rule
+   is the safety net for every select in the app — shipping, policy,
+   condition, units — present and future. The closed select stays
+   white with dark text (the rule above); the open list shows dark
+   rows with white text. Both read cleanly. */
+select option { background: #1c1c1e; color: #ffffff; }
+/* v42: shipping rows from the Diffui design 1 layout — Pounds +
+   Ounces side by side, Length/Width/Height in one row. Rows wrap,
+   fields shrink (min-width: 0), so a narrow phone never clips or
+   side-scrolls. */
+.ship-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.ship-row > * { min-width: 0; }
+.ship-field { flex: 1; min-width: 0; }
+.ship-field label { margin-top: 0.6rem; }
 textarea { resize: vertical; }
 .count { font-weight: 400; color: #666; font-size: 0.85rem; }
 

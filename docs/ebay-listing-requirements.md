@@ -276,3 +276,59 @@ Anything it could not fetch (condition set, required aspects, policy
 read) is a non-blocking note, never a block, and publish proceeds to
 eBay's own verdict. The confirmation dialog (title + price + category)
 still gates every live post; the check never posts anything itself.
+
+## Shipping flexibility, v42 — carrier + service pick, lb/oz weight
+
+The listing page's Shipping section works like eBay's own lister:
+a carrier picker (USPS, UPS, FedEx) plus a service picker per
+carrier, pounds + ounces weight boxes (the way a scale reads it),
+and length/width/height in inches, always visible and saved per
+draft. The saved-policy dropdown stays as the "use one of my usual
+policies" path.
+
+- Service codes are never invented. The app's catalog of 11 codes is
+  attested against eBay's own ShippingService type page examples
+  (USPSPriority, FedEx2Day, UPS3rdDay), the mirrors of eBay's
+  ShippingServiceCode enum (UPSGround, UPS2DayAirAM, UPSNextDay,
+  FedExGround, FedExExpressSaver, USPSParcel, FedExHomeDelivery),
+  and live production fulfillment policies (USPSGroundAdvantage;
+  USPSGround is retired). USPS Priority Express is excluded on
+  purpose: the mirrors disagree on its code (USPSExpress vs
+  USPSExpressMail). USPS First Class is excluded: retired in favor
+  of Ground Advantage. Both stay reachable through "Other (type the
+  code)" on every service select; eBay validates a typed code on
+  create. The account-harvested list (from the seller's own
+  policies) adds any service the account already uses, documented
+  order first, extras after; unclassifiable codes are kept, never
+  dropped.
+- The carrier picker is the weight-driven path: picking carrier +
+  service finds the matching existing policy, and only a policy
+  whose domestic option charges by weight (CALCULATED), carries
+  that service, and has NO international option matches (the eBay
+  International Shipping ONLY decision: a policy with self-ship
+  international must never be picked silently). A match selects it
+  with no review screen, because the policy already exists. No
+  match opens the v41 create form prefilled (calculated, that
+  service, domestic only, no self-ship international) and the
+  review-before-create screen still stands; nothing is created
+  without it. Flat/free policies stay on the saved-policy dropdown.
+- Package rule, relaxed for flat/free: a CALCULATED policy still
+  requires weight + all three dims (eBay needs the full
+  packageWeightAndSize block), and the app still blocks before any
+  upload when it is missing. For flat/free, weight and dims are
+  optional: whatever the seller enters is saved for their records
+  and labels and is NOT sent to eBay (eBay ignores the package for
+  flat), and the UI says so in plain words. Only garbage is flagged
+  for flat: a non-number, a zero or negative number, or a value
+  over the caps (150 lbs, 108 in).
+- Pounds alone stay pounds; any ounces convert to the exact total
+  in ounces (2 lb 8 oz is 40 oz, never a rounded decimal).
+- A policy name never sets the weight. "Calculated 2lb" is only
+  the label the seller gave that policy on eBay.
+- Insurance and signature are NOT in v42; they are a later build,
+  pending a check of what eBay's API actually allows.
+- Display: proper controls only (dropdowns, fields, buttons), no
+  bare-text lists, no ID numbers in display. Every native select's
+  options are dark background with light text (global `select
+  option` rule in the stylesheet), because Android draws the open
+  option list on a white sheet.

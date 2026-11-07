@@ -1306,6 +1306,7 @@ def _policy_cost_type(policy):
 
 def _policy_pick_entry(policy):
     """One pick-list row for a FulfillmentPolicy dict."""
+    service_code = _policy_first_domestic_service(policy)
     return {"id": str(policy.get("fulfillmentPolicyId", "") or "").strip(),
             "name": str(policy.get("name", "") or "").strip(),
             "cost_type": _policy_cost_type(policy),
@@ -1314,7 +1315,14 @@ def _policy_pick_entry(policy):
             # pickup-only policy (which has no cost type) honestly
             # instead of "Unknown type." The gate still reads the raw
             # policy dict, so this display flag changes no gate logic.
-            "local_pickup": bool(policy.get("localPickup"))}
+            "local_pickup": bool(policy.get("localPickup")),
+            # v42: first domestic service + its carrier, so the
+            # listing page can show which carrier/service a saved
+            # policy uses and keep the carrier picker in sync with
+            # the policy dropdown. Display only; the gate still reads
+            # the raw policy dict.
+            "service_code": service_code,
+            "carrier": _carrier_for_service_code(service_code) or ""}
 
 
 def _read_fulfillment_policy(token, policy_id):
@@ -1399,6 +1407,97 @@ def _validate_package(raw):
             "weight": {"value": weight, "unit": unit}}
 
 
+def _fmt_num(value):
+    """A float as a short string ("2" not "2.0", "2.5" stays "2.5")."""
+    return "%g" % value
+
+
+def _parse_package_number(raw):
+    """A package field as a float, None when empty. Raises
+    _PublishValidationError when present but not a number, so a typo
+    surfaces as a plain message instead of a silent zero."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        raise _PublishValidationError(
+            "Package weight and dimensions must be numbers.")
+
+
+def _package_from_lb_oz(raw):
+    """v42: the listing-page weight boxes (pounds + ounces, the way a
+    scale reads it) plus dimensions, into the canonical
+    weight_value/unit shape the validator takes. `raw` carries
+    package_weight_lb, package_weight_oz, package_length,
+    package_width, package_height (strings, any may be empty).
+    Returns None when nothing was entered at all; otherwise the
+    canonical dict — a half-filled block is returned as-is, so the
+    strict validator rejects it for calculated shipping while the
+    lenient one tolerates it for flat. Pounds alone -> POUND; any
+    ounces -> the exact total in OUNCE (2 lb 8 oz is 40 oz, never a
+    rounded decimal)."""
+    lb = _parse_package_number(raw.get("package_weight_lb", ""))
+    oz = _parse_package_number(raw.get("package_weight_oz", ""))
+    length = str(raw.get("package_length", "") or "").strip()
+    width = str(raw.get("package_width", "") or "").strip()
+    height = str(raw.get("package_height", "") or "").strip()
+    if lb is None and oz is None and not length and not width and not height:
+        return None
+    if lb is None and oz is None:
+        weight_value, weight_unit = "", ""
+    elif oz is None:
+        weight_value, weight_unit = _fmt_num(lb), "POUND"
+    else:
+        weight_value = _fmt_num((lb or 0.0) * 16.0 + oz)
+        weight_unit = "OUNCE"
+    return {"weight_value": weight_value, "weight_unit": weight_unit,
+            "length": length, "width": width, "height": height}
+
+
+def _validate_package_lenient(raw):
+    """v42: flat/free check for a package block. Weight and dimensions
+    are optional there — whatever the seller entered is saved for
+    their records and labels, never sent to eBay — so a half-filled
+    block is fine. Only garbage is flagged: a field that is not a
+    number, a zero or negative number, or a value over the sanity
+    caps (150 lbs, 108 in). Returns None; the block is never sent."""
+    if not isinstance(raw, dict):
+        return None
+    weight_raw = str(raw.get("weight_value", "") or "").strip()
+    unit = str(raw.get("weight_unit", "") or "").strip().upper()
+    if weight_raw:
+        try:
+            weight = float(weight_raw)
+        except ValueError:
+            raise _PublishValidationError(
+                "Package weight and dimensions must be numbers.")
+        if not weight > 0:
+            raise _PublishValidationError(
+                "Package weight and dimensions must be above zero.")
+        pounds = weight if unit == "POUND" else weight / 16.0
+        if pounds > 150:
+            raise _PublishValidationError(
+                "That weight or size looks too large — check the numbers.")
+    for key in ("length", "width", "height"):
+        dim_raw = str(raw.get(key, "") or "").strip()
+        if not dim_raw:
+            continue
+        try:
+            dim = float(dim_raw)
+        except ValueError:
+            raise _PublishValidationError(
+                "Package weight and dimensions must be numbers.")
+        if not dim > 0:
+            raise _PublishValidationError(
+                "Package weight and dimensions must be above zero.")
+        if dim > 108:
+            raise _PublishValidationError(
+                "That weight or size looks too large — check the numbers.")
+    return None
+
+
 def _check_fulfillment_policy(token, fulfillment_id, package):
     """Policy gate for a publish (v32, runs before offer creation).
 
@@ -1439,7 +1538,10 @@ def _check_fulfillment_policy(token, fulfillment_id, package):
         return cost_type, _validate_package(package)
     if cost_type == "FLAT_RATE":
         if package is not None:
-            _validate_package(package)  # flag typos, but do not send it
+            # v42: flat rate never uses the weight, so a half-filled
+            # block is fine — it is saved for the seller's records
+            # and labels, not sent. Only garbage is flagged.
+            _validate_package_lenient(package)
         return cost_type, None
     raise _NeedsFulfillmentPolicyChoice(
         "That shipping policy offers no shippable service (local pickup "
@@ -1459,6 +1561,7 @@ def _package_has_content(raw):
     if not isinstance(raw, dict):
         return False
     for key in ("weight_value", "package_weight_value",
+                "package_weight_lb", "package_weight_oz",
                 "length", "package_length",
                 "width", "package_width",
                 "height", "package_height"):
@@ -1469,19 +1572,31 @@ def _package_has_content(raw):
 
 def _draft_package(d):
     """A draft's saved package block (v32 listing-page fields), or None
-    when nothing was entered. Mirrors the single-publish assembly: any
+    when nothing was entered. v42: the pounds + ounces boxes win when
+    either holds a value; otherwise the legacy single value + unit
+    (old drafts) is used. Mirrors the single-publish assembly: any
     field filled means the block is passed along for validation; a
-    half-filled block is rejected there, never silently completed."""
+    half-filled block is rejected for calculated shipping, never
+    silently completed."""
     raw = {k: str(d.get(k, "") or "").strip() for k in (
+        "package_weight_lb", "package_weight_oz",
+        "package_length", "package_width", "package_height")}
+    # Only the lb/oz boxes gate the v42 branch: dims alone must not
+    # route here, or a legacy weight entered without lb/oz would come
+    # back empty (the dims count as content, the weight does not).
+    if str(d.get("package_weight_lb") or "").strip() or \
+            str(d.get("package_weight_oz") or "").strip():
+        return _package_from_lb_oz(raw)
+    legacy = {k: str(d.get(k, "") or "").strip() for k in (
         "package_weight_value", "package_weight_unit",
         "package_length", "package_width", "package_height")}
-    if not _package_has_content(raw):
+    if not _package_has_content(legacy):
         return None
-    return {"weight_value": raw["package_weight_value"],
-            "weight_unit": raw["package_weight_unit"],
-            "length": raw["package_length"],
-            "width": raw["package_width"],
-            "height": raw["package_height"]}
+    return {"weight_value": legacy["package_weight_value"],
+            "weight_unit": legacy["package_weight_unit"],
+            "length": legacy["package_length"],
+            "width": legacy["package_width"],
+            "height": legacy["package_height"]}
 
 
 def _discard_offer(d, token):
@@ -1983,25 +2098,119 @@ def api_ebay_fulfillment_policies():
 #   falling back to a get-by-name read (names are unique).
 
 SERVICE_LABELS = {
+    "USPSGroundAdvantage": "USPS Ground Advantage",
     "USPSPriority": "USPS Priority Mail",
-    "FedEx2Day": "FedEx 2 Day",
+    "USPSParcel": "USPS Parcel Post",
+    "UPSGround": "UPS Ground",
     "UPS3rdDay": "UPS 3 Day Select",
+    "UPS2DayAirAM": "UPS 2nd Day Air",
+    "UPSNextDay": "UPS Next Day Air Saver",
+    "FedExGround": "FedEx Ground",
+    "FedExHomeDelivery": "FedEx Home Delivery",
+    "FedEx2Day": "FedEx 2 Day",
+    "FedExExpressSaver": "FedEx Express Saver",
 }
 
-# Service codes attested in eBay's own ShippingService type page
-# examples. The runtime harvest (below) is the main source; these
-# three are included so the dropdown is never empty on an account
-# whose existing policies carry no service codes.
-DOCUMENTED_DOMESTIC_SERVICES = ["USPSPriority", "FedEx2Day", "UPS3rdDay"]
+# v42: service codes for the listing-page carrier picker, in the order
+# they are shown (most-used first per carrier). EVERY code here is
+# attested, never invented:
+# - USPSPriority, FedEx2Day, UPS3rdDay: eBay's own ShippingService
+#   type page examples (developer.ebay.com/api-docs/sell/account/
+#   types/api:ShippingService).
+# - UPSGround, UPS2DayAirAM, UPSNextDay, FedExGround, FedExExpressSaver:
+#   Bonanza's mirror of eBay's ShippingServiceType enum AND the
+#   ebayapi Ruby gem's mirror of eBay's ShippingServiceCode enum.
+# - USPSParcel: both mirrors above.
+# - FedExHomeDelivery: the ebayapi enum mirror.
+# - USPSGroundAdvantage: live eBay integrations use it in production
+#   fulfillment policies (USPSGround was retired); one integration
+#   notes eBay's advisor rejects it on SOME accounts anyway, so
+#   USPSParcel sits right after it as the fallback, and a rejection
+#   surfaces as a plain error with the form kept (v41 behavior).
+# Deliberately NOT here: USPS Priority Express (the mirrors disagree
+# on the code, USPSExpress vs USPSExpressMail) and USPS First Class
+# (retired in favor of Ground Advantage). Both stay reachable through
+# the "Other (type the code)" option, and eBay validates a typed code
+# on create. The runtime harvest (below) is still the main source:
+# codes on the account's own policies are proven valid there.
+CARRIER_SERVICES = {
+    "USPS": ["USPSGroundAdvantage", "USPSPriority", "USPSParcel"],
+    "UPS": ["UPSGround", "UPS3rdDay", "UPS2DayAirAM", "UPSNextDay"],
+    "FedEx": ["FedExGround", "FedExHomeDelivery", "FedEx2Day",
+              "FedExExpressSaver"],
+}
+CARRIERS = ("USPS", "UPS", "FedEx")
+
+
+def _canonical_carrier(value):
+    """v42: a carrier pick in any case -> the canonical USPS/UPS/FedEx,
+    else None. FedEx is mixed case, so a plain .upper() check against
+    CARRIERS would reject "FEDEX" — this is the one place the mapping
+    lives, and every caller (draft save, policy-for-service) uses it."""
+    c = str(value or "").strip().upper()
+    if c == "USPS":
+        return "USPS"
+    if c == "UPS":
+        return "UPS"
+    if c == "FEDEX":
+        return "FedEx"
+    return None
+
+
+DOCUMENTED_DOMESTIC_SERVICES = [
+    code for carrier in CARRIERS for code in CARRIER_SERVICES[carrier]
+]
+
+
+def _carrier_for_service_code(code):
+    """Carrier for an eBay service code, from its prefix, or None.
+
+    USPS*/UPS*/FedEx* cover every code in the documented catalog and
+    every code the account harvest has ever returned. An unknown code
+    stays unclassified (it still shows, under "other", never dropped).
+    """
+    code = str(code or "").strip()
+    for carrier in CARRIERS:
+        if code.startswith(carrier):
+            return carrier
+    return None
+
+
+def _policy_first_domestic_service(policy):
+    """First domestic service code on a policy dict, or "".
+
+    Used by the pick entry (so the listing page can show which carrier
+    + service a saved policy uses) and by the v42 find-by-service
+    match. Only the DOMESTIC option is read: the app only lists in
+    the US.
+    """
+    if not isinstance(policy, dict):
+        return ""
+    for opt in (policy.get("shippingOptions") or []):
+        if not isinstance(opt, dict):
+            continue
+        if str(opt.get("optionType", "") or "").strip().upper() != "DOMESTIC":
+            continue
+        for svc in (opt.get("shippingServices") or []):
+            if isinstance(svc, dict):
+                code = str(svc.get("shippingServiceCode", "") or "").strip()
+                if code:
+                    return code
+    return ""
 
 
 def _harvest_shipping_services(policies):
     """Service codes actually on the account, split by option type.
 
-    Returns {"domestic": [{"code", "label"}], "international": [...]}.
-    Codes come from the account's own policies (proven valid there);
-    the documented set is added to domestic. Labels are plain names
-    for known codes; an unknown code shows as itself (still meaningful).
+    Returns {"domestic": [{"code", "label"}], "international": [...],
+    "carriers": {"USPS": [...], "UPS": [...], "FedEx": [...]},
+    "other": [...]}. Codes come from the account's own policies
+    (proven valid there); the documented set is added to domestic.
+    Labels are plain names for known codes; an unknown code shows as
+    itself (still meaningful). "carriers" groups the domestic codes
+    per carrier for the v42 listing-page picker (documented order
+    first, harvested extras after, alphabetically); codes no carrier
+    prefix matches land in "other" so they are never dropped.
     """
     domestic = {}
     international = {}
@@ -2029,7 +2238,19 @@ def _harvest_shipping_services(policies):
     def rows(bucket):
         return [{"code": c, "label": bucket[c]} for c in sorted(bucket)]
 
-    return {"domestic": rows(domestic), "international": rows(international)}
+    carriers = {}
+    for carrier in CARRIERS:
+        ordered = [c for c in CARRIER_SERVICES[carrier] if c in domestic]
+        ordered += sorted(c for c in domestic
+                          if _carrier_for_service_code(c) == carrier
+                          and c not in ordered)
+        carriers[carrier] = [{"code": c, "label": domestic[c]}
+                             for c in ordered]
+    other = [{"code": c, "label": domestic[c]} for c in sorted(domestic)
+             if _carrier_for_service_code(c) is None]
+
+    return {"domestic": rows(domestic), "international": rows(international),
+            "carriers": carriers, "other": other}
 
 
 def _money_value(raw):
@@ -2268,6 +2489,77 @@ def api_ebay_shipping_services():
     return jsonify(_harvest_shipping_services(policies))
 
 
+@app.route("/api/ebay/policy-for-service", methods=["POST"])
+def api_ebay_policy_for_service():
+    """v42: find the policy for a carrier + service pick.
+
+    The listing page's carrier picker asks for a policy that ships
+    with this service. Returns {"policy_id", "name"} for the first
+    match, or {"policy_id": null} when no policy fits. A policy only
+    matches when: its domestic option charges by weight (CALCULATED —
+    the carrier picker is the weight-driven path; flat/free policies
+    stay on the saved-policy dropdown), one of its domestic services
+    is the requested code, and it has NO international option (the
+    eBay International Shipping ONLY decision: a policy with
+    self-ship international must never be picked silently). A 403
+    maps to the reconnect signal, exactly like the policy list. When
+    there is no match, the page opens the v41 create form prefilled
+    with this service, and the review-before-create screen still
+    stands — nothing is created by this endpoint.
+    """
+    form = request.get_json(force=True) or {}
+    carrier = _canonical_carrier(form.get("carrier", ""))
+    service_code = str(form.get("service_code", "") or "").strip()
+    if carrier is None:
+        return jsonify({"error": "Pick a carrier first (USPS, UPS, or FedEx)."}), 400
+    if not service_code:
+        return jsonify({"error": "Pick a service first."}), 400
+    token, err = _account_token_or_response()
+    if err is not None:
+        return err
+    try:
+        listing = _ebay_call(
+            "GET",
+            "/sell/account/v1/fulfillment_policy?marketplace_id=EBAY_US",
+            token)
+    except _EbayApiError as exc:
+        if exc.status == 403:
+            return jsonify({"needs_scope_reconnect": True,
+                            "error": SCOPE_RECONNECT_MSG}), 200
+        return jsonify({"error": str(exc)}), 502
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 502
+    policies = []
+    if isinstance(listing, dict):
+        for p in (listing.get("fulfillmentPolicies") or []):
+            if isinstance(p, dict):
+                policies.append(p)
+    for p in policies:
+        options = p.get("shippingOptions") or []
+        domestic = None
+        has_international = False
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            opt_type = str(opt.get("optionType", "") or "").strip().upper()
+            if opt_type == "DOMESTIC":
+                domestic = opt
+            elif opt_type == "INTERNATIONAL":
+                has_international = True
+        if domestic is None or has_international:
+            continue
+        if str(domestic.get("costType", "") or "").strip().upper() != "CALCULATED":
+            continue
+        codes = [str(s.get("shippingServiceCode", "") or "").strip()
+                 for s in (domestic.get("shippingServices") or [])
+                 if isinstance(s, dict)]
+        if service_code in codes:
+            return jsonify({
+                "policy_id": str(p.get("fulfillmentPolicyId", "") or "").strip(),
+                "name": str(p.get("name", "") or "").strip()})
+    return jsonify({"policy_id": None})
+
+
 @app.route("/api/ebay/fulfillment-policies/create", methods=["POST"])
 def api_ebay_fulfillment_policy_create():
     """v41: create a shipping policy on the account, then return it.
@@ -2449,17 +2741,31 @@ def api_ebay_publish():
     # v35: a lone weight-unit default (OUNCE) is not a package — only
     # a weight value or a dimension counts (see _package_has_content).
     # The assembled dict still carries the unit for validation when a
-    # real block is present.
+    # real block is present. v42: the page sends pounds + ounces
+    # boxes; they win when either holds a value, and the legacy
+    # single value + unit is the fallback (old drafts, other callers).
     package = None
     _pkg_raw = {k: str(body.get(k, "") or "").strip() for k in (
-        "package_weight_value", "package_weight_unit",
+        "package_weight_lb", "package_weight_oz",
         "package_length", "package_width", "package_height")}
-    if _package_has_content(_pkg_raw):
-        package = {"weight_value": _pkg_raw["package_weight_value"],
-                   "weight_unit": _pkg_raw["package_weight_unit"],
-                   "length": _pkg_raw["package_length"],
-                   "width": _pkg_raw["package_width"],
-                   "height": _pkg_raw["package_height"]}
+    # v42: the lb/oz conversion raises on a non-numeric weight, so it
+    # sits inside this try — the seller hears a plain 400, never a 500.
+    try:
+        if str(_pkg_raw.get("package_weight_lb") or "").strip() or \
+                str(_pkg_raw.get("package_weight_oz") or "").strip():
+            package = _package_from_lb_oz(_pkg_raw)
+        else:
+            _pkg_legacy = {k: str(body.get(k, "") or "").strip() for k in (
+                "package_weight_value", "package_weight_unit",
+                "package_length", "package_width", "package_height")}
+            if _package_has_content(_pkg_legacy):
+                package = {"weight_value": _pkg_legacy["package_weight_value"],
+                           "weight_unit": _pkg_legacy["package_weight_unit"],
+                           "length": _pkg_legacy["package_length"],
+                           "width": _pkg_legacy["package_width"],
+                           "height": _pkg_legacy["package_height"]}
+    except _PublishValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     try:
         listing_id, listing_url = _do_publish(d, {
@@ -2795,8 +3101,14 @@ def api_draft_save(draft_id):
             d[key] = str(body[key])[:30]
     # v32: package weight + size save with the same draft autosave.
     # Deliberately NOT part of the preset (framed and unframed parcels
-    # differ), so these keys live only on the draft.
-    for key in ("package_weight_value", "package_length",
+    # differ), so these keys live only on the draft. v42: the weight
+    # is pounds + ounces boxes now; the legacy single value + unit
+    # keys are still accepted (old drafts) but no longer written by
+    # the page. The carrier + service pick is saved per draft too, so
+    # it restores — it is a convenience that resolves to a policy,
+    # never the publish itself (the policy number decides).
+    for key in ("package_weight_value", "package_weight_lb",
+                "package_weight_oz", "package_length",
                 "package_width", "package_height"):
         if key in body:
             d[key] = str(body[key])[:20]
@@ -2804,6 +3116,10 @@ def api_draft_save(draft_id):
         u = str(body["package_weight_unit"]).strip().upper()
         if u in ("POUND", "OUNCE"):
             d["package_weight_unit"] = u
+    if "ship_carrier" in body:
+        d["ship_carrier"] = _canonical_carrier(body["ship_carrier"]) or ""
+    if "ship_service_code" in body:
+        d["ship_service_code"] = str(body["ship_service_code"])[:60]
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)

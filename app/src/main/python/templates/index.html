@@ -124,49 +124,79 @@
       <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
 
-    <!-- v35: Shipping dropdown, always visible on the listing page. One
-         compact dropdown showing policy names only — no ID numbers, no
-         duplicated header line: the closed dropdown IS the current
-         selection display. Below it, one short line states flat rate
-         vs charges-by-weight. When the selected policy charges by
-         weight (Calculated), the shipping package fields live here —
-         eBay uses them to work out what the buyer pays for shipping —
-         and they are required before List. The policy name is just the
+    <!-- v42: Shipping, like eBay's lister. Two grouped cards (layout
+         from the Diffui design 1 look, re-skinned to this app's light
+         theme — the Diffui images were dark, this app is light, so
+         only the grouping and control order carry over). Card 1 is
+         carrier + package: a Carrier dropdown (USPS, UPS, FedEx), a
+         Service dropdown per carrier, then weight as Pounds + Ounces
+         side by side and Length/Width/Height in one row. The package
+         fields are ALWAYS visible now — for a policy that charges by
+         weight eBay needs the full package; for flat rate or free
+         shipping whatever is entered is saved for the seller's
+         records and labels and eBay never sees it. Card 2 is the
+         saved-policy dropdown ("use one of my usual policies") plus
+         the create button, unchanged. The policy name is just the
          label the seller gave it on eBay: it never sets the weight.
-         Package weight and size stay fully editable per listing and
-         start empty unless the draft already has saved values. Flat
-         rate and free shipping need no package, so the fields hide
-         for those. A failed publish with an unusable saved policy
-         opens this same dropdown (see openShippingPick in app.js). -->
+         A failed publish with an unusable saved policy opens the
+         card-2 dropdown (see openShippingPick in app.js). -->
     <div id="shipping-section">
       <h3>Shipping</h3>
-      <label>Shipping policy</label>
-      <select id="shipping-select">
-        <option value="">— Pick a shipping policy —</option>
-      </select>
-      <p id="shipping-type-line" class="hint"></p>
-      <p id="shipping-pick-msg" class="hint hidden"></p>
-      <div id="shipping-error" class="error hidden"></div>
-      <div id="shipping-package" class="hidden">
-        <label>Shipping package weight</label>
-        <input id="p-weight" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 4">
-        <label>Weight unit</label>
-        <select id="p-weight-unit">
-          <option value="OUNCE">ounces</option>
-          <option value="POUND">pounds</option>
+      <div class="card">
+        <label>Carrier</label>
+        <select id="ship-carrier">
+          <option value="">— Pick a carrier —</option>
+          <option value="USPS">USPS</option>
+          <option value="UPS">UPS</option>
+          <option value="FedEx">FedEx</option>
         </select>
-        <label>Length (inches)</label>
-        <input id="p-length" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 12">
-        <label>Width (inches)</label>
-        <input id="p-width" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 9">
-        <label>Height (inches)</label>
-        <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
-        <p class="hint">eBay uses this package to work out what the buyer pays for shipping. Enter the real weight and size of the parcel you will send — nothing is guessed.</p>
-        <p class="hint">The policy name is just the label you gave it on eBay. Enter this item's real package weight and size here.</p>
+        <label>Service</label>
+        <select id="ship-service">
+          <option value="">— Pick a carrier first —</option>
+        </select>
+        <input id="ship-service-other" type="text" class="hidden" placeholder="Type the eBay service code">
+        <p id="ship-service-note" class="hint hidden"></p>
+        <div id="shipping-package">
+          <div class="ship-row">
+            <div class="ship-field">
+              <label>Pounds</label>
+              <input id="p-weight-lb" type="number" min="0" step="any" inputmode="decimal" placeholder="e.g. 2">
+            </div>
+            <div class="ship-field">
+              <label>Ounces</label>
+              <input id="p-weight-oz" type="number" min="0" max="15" step="any" inputmode="decimal" placeholder="e.g. 8">
+            </div>
+          </div>
+          <div class="ship-row">
+            <div class="ship-field">
+              <label>Length (in)</label>
+              <input id="p-length" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 12">
+            </div>
+            <div class="ship-field">
+              <label>Width (in)</label>
+              <input id="p-width" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 9">
+            </div>
+            <div class="ship-field">
+              <label>Height (in)</label>
+              <input id="p-height" type="number" min="0.01" step="any" inputmode="decimal" placeholder="e.g. 1">
+            </div>
+          </div>
+          <p class="hint">For a policy that charges by weight, eBay needs the weight and all three sizes. For flat rate or free shipping, whatever you enter here is saved for your records and labels, and eBay does not use it for the price.</p>
+          <p class="hint">The policy name is just the label you gave it on eBay. Enter this item's real package weight and size here.</p>
+        </div>
       </div>
-      <button id="btn-create-policy" class="ghost" type="button">Create a new shipping policy</button>
-      <p id="policy-create-note" class="note hidden"></p>
-      <div id="policy-create-error" class="error hidden"></div>
+      <div class="card">
+        <label>Use one of my usual policies</label>
+        <select id="shipping-select">
+          <option value="">— Pick a shipping policy —</option>
+        </select>
+        <p id="shipping-type-line" class="hint"></p>
+        <p id="shipping-pick-msg" class="hint hidden"></p>
+        <div id="shipping-error" class="error hidden"></div>
+        <button id="btn-create-policy" class="ghost" type="button">Create a new shipping policy</button>
+        <p id="policy-create-note" class="note hidden"></p>
+        <div id="policy-create-error" class="error hidden"></div>
+      </div>
       <!-- v41: create a shipping policy in the app (choose-or-create).
            Full options, all editable, nothing defaulted from a name:
            flat rate or calculated, US plus worldwide self-ship

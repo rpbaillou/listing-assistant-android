@@ -806,14 +806,20 @@ function collectForm() {
     best_offer: $("p-best-offer").checked,
     best_offer_auto_decline: $("p-bo-decline").value.trim(),
     best_offer_auto_accept: $("p-bo-accept").value.trim(),
-    /* v32: package weight + size, per draft (framed and unframed
-       parcels differ, so never a usual setting). Saved by the same
-       draft autosave; sent only for calculated shipping policies. */
-    package_weight_value: $("p-weight").value.trim(),
-    package_weight_unit: $("p-weight-unit").value,
+    /* v42: package weight + size, per draft (framed and unframed
+       parcels differ, so never a usual setting). Weight is pounds +
+       ounces boxes now; the carrier + service pick saves here too,
+       so it restores — it is a convenience that resolves to a
+       policy, never the publish itself. Saved by the same draft
+       autosave; the package block is sent only for calculated
+       shipping policies. */
+    package_weight_lb: $("p-weight-lb").value.trim(),
+    package_weight_oz: $("p-weight-oz").value.trim(),
     package_length: $("p-length").value.trim(),
     package_width: $("p-width").value.trim(),
     package_height: $("p-height").value.trim(),
+    ship_carrier: $("ship-carrier").value,
+    ship_service_code: shipServiceCode(),
   };
 }
 
@@ -1571,19 +1577,27 @@ async function prefillListing() {
   $("p-fulfillment").value = pre.fulfillment;
   $("p-payment").value = pre.payment;
   $("p-return").value = pre.return;
-  /* v32: package fields restore from the draft (per draft, never from
-     the preset — framed and unframed parcels differ). */
-  $("p-weight").value = draft.package_weight_value || "";
-  $("p-weight-unit").value = draft.package_weight_unit || "OUNCE";
+  /* v42: package fields restore from the draft (per draft, never from
+     the preset — framed and unframed parcels differ). Weight is
+     pounds + ounces boxes now; an old draft that only has the legacy
+     single value + unit converts it (2 lb, or 40 oz becomes 2 lb
+     8 oz). The carrier + service pick restores too. */
+  const lbOz = draftPackageLbOz(draft);
+  $("p-weight-lb").value = lbOz.lb;
+  $("p-weight-oz").value = lbOz.oz;
   $("p-length").value = draft.package_length || "";
   $("p-width").value = draft.package_width || "";
   $("p-height").value = draft.package_height || "";
+  $("ship-carrier").value = draft.ship_carrier || "";
+  populateShipService();
+  restoreShipService(draft.ship_service_code || "");
   /* v34: the Shipping dropdown follows the restored policy number, and
      the policy list refreshes every time the listing page opens.
      v35: the Condition dropdown likewise follows the restored
      category. */
   refreshShippingChooser();
   fetchShippingPolicies();
+  fetchCarrierServices();
   fetchCategoryConditions();
   /* Remember the restored category pair so later saves keep its display
      name when the number is untouched. */
@@ -1701,6 +1715,25 @@ $("p-category").addEventListener("input", onCategoryEdited);
 $("shipping-select").addEventListener("change", () => {
   const v = $("shipping-select").value;
   if (v) selectShippingPolicy(v);
+});
+/* v42: carrier + service picker. A new carrier refills the service
+   list and clears the service (a service belongs to its carrier);
+   a picked service finds or creates the policy. Typing in the
+   Other code box re-runs the find, so a typed code works too. */
+$("ship-carrier").addEventListener("change", () => {
+  populateShipService();
+  $("ship-service-note").classList.add("hidden");
+  fetchCarrierServices();
+  scheduleSave();
+});
+$("ship-service").addEventListener("change", () => {
+  const v = $("ship-service").value;
+  $("ship-service-other").classList.toggle("hidden", v !== "__OTHER__");
+  if (v === "__OTHER__") $("ship-service-other").focus();
+  else onShipServicePicked();
+});
+$("ship-service-other").addEventListener("change", () => {
+  if ($("ship-service").value === "__OTHER__") onShipServicePicked();
 });
 $("p-fulfillment").addEventListener("input", refreshShippingChooser);
 $("required-aspects").addEventListener("input", scheduleSave);
@@ -1955,9 +1988,10 @@ $("btn-publish").addEventListener("click", async () => {
       best_offer: $("p-best-offer").checked,
       best_offer_auto_decline: $("p-bo-decline").value.trim(),
       best_offer_auto_accept: $("p-bo-accept").value.trim(),
-      /* v32: package weight + size for calculated shipping policies. */
-      package_weight_value: $("p-weight").value.trim(),
-      package_weight_unit: $("p-weight-unit").value,
+      /* v42: package weight + size, pounds + ounces boxes. Saved
+         per draft; sent only for calculated shipping policies. */
+      package_weight_lb: $("p-weight-lb").value.trim(),
+      package_weight_oz: $("p-weight-oz").value.trim(),
       package_length: $("p-length").value.trim(),
       package_width: $("p-width").value.trim(),
       package_height: $("p-height").value.trim(),
@@ -2153,18 +2187,16 @@ function renderShippingDropdown() {
 }
 
 function refreshShippingChooser() {
-  /* v35: the dropdown value + type line + package visibility follow
-     the shipping number box. Known flat/free/pickup policies hide the
-     package fields (they are not sent for those); calculated shows
-     them; an unknown number shows them too, so a weight can be
-     entered before the gate reads the policy at publish time. A
-     hand-typed number that matches a fetched policy selects it in the
+  /* v35: the dropdown value + type line follow the shipping number
+     box. v42: the package fields are ALWAYS visible now (they hold
+     the weight for calculated policies and the seller's own record
+     for flat/free), so nothing here hides them anymore. A hand-typed
+     number that matches a fetched policy selects it in the
      dropdown; one that does not match leaves the placeholder, and
      the publish gate flags it with the pick message. */
   const selected = ($("p-fulfillment").value || "").trim();
   const sel = $("shipping-select");
   const line = $("shipping-type-line");
-  const pkg = $("shipping-package");
   const match = shippingPolicies.find((p) => p.id === selected);
   if (shippingPolicies.length) {
     sel.value = match ? selected : "";
@@ -2179,8 +2211,255 @@ function refreshShippingChooser() {
   } else {
     line.textContent = "Details not loaded yet.";
   }
-  const showPackage = !match || match.cost_type === "CALCULATED";
-  pkg.classList.toggle("hidden", !showPackage);
+  /* v42: the carrier + service pickers follow the selected policy
+     (its first domestic service), so the two controls never
+     disagree. A carrier pick still waiting on its policy (the
+     create form is open) is left alone: no policy is selected yet. */
+  if (match && match.service_code) {
+    syncShipPickers(match.carrier, match.service_code);
+  }
+}
+
+/* v42: carrier + service picker (like eBay's lister). The carrier
+   picker drives the service picker; picking a service finds the
+   matching policy on the account (a domestic-only policy that
+   charges by weight and offers that service) or opens the v41
+   create form prefilled with it. The pickers are a convenience that
+   resolves to a policy — the policy number in the box below is
+   still what List sends. Top-level function declarations (not const
+   arrows) so the node harness can call them directly, like the v35
+   chooser functions. */
+let carrierServices = { USPS: [], UPS: [], FedEx: [] };
+let carrierServicesOther = [];
+let carrierServicesFetched = false;
+let carrierServicesInFlight = false;
+let createFromCarrierPick = false;
+let pendingShipService = "";
+
+function carrierServiceLabels() {
+  return { "USPSGroundAdvantage": "USPS Ground Advantage",
+           "USPSPriority": "USPS Priority Mail",
+           "USPSParcel": "USPS Parcel Post",
+           "UPSGround": "UPS Ground",
+           "UPS3rdDay": "UPS 3 Day Select",
+           "UPS2DayAirAM": "UPS 2nd Day Air",
+           "UPSNextDay": "UPS Next Day Air Saver",
+           "FedExGround": "FedEx Ground",
+           "FedExHomeDelivery": "FedEx Home Delivery",
+           "FedEx2Day": "FedEx 2 Day",
+           "FedExExpressSaver": "FedEx Express Saver" };
+}
+
+async function fetchCarrierServices() {
+  /* One fetch per listing page open, alongside the policy list. A
+     failure is non-fatal: the service picker keeps its placeholder
+     plus the Other box, and the saved-policy dropdown below still
+     works. The next carrier change retries the fetch. */
+  if (carrierServicesFetched || carrierServicesInFlight) return;
+  carrierServicesInFlight = true;
+  try {
+    const r = await api("/api/ebay/shipping-services");
+    if (r.carriers) {
+      carrierServices = { USPS: r.carriers.USPS || [], UPS: r.carriers.UPS || [],
+                          FedEx: r.carriers.FedEx || [] };
+      carrierServicesOther = r.other || [];
+    } else if (r.domestic) {
+      const labels = carrierServiceLabels();
+      carrierServices = { USPS: [], UPS: [], FedEx: [] };
+      (r.domestic || []).forEach((s) => {
+        const carrier = (s.code || "").indexOf("USPS") === 0 ? "USPS"
+          : (s.code || "").indexOf("UPS") === 0 ? "UPS"
+          : (s.code || "").indexOf("FedEx") === 0 ? "FedEx" : "";
+        if (carrier) carrierServices[carrier].push(s);
+        else carrierServicesOther.push(s);
+      });
+    }
+    carrierServicesFetched = true;
+    populateShipService();
+    if (pendingShipService) {
+      const code = pendingShipService;
+      pendingShipService = "";
+      restoreShipService(code);
+    }
+  } catch (e) {
+    /* Leave the picker as-is; the note below the service box says so
+       only once the seller picks a carrier. */
+  } finally {
+    carrierServicesInFlight = false;
+  }
+}
+
+function serviceListed(code) {
+  const sel = $("ship-service");
+  return (sel.children || []).some((o) => o.value === code);
+}
+
+function populateShipService() {
+  /* Fill the service dropdown for the picked carrier: that carrier's
+     services (harvested from the account first, documented fallback
+     after — the server orders them), plus any unclassified account
+     services, plus the Other box, same pattern as the v41 create
+     form, so no needed service is unreachable. */
+  const carrier = $("ship-carrier").value;
+  const sel = $("ship-service");
+  sel.innerHTML = "";
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = carrier ? "— Pick a service —" : "— Pick a carrier first —";
+  sel.appendChild(ph);
+  const list = (carrierServices[carrier] || []).slice();
+  (carrierServicesOther || []).forEach((s) => {
+    if (!list.some((x) => x.code === s.code)) list.push(s);
+  });
+  list.forEach((s) => {
+    const o = document.createElement("option");
+    o.value = s.code;
+    o.textContent = s.label || createServiceLabel(s.code);
+    sel.appendChild(o);
+  });
+  const other = document.createElement("option");
+  other.value = "__OTHER__";
+  other.textContent = "Other (type the code)";
+  sel.appendChild(other);
+  sel.value = "";
+  $("ship-service-other").value = "";
+  $("ship-service-other").classList.add("hidden");
+}
+
+function shipServiceCode() {
+  /* The effective service code: the dropdown value, or the typed
+     code when Other is picked. "" when nothing is picked. */
+  const v = $("ship-service").value;
+  if (v === "__OTHER__") return ($("ship-service-other").value || "").trim();
+  return v || "";
+}
+
+function restoreShipService(code) {
+  /* Select a service code in the picker: the dropdown value when
+     the code is listed, else the Other box with the code typed in.
+     When the service list has not loaded yet, park the code and
+     apply it once the fetch lands. */
+  const sel = $("ship-service");
+  const other = $("ship-service-other");
+  if (!code) {
+    sel.value = "";
+    other.value = "";
+    other.classList.add("hidden");
+    return;
+  }
+  if (!carrierServicesFetched) { pendingShipService = code; return; }
+  if (serviceListed(code)) {
+    sel.value = code;
+    other.value = "";
+    other.classList.add("hidden");
+  } else {
+    sel.value = "__OTHER__";
+    other.value = code;
+    other.classList.remove("hidden");
+  }
+}
+
+function syncShipPickers(carrier, code) {
+  /* The selected policy's carrier + service, shown in the pickers.
+     Only runs when the policy actually carries a service. */
+  if (!carrier || !code) return;
+  if ($("ship-carrier").value !== carrier) {
+    $("ship-carrier").value = carrier;
+    populateShipService();
+  }
+  restoreShipService(code);
+}
+
+function draftPackageLbOz(draft) {
+  /* v42: pounds + ounces for the weight boxes. New drafts carry
+     package_weight_lb/oz; an old draft with only the legacy single
+     value + unit converts it (POUND 2 -> 2 lb; OUNCE 40 -> 2 lb
+     8 oz). A bad saved value restores empty, never a wrong weight. */
+  const lb = ((draft.package_weight_lb || "").toString()).trim();
+  const oz = ((draft.package_weight_oz || "").toString()).trim();
+  if (lb || oz) return { lb: lb, oz: oz };
+  const value = ((draft.package_weight_value || "").toString()).trim();
+  const unit = ((draft.package_weight_unit || "OUNCE").toString()).trim().toUpperCase();
+  if (!value) return { lb: "", oz: "" };
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return { lb: "", oz: "" };
+  if (unit === "POUND") return { lb: String(n), oz: "" };
+  const whole = Math.floor(n / 16);
+  const rest = n - whole * 16;
+  return { lb: whole ? String(whole) : "", oz: rest ? String(rest) : "" };
+}
+
+function shippingPackageComplete() {
+  /* Weight (pounds or ounces) plus all three sizes filled. */
+  return !!($("p-weight-lb").value.trim() || $("p-weight-oz").value.trim()) &&
+    !!$("p-length").value.trim() && !!$("p-width").value.trim() &&
+    !!$("p-height").value.trim();
+}
+
+async function onShipServicePicked() {
+  /* Carrier + service picked: find the matching policy. A match
+     selects it (no review — the policy already exists). No match
+     opens the v41 create form prefilled with this service, and the
+     review-before-create screen still stands. */
+  const carrier = $("ship-carrier").value;
+  const code = shipServiceCode();
+  const note = $("ship-service-note");
+  note.classList.add("hidden");
+  if (!carrier || !code) return;
+  await saveDraft();
+  let r;
+  try {
+    r = await api("/api/ebay/policy-for-service",
+                  { method: "POST", body: JSON.stringify({ carrier: carrier, service_code: code }) });
+  } catch (e) {
+    note.textContent = "Could not check your policies (" + e.message + "). Pick one from your usual policies below.";
+    note.classList.remove("hidden");
+    return;
+  }
+  if (r.needs_scope_reconnect) {
+    note.innerHTML = "<p style='margin:0'>" + esc(r.error ||
+      "The app needs one new permission to read your shipping policies.") +
+      "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
+    note.classList.remove("hidden");
+    return;
+  }
+  if (r.policy_id) {
+    note.textContent = "Using your policy: " + (r.name || "that service") + ".";
+    note.classList.remove("hidden");
+    await selectShippingPolicy(r.policy_id);
+    return;
+  }
+  note.textContent = "No policy with that service yet — check the details below and confirm to create one.";
+  note.classList.remove("hidden");
+  openCreateFormPrefilled(carrier, code);
+}
+
+async function openCreateFormPrefilled(carrier, code) {
+  /* The v41 create form, prefilled from a carrier + service pick:
+     calculated, that service, domestic only, no self-ship
+     international (eBay International Shipping covers it). The name
+     is a suggestion the seller can change; handling time is left
+     empty for the seller to fill. Review-before-create still stands. */
+  await openCreateForm();
+  createFromCarrierPick = true;
+  const label = createServiceLabel(code);
+  if (!$("pc-name").value) $("pc-name").value = "Calculated " + label;
+  $("pc-dom-cost-type").value = "CALCULATED";
+  const dom1 = $("pc-dom-service-1");
+  const listed = (dom1.children || []).some((o) => o.value === code);
+  if (listed) {
+    dom1.value = code;
+    $("pc-dom-service-1-other").value = "";
+    $("pc-dom-service-1-other").classList.add("hidden");
+  } else {
+    dom1.value = "__OTHER__";
+    $("pc-dom-service-1-other").value = code;
+    $("pc-dom-service-1-other").classList.remove("hidden");
+  }
+  $("pc-international").checked = false;
+  $("pc-local-pickup").checked = false;
+  $("pc-pickup-only").checked = false;
+  refreshCreateFormVisibility();
 }
 
 function openShippingPick(policies, message, problems) {
@@ -2294,9 +2573,17 @@ let pendingCreateForm = null;
 let createRetry = false;
 
 function createServiceLabel(code) {
-  const labels = { "USPSPriority": "USPS Priority Mail",
+  const labels = { "USPSGroundAdvantage": "USPS Ground Advantage",
+                   "USPSPriority": "USPS Priority Mail",
+                   "USPSParcel": "USPS Parcel Post",
+                   "UPSGround": "UPS Ground",
+                   "UPS3rdDay": "UPS 3 Day Select",
+                   "UPS2DayAirAM": "UPS 2nd Day Air",
+                   "UPSNextDay": "UPS Next Day Air Saver",
+                   "FedExGround": "FedEx Ground",
+                   "FedExHomeDelivery": "FedEx Home Delivery",
                    "FedEx2Day": "FedEx 2 Day",
-                   "UPS3rdDay": "UPS 3 Day Select" };
+                   "FedExExpressSaver": "FedEx Express Saver" };
   return labels[code] || code;
 }
 
@@ -2459,7 +2746,7 @@ function showCreateReview() {
     warn.textContent = "Local pickup only — this policy cannot ship a listing. The publish check will flag it if you try to list with it.";
     warn.classList.remove("hidden");
   } else if (collected.form.dom_cost_type === "CALCULATED"
-             && (!$("p-weight").value || !$("p-length").value || !$("p-width").value || !$("p-height").value)) {
+             && !shippingPackageComplete()) {
     warn.textContent = "Calculated: enter this item's package weight and size under Shipping before listing, or the publish check will stop you.";
     warn.classList.remove("hidden");
   } else {
@@ -2470,12 +2757,22 @@ function showCreateReview() {
 }
 
 function cancelCreateForm() {
-  /* Cancel discards: no policy created, draft untouched, form cleared. */
+  /* Cancel discards: no policy created, draft untouched, form cleared.
+     v42: when the form was opened from a carrier + service pick, the
+     pick is cleared too — a carrier choice with no policy behind it
+     must not sit on the listing page looking chosen. */
   pendingCreateForm = null;
   createRetry = false;
   $("policy-create-form").classList.add("hidden");
   $("policy-create-review").classList.add("hidden");
   $("policy-create-error").classList.add("hidden");
+  if (createFromCarrierPick) {
+    createFromCarrierPick = false;
+    $("ship-carrier").value = "";
+    populateShipService();
+    $("ship-service-note").classList.add("hidden");
+    scheduleSave();
+  }
   ["pc-name", "pc-description", "pc-dom-service-1-other", "pc-dom-service-2-other",
    "pc-dom-cost-1", "pc-dom-cost-2", "pc-intl-service-1-other", "pc-intl-service-2-other",
    "pc-intl-cost-1", "pc-intl-cost-2", "pc-handling"].forEach((id) => { $(id).value = ""; });
@@ -2487,6 +2784,9 @@ function cancelCreateForm() {
 }
 
 async function openCreateForm() {
+  /* A plain open (the Create button) is not a carrier pick; the
+     prefilled path sets the flag again after this returns. */
+  createFromCarrierPick = false;
   const errEl = $("policy-create-error");
   errEl.classList.add("hidden");
   $("policy-create-note").classList.add("hidden");
@@ -2582,6 +2882,7 @@ async function confirmCreatePolicy() {
     renderShippingDropdown();
     pendingCreateForm = null;
     createRetry = false;
+    createFromCarrierPick = false;
     $("policy-create-review").classList.add("hidden");
     $("policy-create-form").classList.add("hidden");
     await selectShippingPolicy(data.policy_id);
