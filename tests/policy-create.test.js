@@ -166,6 +166,13 @@ function setForm(o) {
   setForm({ name: "" });
   check("collect missing name errors",
     sandbox.collectPolicyCreateForm().errors.some((e) => e.includes("name")));
+  // v47: eBay caps policy names at 64 characters (the live 20403).
+  setForm({ name: "x".repeat(65) });
+  check("collect name over 64 characters errors",
+    sandbox.collectPolicyCreateForm().errors.some((e) => e.includes("64")));
+  setForm({ name: "x".repeat(64) });
+  check("collect name of exactly 64 characters passes",
+    sandbox.collectPolicyCreateForm().errors.length === 0);
   setForm({ domCost1: "abc" });
   check("collect bad cost errors",
     sandbox.collectPolicyCreateForm().errors.some((e) => e.includes("cost")));

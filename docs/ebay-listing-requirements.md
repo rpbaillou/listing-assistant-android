@@ -157,7 +157,8 @@ Sources:
   the body, not headers, so the ID is read from the payload and
   falls back to a get-by-name read (names are unique).
 - Request fields: `name` (required, unique — a reuse answers 409 /
-  error 20418), `marketplaceId` (`EBAY_US`), `handlingTime`
+  error 20418; max 64 characters, eBay's limit — v47 corrected the
+  app's old 100 cap), `marketplaceId` (`EBAY_US`), `handlingTime`
   (conditionally required when shipping options are offered; NOT
   applicable for local-pickup-only or freight), `localPickup`,
   `description` (max 250, seller-only, never shown to buyers),
@@ -441,3 +442,35 @@ policies" path.
   Listed section only knows drafts the app published
   (`ebay_listing_id` saved on publish); a draft listed outside
   the app stays in Drafts.
+
+## Policy create 20403 — v47
+
+- Live failure on 1.45 (Nov 8): creating a shipping policy
+  answered eBay error 20403 with the message "Invalid ." — the
+  field name came back empty. eBay's official Account API spec
+  lists createFulfillmentPolicy 400 errors as 20400 "Invalid
+  request.", 20401 "Missing field {fieldName}.", 20402 "Invalid
+  input.", 20403 "Invalid {fieldName}." — so the empty field name
+  means eBay did not substitute it into the message. eBay's
+  standard error format carries an optional `parameters` array of
+  name/value pairs; the app's `_plain_ebay_error` only read
+  message + errorId and dropped `parameters`, so the field never
+  reached the screen. v47 surfaces the parameters in plain words
+  on the generic fallback and on every Details-carrying rewrite
+  branch, capped at 160 characters, output only (never fed into
+  keyword matching). A missing `categoryTypes` is ruled out as the
+  cause: that would be 20401 "Missing field", not 20403, so it is
+  not sent. A retired FedExSmartPost code is weakened, not proven:
+  isdntek's eBay shipping-code table still lists FedExSmartPost,
+  and the app's codes come from live GETs of his own policies or
+  the documented set; no service code changed.
+- The long policy name is the leading suspect but NOT proven (the
+  full name was not visible in the screenshot). eBay's official
+  FulfillmentPolicyRequest caps `name` at 64 characters; the app
+  allowed 100 and the name input had no maxlength at all. v47
+  caps the name at 64 in all three places: server validation in
+  `_build_fulfillment_policy_body`, `maxlength="64"` on `#pc-name`,
+  and the client-side `collectPolicyCreateForm` check mirroring
+  the server. The review screen already shows the full name with
+  no truncation, and the prefilled "Calculated " + label name
+  cannot exceed 64 (labels are short).

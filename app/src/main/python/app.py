@@ -503,6 +503,7 @@ def _plain_ebay_error(resp):
     mention "category", "condition", or "image" in passing, so those words
     alone must not trigger a rewrite — otherwise eBay's message + errorId
     is shown verbatim."""
+    errs = []
     try:
         body = resp.json()
         errs = body.get("errors") or []
@@ -510,6 +511,27 @@ def _plain_ebay_error(resp):
         err_id = str(errs[0].get("errorId", "")) if errs else ""
     except ValueError:
         msg, err_id = resp.text[:300], ""
+    # v47: eBay's error format carries an optional `parameters` array
+    # of name/value pairs (the field eBay rejected and the value it
+    # saw). The live 20403 on Nov 8 rendered as "Invalid ." because
+    # the field name never reached the screen: this helper only read
+    # message + errorId. Surface the parameters in plain words so
+    # the next 20403 names its field. Parameters carry field names
+    # and values only, never headers or tokens. They are output only,
+    # never fed into the keyword matching below.
+    params = []
+    first_err = errs[0] if errs else {}
+    raw_params = first_err.get("parameters") if isinstance(first_err, dict) else None
+    if isinstance(raw_params, list):
+        for p in raw_params:
+            if isinstance(p, dict):
+                nm = str(p.get("name", "") or "").strip()
+                val = str(p.get("value", "") or "").strip()
+                if nm or val:
+                    params.append(f"{nm}: {val}" if nm and val else (nm or val))
+    params_text = ""
+    if params:
+        params_text = " Details: " + "; ".join(params)[:160]
     code = f" (error {err_id})" if err_id else ""
     low = (msg + " " + err_id).lower()
     if err_id == "190013":
@@ -532,24 +554,24 @@ def _plain_ebay_error(resp):
     if err_id == "25021":
         return ("That condition choice isn't allowed for this category. "
                 "Pick a different condition." + code +
-                ". Details: " + msg[:160])
+                ". Details: " + msg[:160] + params_text)
     if "condition" in low and not aspecty:
         return ("eBay needs more condition detail for this category. Try a different "
-                "condition choice. Details: " + msg[:160] + code)
+                "condition choice. Details: " + msg[:160] + code + params_text)
     if "categor" in low and not aspecty:
         return ("eBay did not accept that category. Tap Suggest next to the category "
-                "field and pick one from the list. Details: " + msg[:160] + code)
+                "field and pick one from the list. Details: " + msg[:160] + code + params_text)
     if "image" in low and not aspecty:
         return ("eBay rejected a photo. Make sure every photo is a normal JPG under "
-                "12 MB. Details: " + msg[:160] + code)
+                "12 MB. Details: " + msg[:160] + code + params_text)
     if "title" in low and not aspecty:
         return ("eBay did not accept the title. Keep it under 80 characters with no "
-                "strange symbols. Details: " + msg[:160] + code)
+                "strange symbols. Details: " + msg[:160] + code + params_text)
     if resp.status_code in (401, 403):
         return ("eBay refused the sign-in for this action. Tap Connect eBay again in "
                 "this browser, then retry." + code)
     return ("eBay said" + (f" (error {err_id})" if err_id else "") + ": " +
-            (msg[:220] if msg else f"error {resp.status_code}"))
+            (msg[:220] if msg else f"error {resp.status_code}") + params_text)
 
 
 class _EbayApiError(RuntimeError):
@@ -2350,9 +2372,13 @@ def _build_fulfillment_policy_body(form):
     name = str(form.get("name", "") or "").strip()
     if not name:
         raise _PublishValidationError("Give the new policy a name.")
-    if len(name) > 100:
+    # v47: eBay's official FulfillmentPolicyRequest caps the name at 64
+    # characters; the app used to allow 100, so a long name reached
+    # eBay and came back as error 20403 "Invalid ." (live Nov 8).
+    if len(name) > 64:
         raise _PublishValidationError(
-            "Keep the policy name under 100 characters.")
+            "Keep the policy name under 64 characters. "
+            "That is eBay's limit.")
     description = str(form.get("description", "") or "").strip()
     if len(description) > 250:
         raise _PublishValidationError(

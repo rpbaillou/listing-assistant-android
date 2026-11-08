@@ -2790,6 +2790,10 @@ function collectPolicyCreateForm() {
   const form = {};
   form.name = ($("pc-name").value || "").trim();
   if (!form.name) errors.push("Give the new policy a name.");
+  /* v47: eBay caps policy names at 64 characters; mirror the server
+     cap so the form blocks before POST, instead of eBay answering
+     20403 on a long name. */
+  if (form.name.length > 64) errors.push("Keep the policy name under 64 characters. That is eBay's limit.");
   form.description = ($("pc-description").value || "").trim();
   if (form.description.length > 250) errors.push("Keep the policy description under 250 characters.");
   form.pickup_only = !!$("pc-pickup-only").checked;
