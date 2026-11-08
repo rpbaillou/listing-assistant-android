@@ -3083,12 +3083,23 @@ def api_draft_list():
         try:
             with open(os.path.join(DRAFTS_DIR, fn), encoding="utf-8") as f:
                 d = json.load(f)
+            # v45: sort key is the date shown on the row. "updated" is
+            # stamped on every save; "created" is the fallback for a
+            # draft that somehow lacks it. ISO strings sort correctly
+            # as strings. A draft missing both dates gets "" and sorts
+            # last. Filenames are random UUIDs, so the old
+            # reverse-filename order was effectively random.
             out.append({"id": d["id"], "title": d.get("title", "(untitled)"),
                         "updated": d.get("updated", ""),
                         "listed": bool(d.get("ebay_listing_id")),
-                        "thumb": d["photos"][0] if d.get("photos") else None})
+                        "thumb": d["photos"][0] if d.get("photos") else None,
+                        "_sort": str(d.get("updated") or d.get("created")
+                                     or "")})
         except (OSError, KeyError, ValueError):
             continue
+    out.sort(key=lambda e: e["_sort"], reverse=True)
+    for e in out:
+        del e["_sort"]
     return jsonify({"drafts": out})
 
 

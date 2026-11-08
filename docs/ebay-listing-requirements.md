@@ -409,3 +409,17 @@ policies" path.
   with the arrows. Fit on a narrow phone width is unchanged
   (two 128px thumbs plus gap fit in 288px of content at 320px
   wide); the fit check still passes.
+
+## Drafts list order — v45
+
+- The drafts list ("My drafts") shows newest first, by the date
+  shown on each row. The list endpoint (`GET /api/drafts`) used
+  to iterate `sorted(os.listdir(DRAFTS_DIR), reverse=True)`, but
+  draft files are named `<random-uuid>.json`, so that order was
+  effectively random. It now sorts by the draft's `updated`
+  timestamp descending (ISO strings sort correctly as strings),
+  falling back to `created` for a draft that lacks `updated`, and
+  a draft missing both dates sorts last. "Newest" means most
+  recently updated, so a draft he just opened or edited jumps to
+  the top. The listing page renders drafts in server order, so no
+  client change was needed.
