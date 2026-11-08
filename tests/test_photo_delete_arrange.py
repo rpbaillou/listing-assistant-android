@@ -5,7 +5,8 @@ delete or reorder endpoint, so a saved draft's photos could neither be
 deleted nor reordered. These tests pin the server side: delete removes
 the right entry AND its file, renumbers survivors so a later append
 never overwrites one, and preserves ebay_* fields; move swaps adjacent
-entries and persists; bad indexes/directions are plain errors that
+entries (direction) or lands a photo at a final index ("to", v44 drag
+reorder) and persists; bad indexes/directions are plain errors that
 leave the draft unchanged; publish sends imageUrls in draft order
 (first = main); a zero-photo draft is blocked by the readiness report.
 Storage dirs are monkeypatched to a temp dir per test, so nothing here
@@ -202,6 +203,47 @@ class DeleteArrangeTestCase(unittest.TestCase):
         self.assertEqual(self.client.post(
             "/api/drafts/d1/photos/9/move",
             json={"direction": "left"}).status_code, 404)
+
+    # ---- move by "to" (v44 drag reorder) ----
+
+    def test_move_to_lands_at_final_index_and_persists(self):
+        for i in (1, 2, 3, 4):
+            self._photo_file(f"d1/{i}.jpg")
+        self._draft(["d1/1.jpg", "d1/2.jpg", "d1/3.jpg", "d1/4.jpg"])
+        resp = self.client.post("/api/drafts/d1/photos/0/move",
+                                json={"to": 3})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["draft"]["photos"],
+                         ["d1/2.jpg", "d1/3.jpg", "d1/4.jpg", "d1/1.jpg"])
+        self.assertEqual(m._load_draft("d1")["photos"],
+                         ["d1/2.jpg", "d1/3.jpg", "d1/4.jpg", "d1/1.jpg"])
+        resp = self.client.post("/api/drafts/d1/photos/3/move",
+                                json={"to": 0})
+        self.assertEqual(resp.get_json()["draft"]["photos"],
+                         ["d1/1.jpg", "d1/2.jpg", "d1/3.jpg", "d1/4.jpg"])
+
+    def test_move_to_same_slot_is_a_noop_success(self):
+        for i in (1, 2):
+            self._photo_file(f"d1/{i}.jpg")
+        self._draft(["d1/1.jpg", "d1/2.jpg"])
+        resp = self.client.post("/api/drafts/d1/photos/1/move",
+                                json={"to": 1})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["draft"]["photos"],
+                         ["d1/1.jpg", "d1/2.jpg"])
+
+    def test_move_to_out_of_range_or_bad_type_is_a_plain_error(self):
+        for i in (1, 2):
+            self._photo_file(f"d1/{i}.jpg")
+        self._draft(["d1/1.jpg", "d1/2.jpg"])
+        for bad in (2, -1, "1", True, None):
+            resp = self.client.post("/api/drafts/d1/photos/0/move",
+                                    json={"to": bad})
+            # None means "no to given": falls through to direction, which
+            # is also missing, so the same 400 shape applies.
+            self.assertEqual(resp.status_code, 400)
+        self.assertEqual(m._load_draft("d1")["photos"],
+                         ["d1/1.jpg", "d1/2.jpg"])
 
     # ---- publish order ----
 

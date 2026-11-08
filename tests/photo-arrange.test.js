@@ -1,11 +1,13 @@
-/* v40: node tests for draft photo Delete + Move left/right in
+/* v44: node tests for draft photo Delete + drag to reorder in
    static/app.js. Same vm-harness pattern as multi-photo.test.js, but
-   elements record their listeners so clicks can be fired: Delete calls
-   the DELETE endpoint and shows "Photo removed." with an updated count;
-   Move calls the move endpoint and re-renders in the new order; edge
-   arrows are hidden (first photo has no left, last has no right);
-   step-1 arrows reorder selectedFiles. Run: node tests/photo-arrange.test.js
-   (exit 0 = pass). */
+   elements record their listeners so clicks and pointer drags can be
+   fired: Delete calls the DELETE endpoint and shows "Photo removed."
+   with an updated count; a drag calls the move endpoint with {"to": n}
+   and re-renders in the new order; a tap never moves anything; the
+   v40 ◀ ▶ buttons are gone, so no move row exists anywhere; step-1
+   drags reorder selectedFiles, and the pure drag helpers
+   (moveArrayItem, dragFinalIndex) are pinned directly. Run:
+   node tests/photo-arrange.test.js (exit 0 = pass). */
 const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
@@ -50,6 +52,7 @@ function makeEl() {
     scrollIntoView() {},
     setPointerCapture() {},
     releasePointerCapture() {},
+    closest() { return null; },
     focus() {},
     click() {},
   };
@@ -148,9 +151,10 @@ const $ = (id) => sandbox.document.getElementById(id);
 const hidden = (id) => $(id).classList.contains("hidden");
 const ctx = (code) => vm.runInContext(code, sandbox);
 const buttons = (el) => el.children.filter((c) => c.textContent !== "");
-async function fire(el, type) {
-  for (const h of (el._handlers[type] || [])) await h();
+async function fire(el, type, evt) {
+  for (const h of (el._handlers[type] || [])) await h(evt || {});
 }
+const tick = () => new Promise((r) => setTimeout(r, 0));
 function findButton(wrap, label) {
   const all = [];
   (function walk(el) {
@@ -161,28 +165,90 @@ function findButton(wrap, label) {
 
 (async () => {
   ctx("maxPhotos = 24;");
-  // Listing-page render: Delete + edge-hidden arrows.
+  // Listing-page render: Delete on every photo, no move row anywhere.
   sandbox.renderDraftPhotos({ photos: ["d1/1.jpg", "d1/2.jpg", "d1/3.jpg"] });
   const wraps = $("draft-photos").children;
   check("draft render shows all three photos", wraps.length === 3);
-  const rowTexts = (w) => {
-    const row = w.children.find((c) => c.className === "thumb-move-row");
-    return row ? row.children.map((c) => c.textContent) : [];
-  };
-  check("first photo has no left arrow, only right",
-    JSON.stringify(rowTexts(wraps[0])) === JSON.stringify(["▶"]));
-  check("middle photo has both arrows",
-    JSON.stringify(rowTexts(wraps[1])) === JSON.stringify(["◀", "▶"]));
-  check("last photo has no right arrow, only left",
-    JSON.stringify(rowTexts(wraps[2])) === JSON.stringify(["◀"]));
+  check("no move row on any photo (v44: drag replaces the arrows)",
+    wraps.every((w) => w.children.every((c) => c.className !== "thumb-move-row")));
   check("every draft photo gets a Delete button",
     wraps.every((w) => !!findButton(w, "×")));
-  check("single photo gets no move row at all",
+  check("every draft photo gets an Edit button",
+    wraps.every((w) => !!findButton(w, "Edit")));
+  check("single photo gets no move row either",
     (() => {
       sandbox.renderDraftPhotos({ photos: ["d1/1.jpg"] });
       return $("draft-photos").children[0].children.every(
         (c) => c.className !== "thumb-move-row");
     })());
+
+  // Pure drag helpers, pinned directly.
+  check("moveArrayItem moves first to last",
+    (() => {
+      const a = ["a", "b", "c", "d"];
+      sandbox.moveArrayItem(a, 0, 3);
+      return a.join(",") === "b,c,d,a";
+    })());
+  check("moveArrayItem moves last to first",
+    (() => {
+      const a = ["a", "b", "c", "d"];
+      sandbox.moveArrayItem(a, 3, 0);
+      return a.join(",") === "d,a,b,c";
+    })());
+  check("moveArrayItem same index is a no-op",
+    (() => {
+      const a = ["a", "b", "c"];
+      return sandbox.moveArrayItem(a, 1, 1) && a.join(",") === "a,b,c";
+    })());
+  check("moveArrayItem bad from leaves the array alone",
+    (() => {
+      const a = ["a", "b"];
+      return !sandbox.moveArrayItem(a, 5, 0) && a.join(",") === "a,b";
+    })());
+  const rects3 = [
+    { left: 0, top: 0, width: 128, height: 128 },
+    { left: 136, top: 0, width: 128, height: 128 },
+    { left: 272, top: 0, width: 128, height: 128 },
+  ];
+  check("dragFinalIndex first to end (right half of last)",
+    sandbox.dragFinalIndex(rects3, 0, 380, 64) === 2);
+  check("dragFinalIndex first stays first (left half of first)",
+    sandbox.dragFinalIndex(rects3, 0, 10, 64) === 0);
+  check("dragFinalIndex last to first",
+    sandbox.dragFinalIndex(rects3, 2, 10, 64) === 0);
+  check("dragFinalIndex over itself is a no-op (left half)",
+    sandbox.dragFinalIndex(rects3, 1, 150, 64) === 1);
+  check("dragFinalIndex over itself is a no-op (right half)",
+    sandbox.dragFinalIndex(rects3, 1, 250, 64) === 1);
+  check("dragFinalIndex middle to end across a row gap",
+    sandbox.dragFinalIndex(rects3, 1, 400, 64) === 2);
+  check("dragFinalIndex reaches the second row",
+    sandbox.dragFinalIndex([
+      { left: 0, top: 0, width: 128, height: 128 },
+      { left: 136, top: 0, width: 128, height: 128 },
+      { left: 0, top: 136, width: 128, height: 128 },
+      { left: 136, top: 136, width: 128, height: 128 },
+    ], 0, 250, 200) === 3);
+
+  // Helpers for a pointer drag on a thumb frame.
+  const frameOf = (wrap) => wrap.children[0];
+  const setRects = (ws) => {
+    ws.forEach((w, i) => {
+      const left = (i % 3) * 136;
+      const top = Math.floor(i / 3) * 136;
+      w.getBoundingClientRect = () => ({ left, top, width: 128, height: 128 });
+    });
+  };
+  const pointerEvt = (frame, x, y) => ({
+    target: frame, clientX: x, clientY: y, pointerId: 1, button: 0,
+    cancelable: true, preventDefault() {},
+  });
+  async function drag(frame, x0, y0, x1, y1) {
+    await fire(frame, "pointerdown", pointerEvt(frame, x0, y0));
+    await fire(frame, "pointermove", pointerEvt(frame, x1, y1));
+    await fire(frame, "pointerup", pointerEvt(frame, x1, y1));
+    await tick(); await tick();
+  }
 
   // Delete: calls DELETE, re-renders, shows note + updated count.
   ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg'] };");
@@ -202,34 +268,65 @@ function findButton(wrap, label) {
   check("count updates after delete",
     $("draft-photo-count").textContent === "1 of 24 photos");
 
-  // Move: calls the move endpoint and re-renders in the new order.
+  // Drag: calls the move endpoint with {"to": n}, re-renders in the
+  // new order. First photo dragged to the end of three.
   ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg', 'd9/3.jpg'] };");
   sandbox.renderDraftPhotos(ctx("draft"));
+  setRects($("draft-photos").children);
   fetchCalls.length = 0;
-  fetchQueue = [{ draft: { id: "d9", photos: ["d9/2.jpg", "d9/1.jpg", "d9/3.jpg"] } }];
-  await fire(findButton($("draft-photos").children[0], "▶"), "click");
-  check("move calls the move endpoint with direction",
+  fetchQueue = [{ draft: { id: "d9", photos: ["d9/2.jpg", "d9/3.jpg", "d9/1.jpg"] } }];
+  await drag(frameOf($("draft-photos").children[0]), 64, 64, 380, 64);
+  check("drag posts to the move endpoint with to",
     fetchCalls.length === 1
     && fetchCalls[0].url === "/api/drafts/d9/photos/0/move"
     && fetchCalls[0].opts.method === "POST"
-    && JSON.parse(fetchCalls[0].opts.body).direction === "right");
-  check("move re-renders in the new order",
+    && JSON.parse(fetchCalls[0].opts.body).to === 2);
+  check("drag re-renders in the new order",
     $("draft-photos").children.length === 3
     && $("draft-photos").children[0].children[0].children[0].src === "/photos/d9/2.jpg");
 
-  // Step-1 arrows reorder selectedFiles (client-side only).
+  // A tap (down + up, no move) never reorders.
+  ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg', 'd9/3.jpg'] };");
+  sandbox.renderDraftPhotos(ctx("draft"));
+  setRects($("draft-photos").children);
+  fetchCalls.length = 0;
+  const tapFrame = frameOf($("draft-photos").children[0]);
+  await fire(tapFrame, "pointerdown", pointerEvt(tapFrame, 64, 64));
+  await fire(tapFrame, "pointerup", pointerEvt(tapFrame, 64, 64));
+  await tick(); await tick();
+  check("a tap without a move posts nothing",
+    fetchCalls.length === 0);
+
+  // A drag that starts on the X button never starts.
+  ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg', 'd9/3.jpg'] };");
+  sandbox.renderDraftPhotos(ctx("draft"));
+  setRects($("draft-photos").children);
+  fetchCalls.length = 0;
+  const xBtn = findButton($("draft-photos").children[0], "×");
+  const xEvt = pointerEvt(xBtn, 120, 10);
+  xEvt.target = { closest: () => xBtn };
+  const xFrame = frameOf($("draft-photos").children[0]);
+  await fire(xFrame, "pointerdown", xEvt);
+  await fire(xFrame, "pointermove", pointerEvt(xFrame, 380, 64));
+  await fire(xFrame, "pointerup", pointerEvt(xFrame, 380, 64));
+  await tick(); await tick();
+  check("a drag starting on the X button posts nothing",
+    fetchCalls.length === 0);
+
+  // Step-1 drag reorders selectedFiles (client-side only).
   ctx("selectedFiles = [{ url: 'blob:a' }, { url: 'blob:b' }, { url: 'blob:c' }];");
   sandbox.renderThumbs();
   const thumbs = $("thumbs").children;
-  check("step-1 first thumb has only a right arrow",
-    JSON.stringify(thumbs[0].children[1].children.map((c) => c.textContent))
-    === JSON.stringify(["▶"]));
-  fire(findButton(thumbs[0], "▶"), "click");
-  check("step-1 move right swaps the first two picks",
-    ctx("selectedFiles").map((e) => e.url).join(",") === "blob:b,blob:a,blob:c");
-  fire(findButton($("thumbs").children[2], "◀"), "click");
-  check("step-1 move left swaps the last two picks",
+  check("step-1 thumbs have no move row",
+    thumbs.every((w) => w.children.every((c) => c.className !== "thumb-move-row")));
+  setRects(thumbs);
+  await drag(frameOf(thumbs[0]), 64, 64, 380, 64);
+  check("step-1 drag moves the first pick to the end",
     ctx("selectedFiles").map((e) => e.url).join(",") === "blob:b,blob:c,blob:a");
+  setRects($("thumbs").children);
+  await drag(frameOf($("thumbs").children[2]), 336, 64, 10, 64);
+  check("step-1 drag moves the last pick to the front",
+    ctx("selectedFiles").map((e) => e.url).join(",") === "blob:a,blob:b,blob:c");
 
   if (failures) { console.log(failures + " FAILURES"); process.exit(1); }
   console.log("all photo-arrange checks pass");

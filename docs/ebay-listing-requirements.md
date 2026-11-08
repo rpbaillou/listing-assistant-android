@@ -362,3 +362,50 @@ policies" path.
   refresh (previously hidden again in the same tick by
   `prefillListing()`), and a select failure after a successful
   policy create can no longer report the create itself as failed.
+
+## Camera, edit, arrange, thumbnails — v44
+
+- Camera is now in the app (CameraX 1.3.4, `InAppCamera.kt`):
+  Take photo opens a full-screen camera with a big round shutter.
+  Each tap saves a photo at once and the camera stays open, so
+  several angles can be shot back to back with no review screen
+  and no check after each shot. A count ("3 photos") shows on
+  the camera screen; Done or Back closes back to the listing,
+  and the photos already taken stay in the strip. Each shot runs
+  the same pipeline as before: native downscale to 1600px,
+  base64, hand to the WebView's `onCameraPhoto`, which routes by
+  camera target (step 1 or draft). The CAMERA permission is now
+  declared (camera feature not required, so the app still
+  installs on a device with no camera) and is requested the
+  first time the in-app camera opens. If permission is denied,
+  or the in-app camera cannot start, the old camera-app intent
+  (`ACTION_IMAGE_CAPTURE`) is the fallback, never a dead button.
+  MainActivity is a plain Activity, so it carries its own
+  `LifecycleRegistry` and forwards the events for CameraX.
+- Edit now opens in Google Photos. The edit intent is pinned to
+  package `com.google.android.apps.photos` when a query shows
+  Photos can handle the edit, so he gets the full Photos editing
+  tools instead of the Pixel camera app editor. If Photos is not
+  installed the intent stays open for the system resolver, exactly
+  as before. The v37 rule is kept: the photo goes in as a
+  MediaStore working copy, because a private provider URI
+  resolved to nothing on his Pixel. The manifest's `<queries>`
+  names the Photos package so the query resolves under Android
+  11+ package visibility.
+- Photos now reorder by dragging, on the step-1 strip and the
+  draft strip alike. The v40 left/right arrow buttons and their
+  row are gone. Drag uses pointer events (pointerdown, move, up)
+  with an 8px start threshold and `touch-action: none`, so it
+  works by touch on his Pixel, not just mouse drag. A drag that
+  starts on the X or Edit button still taps that button. The drop
+  spot is the nearest photo by center distance; the left half of
+  a photo means before it, the right half after it. The order
+  still rules the publish: image URLs go in strip order and the
+  first photo is the main one. The move endpoint now also takes
+  `{"to": n}` (final index) alongside the old direction form.
+- Thumbnails are bigger and the buttons smaller: step-1 thumbs
+  96px to 128px, draft thumbs 72px to 96px, the X button 30px
+  to 26px, Edit min-height 30px to 26px. The arrow row is gone
+  with the arrows. Fit on a narrow phone width is unchanged
+  (two 128px thumbs plus gap fit in 288px of content at 320px
+  wide); the fit check still passes.

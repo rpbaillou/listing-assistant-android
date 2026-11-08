@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -23,6 +24,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import android.widget.Toolbar
+import androidx.camera.view.PreviewView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
@@ -35,7 +40,7 @@ import java.net.URL
  * the WebView shows it. First run asks for the 7 keys once; they are saved to
  * the app's private storage and never leave the phone except to eBay/Google.
  */
-class MainActivity : Activity() {
+class MainActivity : Activity(), LifecycleOwner {
 
     private lateinit var webView: WebView
     private lateinit var setupView: ScrollView
@@ -43,6 +48,17 @@ class MainActivity : Activity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraPhoto: File? = null
     private var pendingCameraPhotoUri: Uri? = null
+    /** v44: the in-app camera is CameraX, which binds to a LifecycleOwner.
+     *  This Activity is a plain Activity (no AppCompat), so it carries
+     *  its own LifecycleRegistry and forwards the events itself. */
+    private val lifecycleRegistry = LifecycleRegistry(this)
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+    /** v44: in-app camera state. Null when the camera is closed; the
+     *  overlay (R.id.camera_view) mirrors cameraOpen. */
+    private var inAppCamera: InAppCamera? = null
+    private var cameraOpen = false
+    private var cameraPhotosTaken = 0
     /** v36: Pixel-editor handoff state. Set when Edit on a listing photo
      *  launches the phone's editor; cleared when its result returns.
      *  v37: the editor opens a MediaStore working copy (pendingEditMediaUri),
@@ -105,10 +121,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // v44: CameraX binds to this Activity's lifecycle.
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
         setContentView(R.layout.activity_main)
         webView = findViewById(R.id.webview)
         setupView = findViewById(R.id.setup_view)
         startingView = findViewById(R.id.starting_view)
+        // v44: the in-app camera's shutter and Done buttons live in the
+        // overlay; wired once here, the overlay itself shows/hides.
+        findViewById<Button>(R.id.camera_shutter).setOnClickListener { takeInAppPhoto() }
+        findViewById<Button>(R.id.camera_done).setOnClickListener { closeInAppCamera() }
 
         // v20: native overflow menu (three dots, top right). Both items are
         // showAsAction="never", so the Toolbar renders the overflow button
@@ -147,6 +169,23 @@ class MainActivity : Activity() {
         // exist, and the v19 Edit keys screen once the app is running.
         findViewById<Button>(R.id.btn_save).setOnClickListener { saveKeys() }
         findViewById<Button>(R.id.btn_cancel).setOnClickListener { cancelEditKeys() }
+    }
+
+    /** v44: forward the Activity events to the LifecycleRegistry so
+     *  CameraX can bind to this Activity. */
+    override fun onStart() {
+        super.onStart()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+    }
+
+    override fun onPause() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
+        super.onStop()
     }
 
     /** True when a .env with all 7 real keys is saved in private storage. */
@@ -452,22 +491,28 @@ class MainActivity : Activity() {
      * the <input capture="camera"> attribute (isCaptureEnabled() is false),
      * so v12's button opened the gallery. Calling the camera directly
      * bypasses the WebView entirely — no attribute to ignore.
+     * v44: the button opens the in-app camera (CameraX) for rapid
+     * multi-shot; the camera-app intent below is the fallback when the
+     * in-app camera cannot open or permission is denied.
      */
     inner class CameraJsBridge {
         @JavascriptInterface
         fun openCamera() {
-            runOnUiThread { launchCameraForJs() }
+            runOnUiThread { openInAppCamera() }
         }
 
         /** v36: listing-photo Edit hands the photo to the phone's own
          *  photo editor (Nov 3 decision: his Pixel camera app editor,
-         *  NOT a limited in-app editor). No package is hardcoded — the
-         *  system resolves ACTION_EDIT, which on his Pixel opens his
-         *  camera app editor. v37: the photo goes in as a MediaStore
-         *  working copy — v36's private provider URI resolved to nothing
-         *  on his Pixel. Runs on the JS-interface thread; the
-         *  launch itself does network on a worker thread and posts UI
-         *  work back, so no thread assumption breaks. */
+         *  NOT a limited in-app editor). v44: the editor is Google
+         *  Photos, pinned by package when it can handle the edit, so
+         *  he gets the full Photos editing tools; the system resolver
+         *  is the fallback when Photos is missing. No package is
+         *  hardcoded in the intent itself — PhotosEditor decides.
+         *  v37: the photo goes in as a MediaStore working copy — v36's
+         *  private provider URI resolved to nothing on his Pixel. Runs
+         *  on the JS-interface thread; the launch itself does network
+         *  on a worker thread and posts UI work back, so no thread
+         *  assumption breaks. */
         @JavascriptInterface
         fun editDraftPhoto(draftId: String, rel: String, index: Int) {
             launchPixelEditor(draftId, rel, index)
@@ -557,6 +602,137 @@ class MainActivity : Activity() {
                 ).show()
             }
         )
+    }
+
+    /**
+     * v44: opens the in-app camera (CameraX). The shutter saves a photo
+     * at once and the camera stays open, so he can snap several angles
+     * back to back with no review screen and no check after each shot.
+     * A missing or denied CAMERA permission falls back to the camera
+     * app (the old path), never a dead button.
+     */
+    private fun openInAppCamera() {
+        if (cameraOpen) return
+        if (!CameraCapture.useInAppCamera(
+                checkSelfPermission(android.Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+            )
+        ) {
+            requestPermissions(
+                arrayOf(android.Manifest.permission.CAMERA),
+                CAMERA_PERMISSION_REQUEST
+            )
+            return
+        }
+        showInAppCamera()
+    }
+
+    /** v44: the CAMERA permission answer. Granted opens the in-app
+     *  camera; denied falls back to the camera app and says so in
+     *  plain words. */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == CAMERA_PERMISSION_REQUEST) {
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            ) {
+                showInAppCamera()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Camera permission is off, so photos open in the camera app instead.",
+                    Toast.LENGTH_LONG
+                ).show()
+                launchCameraForJs()
+            }
+        }
+    }
+
+    /** v44: shows the camera overlay and binds CameraX. A bind failure
+     *  falls back to the camera app, with the reason on screen. */
+    private fun showInAppCamera() {
+        val overlay = findViewById<View>(R.id.camera_view) ?: return
+        val preview = findViewById<PreviewView>(R.id.camera_preview) ?: return
+        cameraPhotosTaken = 0
+        findViewById<TextView>(R.id.camera_count)?.text = "0 photos"
+        overlay.visibility = View.VISIBLE
+        cameraOpen = true
+        val camera = InAppCamera(this)
+        inAppCamera = camera
+        camera.start(
+            this,
+            preview,
+            onReady = { /* live; the shutter is already wired */ },
+            onError = {
+                closeInAppCamera()
+                Toast.makeText(
+                    this,
+                    "Couldn't start the camera. Opening the camera app instead.",
+                    Toast.LENGTH_LONG
+                ).show()
+                launchCameraForJs()
+            }
+        )
+    }
+
+    /**
+     * v44: one shutter tap. Saves to a temp file, then runs the same
+     * pipeline as the old camera-app result: native downscale to
+     * 1600px, base64, hand to the WebView's onCameraPhoto — which
+     * routes it by cameraTarget (step 1 or draft). The count on the
+     * camera screen shows the running total. The shutter is ignored
+     * while a capture is in flight.
+     */
+    private fun takeInAppPhoto() {
+        val camera = inAppCamera ?: return
+        if (camera.isCapturing()) return
+        val dir = CameraPhotoProvider.cameraDir(this)
+        val file = File(dir, CameraCapture.tempName(System.currentTimeMillis()))
+        try {
+            file.createNewFile()
+        } catch (_: Exception) {
+            Toast.makeText(this, "Couldn't save that photo. Try again.", Toast.LENGTH_LONG).show()
+            return
+        }
+        camera.takePhoto(
+            file,
+            onPhoto = { saved ->
+                val jpeg = CameraDownscale.downscale(saved)
+                saved.delete()
+                if (jpeg != null) {
+                    val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
+                    // Base64.NO_WRAP alphabet is JS-string-safe; no
+                    // escaping needed inside the single quotes.
+                    webView.evaluateJavascript(
+                        "onCameraPhoto('data:image/jpeg;base64,$b64')", null
+                    )
+                    cameraPhotosTaken++
+                    findViewById<TextView>(R.id.camera_count)?.text =
+                        "$cameraPhotosTaken photo" +
+                        if (cameraPhotosTaken == 1) "" else "s"
+                } else {
+                    Toast.makeText(this, "Couldn't read that photo.", Toast.LENGTH_LONG).show()
+                }
+            },
+            onError = { msg ->
+                file.delete()
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            }
+        )
+    }
+
+    /** v44: closes the in-app camera back to the listing. Unbinds
+     *  CameraX and hides the overlay; the photos already taken stay
+     *  in the strip. */
+    private fun closeInAppCamera() {
+        inAppCamera?.stop()
+        inAppCamera = null
+        cameraOpen = false
+        findViewById<View>(R.id.camera_view)?.visibility = View.GONE
     }
 
     /** Launches the camera app for the JS-interface path (no chooser). */
@@ -918,6 +1094,20 @@ class MainActivity : Activity() {
                         putExtra(android.provider.MediaStore.EXTRA_OUTPUT, outUri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                     }
+                    // v44: pin the edit to Google Photos when it can
+                    // handle it (full editing tools); otherwise leave
+                    // the intent open for the system resolver, exactly
+                    // as v36/v37 did. The package query is explicit, so
+                    // it resolves under Android 11+ package visibility.
+                    val photosCanEdit = packageManager.queryIntentActivities(
+                        Intent(intent).apply {
+                            setPackage(PhotosEditor.GOOGLE_PHOTOS_PACKAGE)
+                        },
+                        android.content.pm.PackageManager.MATCH_DEFAULT_ONLY
+                    ).isNotEmpty()
+                    PhotosEditor.targetPackage(photosCanEdit)?.let {
+                        intent.setPackage(it)
+                    }
                     if (intent.resolveActivity(packageManager) == null) {
                         clearPendingEdit()
                         Toast.makeText(this, "No photo editor found on this phone.", Toast.LENGTH_LONG).show()
@@ -1131,6 +1321,12 @@ class MainActivity : Activity() {
     }
 
     override fun onBackPressed() {
+        // v44: Back from the in-app camera just closes it, back to the
+        // listing — the photos already taken stay in the strip.
+        if (cameraOpen) {
+            closeInAppCamera()
+            return
+        }
         // v19: Back from the Edit keys form just closes it (no save), back
         // to the running app. First-run setup keeps the old behavior: Back
         // exits the app, since there is no app to go back to yet.
@@ -1150,6 +1346,10 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // v44: unbind the in-app camera before the Activity goes away.
+        inAppCamera?.stop()
+        inAppCamera = null
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         closeSoldPricesPopup()
         super.onDestroy()
     }
@@ -1173,6 +1373,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        // v44: CameraX binds to this Activity's lifecycle.
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
         // Re-check for updates every time the app comes to the foreground.
         // v15: "Later" no longer suppresses anything, so every check that
         // finds a newer build offers it again.
@@ -1204,6 +1406,10 @@ class MainActivity : Activity() {
 
         /** v36: listing-photo Edit -> phone's editor result. */
         private const val EDIT_PHOTO_REQUEST = 1003
+
+        /** v44: in-app camera permission request. Granted opens the
+         *  in-app camera; denied falls back to the camera app. */
+        private const val CAMERA_PERMISSION_REQUEST = 1004
 
         /**
          * v5: reads the item price off an eBay item page. Multiple fallback

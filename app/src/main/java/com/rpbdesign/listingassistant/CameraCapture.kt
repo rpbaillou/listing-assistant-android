@@ -42,4 +42,13 @@ object CameraCapture {
      */
     fun useCameraDirect(captureEnabled: Boolean, cameraAppAvailable: Boolean): Boolean =
         captureEnabled && cameraAppAvailable
+
+    /**
+     * v44: the Take photo button prefers the in-app camera (rapid
+     * multi-shot, no per-photo review). It opens only when the CAMERA
+     * permission is granted; a missing or denied permission falls back
+     * to the camera app intent, never a dead button. Pure decision
+     * logic so it can be unit-tested without a device.
+     */
+    fun useInAppCamera(permissionGranted: Boolean): Boolean = permissionGranted
 }

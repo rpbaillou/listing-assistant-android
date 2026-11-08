@@ -71,4 +71,10 @@ class CameraCaptureTest {
         assertFalse(CameraCapture.useCameraDirect(captureEnabled = false, cameraAppAvailable = true))
         assertFalse(CameraCapture.useCameraDirect(captureEnabled = false, cameraAppAvailable = false))
     }
+
+    @Test
+    fun inAppCameraNeedsPermission() {
+        assertTrue(CameraCapture.useInAppCamera(permissionGranted = true))
+        assertFalse(CameraCapture.useInAppCamera(permissionGranted = false))
+    }
 }

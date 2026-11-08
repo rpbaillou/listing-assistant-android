@@ -3337,9 +3337,12 @@ def api_draft_delete_photo(draft_id, index):
 @app.route("/api/drafts/<draft_id>/photos/<int:index>/move", methods=["POST"])
 def api_draft_move_photo(draft_id, index):
     """v40: move one draft photo left/right (listing-page arrange arrows).
-    Swaps adjacent entries in the draft's photo order and saves; publish
-    sends imageUrls in this order, so the first photo stays the main
-    one. Edge moves are plain errors; the UI hides those arrows."""
+    v44: drag reorder posts {"to": n} instead — same endpoint, the photo
+    lands at final index n. Direction swaps adjacent entries; "to" pops
+    the photo out and inserts it at n. Either way publish sends
+    imageUrls in this order, so the first photo stays the main one.
+    Edge moves are plain errors; a "to" equal to the photo's own slot
+    is a no-op success."""
     d = _load_draft(draft_id)
     if d is None:
         return jsonify({"error": "Draft not found."}), 404
@@ -3347,17 +3350,26 @@ def api_draft_move_photo(draft_id, index):
     if index < 0 or index >= len(photos):
         return jsonify({"error": "Photo not found."}), 404
     data = request.get_json(silent=True) or {}
-    direction = data.get("direction")
-    if direction == "left":
-        if index == 0:
-            return jsonify({"error": "That photo is already first."}), 400
-        photos[index - 1], photos[index] = photos[index], photos[index - 1]
-    elif direction == "right":
-        if index == len(photos) - 1:
-            return jsonify({"error": "That photo is already last."}), 400
-        photos[index + 1], photos[index] = photos[index], photos[index + 1]
+    to = data.get("to")
+    if to is not None:
+        if not isinstance(to, int) or isinstance(to, bool):
+            return jsonify({"error": "Move to a photo number."}), 400
+        if to < 0 or to >= len(photos):
+            return jsonify({"error": "That spot is past the last photo."}), 400
+        if to != index:
+            photos.insert(to, photos.pop(index))
     else:
-        return jsonify({"error": "Move left or right."}), 400
+        direction = data.get("direction")
+        if direction == "left":
+            if index == 0:
+                return jsonify({"error": "That photo is already first."}), 400
+            photos[index - 1], photos[index] = photos[index], photos[index - 1]
+        elif direction == "right":
+            if index == len(photos) - 1:
+                return jsonify({"error": "That photo is already last."}), 400
+            photos[index + 1], photos[index] = photos[index], photos[index + 1]
+        else:
+            return jsonify({"error": "Move left or right."}), 400
     _save_draft(d)
     return jsonify({"draft": d})
 

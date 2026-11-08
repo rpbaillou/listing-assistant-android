@@ -13,8 +13,8 @@ android {
         applicationId = "com.rpbdesign.listingassistant"
         minSdk = 24
         targetSdk = 34
-        versionCode = 43
-        versionName = "1.42"
+        versionCode = 44
+        versionName = "1.43"
 
         ndk {
             // Chaquopy Python 3.12 is 64-bit only.
@@ -72,5 +72,16 @@ chaquopy {
 }
 
 dependencies {
+    // v44: in-app camera (CameraX) for rapid multi-shot without the
+    // camera app's per-photo review screen. LifecycleRegistry lets the
+    // plain Activity be a LifecycleOwner (no AppCompat needed).
+    val cameraxVersion = "1.3.4"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+    implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.lifecycle:lifecycle-runtime:2.8.7")
+
     testImplementation("junit:junit:4.13.2")
 }

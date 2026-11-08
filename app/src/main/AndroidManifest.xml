@@ -6,6 +6,13 @@
          source" toggle is per-app: granting it for Chrome does NOT grant it
          for us, so the updater checks canRequestPackageInstalls() up front. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- v44: the in-app camera (CameraX) shoots directly, so it needs the
+         CAMERA permission — asked once, the first time Take photo is
+         tapped. A denial falls back to the camera app, which needs no
+         permission (it does the capturing). The feature is not required,
+         so the app still installs on a device with no camera at all. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Android 11+ package visibility: without this, resolveActivity() /
          queryIntentActivities() for other apps return null/empty, so the
@@ -22,6 +29,10 @@
             <action android:name="android.intent.action.EDIT" />
             <data android:mimeType="image/*" />
         </intent>
+        <!-- v44: Edit pins to Google Photos when it can handle the edit.
+             The explicit package query keeps Photos visible under
+             Android 11+ package-visibility rules. -->
+        <package android:name="com.google.android.apps.photos" />
     </queries>
 
     <!-- INTERNET is for the Gemini and eBay cloud APIs. The app's own server
@@ -49,7 +60,9 @@
             android:grantUriPermissions="true" />
         <!-- Serves the in-app camera's temp photo to the camera app (write)
              and back to our WebView file picker (read). No CAMERA permission
-             needed: the camera app does the capturing. -->
+             needed for that path: the camera app does the capturing.
+             v44: the same cache dir also holds the in-app camera's temp
+             files (written directly, no provider involved). -->
         <provider
             android:name=".CameraPhotoProvider"
             android:authorities="${applicationId}.cameraprovider"

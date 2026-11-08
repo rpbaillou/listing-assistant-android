@@ -143,6 +143,55 @@
         </LinearLayout>
     </ScrollView>
 
+    <!-- v44: in-app camera (CameraX). Stays open for rapid multi-shot:
+         the shutter saves a photo at once, no review screen, no check.
+         Done closes back to the listing. Hidden until Take photo. -->
+    <FrameLayout
+        android:id="@+id/camera_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:visibility="gone">
+
+        <androidx.camera.view.PreviewView
+            android:id="@+id/camera_preview"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <TextView
+            android:id="@+id/camera_count"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:layout_marginTop="16dp"
+            android:background="#80000000"
+            android:padding="8dp"
+            android:text="0 photos"
+            android:textColor="#ffffff"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/camera_shutter"
+            android:layout_width="88dp"
+            android:layout_height="88dp"
+            android:layout_gravity="bottom|center_horizontal"
+            android:layout_marginBottom="32dp"
+            android:background="@drawable/shutter_button"
+            android:contentDescription="Take photo"
+            android:text="" />
+
+        <Button
+            android:id="@+id/camera_done"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="16dp"
+            android:background="#80000000"
+            android:text="Done"
+            android:textColor="#ffffff" />
+
+    </FrameLayout>
+
     </FrameLayout>
 
 </LinearLayout>

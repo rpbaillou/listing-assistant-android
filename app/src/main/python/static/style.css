@@ -86,42 +86,45 @@ button:disabled { opacity: 0.45; cursor: default; }
 .photobtns .filebtn { flex: 1; min-width: 0; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
-.thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
-.thumbs .thumb-skip { width: 96px; height: 96px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
-.thumbs.small img { width: 72px; height: 72px; }
+/* v44: thumbnails grow (96 -> 128px, small 72 -> 96px) and the X /
+   Edit buttons trim down, so the buttons stop taking up a third of
+   the photo. The v40 arrange-arrow row is gone (drag to reorder),
+   so the wrap is the photo only. */
+.thumbs img { width: 128px; height: 128px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
+.thumbs .thumb-skip { width: 128px; height: 128px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
+.thumbs.small img { width: 96px; height: 96px; }
 /* v36: draft thumbnails wrap like step-1 thumbnails so the Edit button
-   sits on the photo, not floating beside it. v40: wraps grow with the
-   arrange row below the photo instead of clipping it. */
-.thumbs.small .thumb-wrap { width: 72px; }
+   sits on the photo, not floating beside it. */
+.thumbs.small .thumb-wrap { width: 96px; }
 
 /* v5: remove-photo X on each chosen thumbnail */
-.thumb-wrap { position: relative; width: 96px; }
-.thumb-wrap img { width: 96px; height: 96px; }
-/* v40: the image keeps its overlaid X and Edit buttons inside .thumb-img;
-   the arrange row sits below the photo, so nothing crowds the photo
-   itself. Wraps grow with the row instead of clipping it. */
-.thumb-img { position: relative; width: 96px; height: 96px; }
+.thumb-wrap { position: relative; width: 128px; user-select: none; -webkit-user-select: none; }
+.thumb-wrap img { width: 128px; height: 128px; }
+/* v40: the image keeps its overlaid X and Edit buttons inside .thumb-img.
+   v44: touch-action none + grab cursor — the frame is the drag handle
+   for reorder, so a touch drag moves the photo instead of scrolling
+   the page; taps on the X / Edit buttons still click. */
+.thumb-img { position: relative; width: 128px; height: 128px; touch-action: none; cursor: grab; }
 .thumb-img img { display: block; width: 100%; height: 100%; }
-.thumbs.small .thumb-img { width: 72px; height: 72px; }
-.thumb-move-row { display: flex; gap: 0.25rem; margin-top: 0.35rem; }
-.thumb-move {
-  flex: 1; min-height: 30px; padding: 0; border-radius: 8px;
-  background: #fff; color: #1a1a1a; border: 1px solid #bbb;
-  font-size: 14px; cursor: pointer;
-}
+.thumbs.small .thumb-img { width: 96px; height: 96px; }
+/* v44: drag feedback — the photo being moved goes faint, the photo it
+   will land before/after gets a blue edge. */
+.thumb-wrap.dragging { opacity: 0.45; }
+.thumb-wrap.drop-before { box-shadow: -4px 0 0 #2a63d8; }
+.thumb-wrap.drop-after { box-shadow: 4px 0 0 #2a63d8; }
 .thumb-x {
   position: absolute; top: -8px; right: -8px;
-  width: 30px; height: 30px; border-radius: 50%;
+  width: 26px; height: 26px; border-radius: 50%;
   background: #c00; color: #fff; border: 2px solid #fff;
-  font-size: 18px; line-height: 1; padding: 0; cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
 /* v18: Edit button on each chosen thumbnail (bottom-left, clear of the X) */
 .thumb-edit {
   position: absolute; bottom: -8px; left: -8px;
-  min-height: 30px; padding: 0.2rem 0.55rem; border-radius: 15px;
+  min-height: 26px; padding: 0.15rem 0.5rem; border-radius: 13px;
   background: #2a63d8; color: #fff; border: 2px solid #fff;
-  font-size: 13px; cursor: pointer;
+  font-size: 12px; cursor: pointer;
   box-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
 /* v18: photo editor modal. touch-action:none on the canvas keeps touch

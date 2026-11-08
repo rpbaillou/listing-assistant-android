@@ -124,29 +124,9 @@ function renderThumbs() {
     frame.appendChild(x);
     frame.appendChild(e);
     wrap.appendChild(frame);
-    /* v40: arrange arrows below the photo (edge arrows hidden — the
-       first photo has no left, the last has no right). */
-    const row = document.createElement("div");
-    row.className = "thumb-move-row";
-    if (i > 0) {
-      const l = document.createElement("button");
-      l.type = "button";
-      l.className = "thumb-move";
-      l.textContent = "◀";
-      l.setAttribute("aria-label", "Move photo left");
-      l.addEventListener("click", () => movePhoto(i, "left"));
-      row.appendChild(l);
-    }
-    if (i < selectedFiles.length - 1) {
-      const r = document.createElement("button");
-      r.type = "button";
-      r.className = "thumb-move";
-      r.textContent = "▶";
-      r.setAttribute("aria-label", "Move photo right");
-      r.addEventListener("click", () => movePhoto(i, "right"));
-      row.appendChild(r);
-    }
-    if (row.children.length) wrap.appendChild(row);
+    /* v44: drag to reorder — the frame is the drag handle (see
+       attachThumbDrag below); the v40 ◀ ▶ buttons are gone. */
+    attachThumbDrag(frame, wrap, box, i, reorderPhoto);
     box.appendChild(wrap);
   });
   for (let s = 0; s < skippedCount; s++) {
@@ -172,15 +152,113 @@ function removePhoto(i) {
   hideError();
 }
 
-/* v40: arrange picked photos before identifying. Swaps adjacent entries
-   so the order here is the order Identify uploads (first = main). */
-function movePhoto(i, direction) {
-  const j = direction === "left" ? i - 1 : i + 1;
-  if (j < 0 || j >= selectedFiles.length) return;
-  const tmp = selectedFiles[i];
-  selectedFiles[i] = selectedFiles[j];
-  selectedFiles[j] = tmp;
-  renderThumbs();
+/* ---------- v44: drag to reorder photos (touch + mouse) ---------- */
+/* The v40 ◀ ▶ buttons are gone: press a photo and drag it to its new
+   spot, on either strip. Pointer events cover touch and mouse with one
+   code path (HTML5 drag-and-drop does not fire on touch). A tap still
+   clicks the X / Edit buttons — a drag only starts after the pointer
+   moves 8px, and pointerdowns that start on a button never drag. The
+   order after a drop is the order publish sends (first = main). */
+
+/* Pure helper, unit-tested: move the item at `from` to final index
+   `to`. Returns false and leaves the array alone on a bad index. */
+function moveArrayItem(arr, from, to) {
+  if (!arr || from < 0 || from >= arr.length) return false;
+  if (to < 0) to = 0;
+  if (to >= arr.length) to = arr.length - 1;
+  if (to === from) return true;
+  const item = arr.splice(from, 1)[0];
+  arr.splice(to, 0, item);
+  return true;
+}
+
+/* Pure helper, unit-tested: given the wraps' rects in strip order, the
+   dragged item's index, and the pointer, return the final index the
+   dragged item should land at. The nearest wrap decides: left half
+   means before it, right half means after it, adjusted for the dragged
+   item leaving its own slot (so dragging an item over itself is a
+   no-op, never a shift by one). */
+function dragFinalIndex(rects, from, x, y) {
+  const n = rects.length;
+  if (n === 0 || from < 0 || from >= n) return from;
+  let k = 0;
+  let best = Infinity;
+  for (let i = 0; i < n; i++) {
+    const r = rects[i];
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const d = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+    if (d < best) { best = d; k = i; }
+  }
+  const r = rects[k];
+  const leftHalf = x < r.left + r.width / 2;
+  let to = leftHalf ? (k > from ? k - 1 : k) : (k < from ? k + 1 : k);
+  if (to < 0) to = 0;
+  if (to > n - 1) to = n - 1;
+  return to;
+}
+
+/* One drag session shared by both strips (only one drag at a time). */
+let thumbDrag = null;
+
+function thumbDragWraps(box) {
+  return Array.from(box.children).filter(
+    (c) => c.className && c.className.indexOf("thumb-wrap") !== -1);
+}
+
+function attachThumbDrag(frame, wrap, box, from, commit) {
+  frame.addEventListener("pointerdown", (e) => {
+    // Buttons on the photo (X / Edit) are taps, never a drag start.
+    if (e.target && e.target.closest && e.target.closest("button")) return;
+    if (e.button !== undefined && e.button !== 0) return;
+    thumbDrag = {
+      from: from, wrap: wrap, box: box, commit: commit,
+      startX: e.clientX, startY: e.clientY,
+      active: false, pointerId: e.pointerId, to: from,
+    };
+  });
+  frame.addEventListener("pointermove", (e) => {
+    const d = thumbDrag;
+    if (!d || d.wrap !== wrap) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    if (!d.active) {
+      if (dx * dx + dy * dy < 64) return; // 8px: a tap is not a drag
+      d.active = true;
+      d.wrap.classList.add("dragging");
+      try { frame.setPointerCapture(e.pointerId); } catch (err) { /* no capture: moves still arrive while over the frame */ }
+    }
+    if (e.cancelable) e.preventDefault();
+    const wraps = thumbDragWraps(d.box);
+    const rects = wraps.map((w) => w.getBoundingClientRect());
+    const to = dragFinalIndex(rects, d.from, e.clientX, e.clientY);
+    d.to = to;
+    wraps.forEach((w, i) => {
+      w.classList.remove("drop-before", "drop-after");
+      if (i === to && to !== d.from) {
+        // The landing edge faces the direction the photo came from.
+        w.classList.add(to < d.from ? "drop-before" : "drop-after");
+      }
+    });
+  });
+  const endDrag = (commitIt) => {
+    const d = thumbDrag;
+    if (!d || d.wrap !== wrap) return;
+    thumbDrag = null;
+    thumbDragWraps(d.box).forEach(
+      (w) => w.classList.remove("dragging", "drop-before", "drop-after"));
+    if (commitIt && d.active && d.to !== d.from) {
+      d.commit(d.from, d.to);
+    }
+  };
+  frame.addEventListener("pointerup", () => endDrag(true));
+  frame.addEventListener("pointercancel", () => endDrag(false));
+}
+
+/* v44: step-1 reorder by drag (client-side only — Identify uploads
+   in this order, first = main). */
+function reorderPhoto(from, to) {
+  if (moveArrayItem(selectedFiles, from, to)) renderThumbs();
 }
 
 /* ---------- v18: photo editor (crop + rotate) ---------- */
@@ -628,30 +706,9 @@ function renderDraftPhotos(d) {
     frame.appendChild(x);
     frame.appendChild(e);
     wrap.appendChild(frame);
-    /* v40: arrange arrows below the photo (edge arrows hidden — the
-       first photo has no left, the last has no right). */
-    const row = document.createElement("div");
-    row.className = "thumb-move-row";
-    const n = (d.photos || []).length;
-    if (i > 0) {
-      const l = document.createElement("button");
-      l.type = "button";
-      l.className = "thumb-move";
-      l.textContent = "◀";
-      l.setAttribute("aria-label", "Move photo left");
-      l.addEventListener("click", () => moveDraftPhoto(i, "left"));
-      row.appendChild(l);
-    }
-    if (i < n - 1) {
-      const r = document.createElement("button");
-      r.type = "button";
-      r.className = "thumb-move";
-      r.textContent = "▶";
-      r.setAttribute("aria-label", "Move photo right");
-      r.addEventListener("click", () => moveDraftPhoto(i, "right"));
-      row.appendChild(r);
-    }
-    if (row.children.length) wrap.appendChild(row);
+    /* v44: drag to reorder — the frame is the drag handle (see
+       attachThumbDrag); the v40 ◀ ▶ buttons are gone. */
+    attachThumbDrag(frame, wrap, box, i, reorderDraftPhoto);
     box.appendChild(wrap);
   });
   $("draft-photo-count").textContent = photoCountTextFor((d.photos || []).length);
@@ -660,8 +717,9 @@ function renderDraftPhotos(d) {
 /* v40: delete + arrange on the listing page. Delete removes the photo
    from the draft immediately (same precedent as the step-1 X: no confirm
    dialog — a removed photo is re-added with Choose photos or Take
-   photo). Move swaps adjacent photos; publish sends imageUrls in this
-   order, so the first photo is the main one. */
+   photo). v44: arrange is drag to reorder (see attachThumbDrag) — one
+   POST moves the photo to its final slot; publish sends imageUrls in
+   this order, so the first photo is the main one. */
 async function deleteDraftPhoto(i) {
   if (!draft || !draft.id) return;
   hideDraftPhotoError();
@@ -676,14 +734,15 @@ async function deleteDraftPhoto(i) {
   }
 }
 
-async function moveDraftPhoto(i, direction) {
+async function reorderDraftPhoto(from, to) {
   if (!draft || !draft.id) return;
+  if (from === to) return;
   hideDraftPhotoError();
   try {
-    const res = await api("/api/drafts/" + draft.id + "/photos/" + i + "/move", {
+    const res = await api("/api/drafts/" + draft.id + "/photos/" + from + "/move", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction: direction }),
+      body: JSON.stringify({ to: to }),
     });
     draft = res.draft;
     renderDraftPhotos(draft);

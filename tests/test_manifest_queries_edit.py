@@ -99,5 +99,32 @@ class TestEditIntentUnchanged(unittest.TestCase):
         self.assertIn('"No photo editor found on this phone."', MAIN_SRC)
 
 
+class TestGooglePhotosTarget(unittest.TestCase):
+    """v44: Edit pins to Google Photos when it can handle the edit."""
+
+    def test_photos_package_declared_in_queries(self):
+        root = ET.fromstring(MANIFEST_SRC)
+        queries = root.find("queries")
+        packages = [p.get(NS + "name") for p in queries.findall("package")]
+        self.assertIn("com.google.android.apps.photos", packages,
+                      "manifest <queries> must name Google Photos")
+
+    def test_edit_pins_to_photos_when_available(self):
+        self.assertIn("PhotosEditor.GOOGLE_PHOTOS_PACKAGE", MAIN_SRC)
+        self.assertIn("targetPackage(photosCanEdit)", MAIN_SRC)
+
+    def test_edit_still_falls_back_to_system_resolver(self):
+        # targetPackage returns null when Photos cannot edit, and the
+        # intent is only pinned inside a ?.let — with no pin the
+        # resolveActivity + grant loop below runs exactly as v36/v37.
+        self.assertIn("?.let {", MAIN_SRC)
+        self.assertIn("intent.setPackage(it)", MAIN_SRC)
+
+    def test_edit_intent_shape_unchanged(self):
+        # Still the MediaStore URI + JPEG type + EXTRA_OUTPUT from v37;
+        # only the package pin is new.
+        self.assertIn('setDataAndType(mediaUri, "image/jpeg")', MAIN_SRC)
+
+
 if __name__ == "__main__":
     unittest.main()
