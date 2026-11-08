@@ -2609,6 +2609,7 @@ async function openCreateFormPrefilled(carrier, code) {
   $("pc-local-pickup").checked = false;
   $("pc-pickup-only").checked = false;
   refreshCreateFormVisibility();
+  updatePolicyCreateCounts();
 }
 
 function openShippingPick(policies, message, problems) {
@@ -2782,6 +2783,16 @@ function validCreateCost(v) {
   return Number.isFinite(n) && n > 0 && n <= 10000;
 }
 
+function updatePolicyCreateCounts() {
+  /* v48: live character counters on the two capped create-form
+     fields, same pattern as the title counter (updateCount).
+     Called on input and on every path that sets the fields, so the
+     count is never stale: form open, carrier prefill, Back from
+     review, and cancel. */
+  $("pc-name-count").textContent = $("pc-name").value.length + "/64";
+  $("pc-description-count").textContent = $("pc-description").value.length + "/250";
+}
+
 function collectPolicyCreateForm() {
   /* Reads the create form into the server's form JSON + errors.
      Mirrors the server validation; empty stays empty and errors
@@ -2939,6 +2950,7 @@ function cancelCreateForm() {
   $("pc-intl-cost-type").value = "FLAT_RATE";
   ["pc-dom-service-1", "pc-dom-service-2", "pc-intl-service-1", "pc-intl-service-2"].forEach((id) => { $(id).value = ""; });
   refreshCreateFormVisibility();
+  updatePolicyCreateCounts();
 }
 
 async function openCreateForm() {
@@ -2951,6 +2963,7 @@ async function openCreateForm() {
   $("policy-create-review").classList.add("hidden");
   $("policy-create-form").classList.remove("hidden");
   $("policy-create-form").scrollIntoView();
+  updatePolicyCreateCounts();
   if (!createServicesFetched) {
     try {
       const r = await api("/api/ebay/shipping-services");
@@ -3072,12 +3085,18 @@ $("btn-pc-confirm").addEventListener("click", confirmCreatePolicy);
 $("btn-pc-back").addEventListener("click", () => {
   $("policy-create-review").classList.add("hidden");
   $("policy-create-form").classList.remove("hidden");
+  updatePolicyCreateCounts();
 });
 $("btn-pc-cancel").addEventListener("click", cancelCreateForm);
 $("btn-pc-cancel-2").addEventListener("click", cancelCreateForm);
 ["pc-pickup-only", "pc-local-pickup", "pc-international", "pc-dom-cost-type", "pc-intl-cost-type",
  "pc-dom-service-1", "pc-dom-service-2", "pc-intl-service-1", "pc-intl-service-2"].forEach((id) => {
   $(id).addEventListener("change", refreshCreateFormVisibility);
+});
+/* v48: live counters on the two capped create-form fields, same
+   pattern as the title counter. */
+["pc-name", "pc-description"].forEach((id) => {
+  $(id).addEventListener("input", updatePolicyCreateCounts);
 });
 
 function hidePublishMsg() {

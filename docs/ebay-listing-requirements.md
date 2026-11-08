@@ -474,3 +474,26 @@ policies" path.
   the server. The review screen already shows the full name with
   no truncation, and the prefilled "Calculated " + label name
   cannot exceed 64 (labels are short).
+
+## v48: live character counters, one thumbnail size
+
+- The two capped fields on the create-policy form now show a live
+  character count in the label, same pattern as the listing title
+  counter (`0/80`): policy name `#pc-name-count` (`0/64`) and policy
+  description `#pc-description-count` (`0/250`), both in the existing
+  `.count` style. `updatePolicyCreateCounts()` runs on input and on
+  every path that sets the fields (form open, carrier prefill, Back
+  from review, cancel), so the count is never stale. No maxlength,
+  validation, or error surfacing changed. The description label
+  shortened to "Description" (the "(optional)" moved to the
+  placeholder) so label plus counter fits on one line at 320dp.
+- All photo thumbnails are now one size: `--thumb-size: 128px`,
+  read by the step-1 strip, the listing-page draft strip, and the
+  drafts-list rows. v44 had grown only the step-1 strip (128px)
+  while the draft strip stayed 96px and the drafts list 56px, so
+  the smaller screens looked like the photos had gone back to
+  small. The old `.thumbs.small` 96px overrides are gone and the
+  stale `small` class is off the draft-photos container. The QR
+  code image is not a photo thumbnail and is unchanged. A static
+  guard test (`tests/test_thumbnail_size.py`) fails the suite if
+  any slot gets its own size again.

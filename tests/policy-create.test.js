@@ -40,8 +40,17 @@ function makeEl() {
     dataset: {},
     options: [],
     classList: makeClassList(),
-    addEventListener() {},
+    /* v48: listeners are recorded (not swallowed) so tests can
+       dispatch real input/click events and prove the wiring, not
+       just the update function. */
+    _listeners: {},
+    addEventListener(type, fn) {
+      (el._listeners[type] = el._listeners[type] || []).push(fn);
+    },
     removeEventListener() {},
+    dispatch(type) {
+      (el._listeners[type] || []).forEach((fn) => fn.call(el));
+    },
     appendChild(child) { el.children.push(child); return child; },
     querySelector() { return makeEl(); },
     querySelectorAll() { return []; },
@@ -325,6 +334,62 @@ function setForm(o) {
   const retryCall = fetchCalls.find((c) => String(c.url).includes("fulfillment-policies/create"));
   check("retry re-sends with retry true",
     retryCall && JSON.parse(retryCall.opts.body).retry === true);
+
+  // v48: live character counters on the two capped create-form fields,
+  // same pattern as the title counter. Counters update on input, on
+  // form open, after the carrier prefill, on Back from review, and
+  // reset on cancel — never a stale count.
+  $("pc-name").value = "abc";
+  $("pc-name").dispatch("input");
+  check("name counter updates on input",
+    $("pc-name-count").textContent === "3/64");
+  $("pc-description").value = "hello";
+  $("pc-description").dispatch("input");
+  check("description counter updates on input",
+    $("pc-description-count").textContent === "5/250");
+  $("pc-name").value = "x".repeat(64);
+  $("pc-name").dispatch("input");
+  check("name counter at the limit reads 64/64",
+    $("pc-name-count").textContent === "64/64");
+  $("pc-description").value = "x".repeat(250);
+  $("pc-description").dispatch("input");
+  check("description counter at the limit reads 250/250",
+    $("pc-description-count").textContent === "250/250");
+
+  // Form open shows the count for values already typed (not just on
+  // input): set programmatically, then open.
+  $("pc-name").value = "Open me";
+  $("pc-description").value = "Already typed";
+  await sandbox.openCreateForm();
+  check("form open shows current counts",
+    $("pc-name-count").textContent === "7/64" &&
+    $("pc-description-count").textContent === "13/250");
+
+  // Carrier prefill: the suggested name counts once set.
+  $("pc-name").value = "";
+  $("pc-description").value = "";
+  await sandbox.openCreateFormPrefilled("USPS", "USPSPriority");
+  check("prefilled name counts after the carrier pick",
+    $("pc-name").value === "Calculated USPS Priority Mail" &&
+    $("pc-name-count").textContent === "29/64");
+
+  // Back from review keeps the counts (values intact, count refreshed).
+  setForm({ name: "Back again" });
+  sandbox.showCreateReview();
+  $("pc-name").value = "Back again edited";
+  $("btn-pc-back").dispatch("click");
+  check("Back from review refreshes the counts",
+    !hidden("policy-create-form") &&
+    $("pc-name-count").textContent === "17/64");
+
+  // Cancel clears the fields and the counts reset to zero.
+  setForm({ name: "To cancel", description: "Gone soon" });
+  $("pc-name").dispatch("input");
+  $("pc-description").dispatch("input");
+  sandbox.cancelCreateForm();
+  check("cancel resets both counters to zero",
+    $("pc-name-count").textContent === "0/64" &&
+    $("pc-description-count").textContent === "0/250");
 
   if (failures) { console.log(failures + " FAILURES"); process.exit(1); }
   console.log("policy-create: all checks passed");

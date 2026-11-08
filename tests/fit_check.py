@@ -239,6 +239,67 @@ def main():
           "in-css=%s" % ("#1c1c1e" in css_expanded and
                          "#ffffff" in css_expanded))
 
+    # 12. v48 character counters on the create-policy form: the two
+    # capped fields show a live count in the same .count style as the
+    # title counter, so he never has to guess a length. Label + counter
+    # must fit on one line at the narrowest phone: content = 320 - main
+    # padding (2rem) - step padding (2.2rem). Label text is 17px bold
+    # (~0.52em/char, conservative); the counter is 0.85rem (~0.55em/
+    # char); the at-limit counter is the worst case ("64/64", "250/250").
+    # The description label is just "Description" (the "(optional)"
+    # moved to the placeholder) so the pair fits at 320dp.
+    for name, needle, hay in (
+            ("name counter span", 'id="pc-name-count" class="count">0/64<', html),
+            ("description counter span", 'id="pc-description-count" class="count">0/250<', html),
+            ("counter updater", "updatePolicyCreateCounts", js)):
+        check("present: %s" % name, needle in hay)
+    content320 = 320 - 32 - 35.2
+    label_w = lambda chars: chars * 17 * 0.52
+    count_w = lambda chars: chars * 13.6 * 0.55
+    space_w = 17 * 0.28
+    name_line = label_w(len("Policy name")) + space_w + count_w(len("64/64"))
+    desc_line = label_w(len("Description")) + space_w + count_w(len("250/250"))
+    check("name label + counter fits at 320dp",
+          name_line <= content320,
+          "line %.0fpx <= content %.0fpx" % (name_line, content320))
+    check("description label + counter fits at 320dp",
+          desc_line <= content320,
+          "line %.0fpx <= content %.0fpx" % (desc_line, content320))
+    check("counter spans reuse the .count style (contrast already checked)",
+          rules.get(".count", {}).get("color") == "#666",
+          str(rules.get(".count", {})))
+
+    # 13. v48 one thumbnail size for every photo slot: --thumb-size
+    # 128px, read by the step-1 strip, the listing-page draft strip,
+    # and the drafts-list rows. No stale small size remains.
+    check("shared thumbnail size defined at 128px",
+          re.search(r"--thumb-size\s*:\s*128px", css) is not None)
+    for sel in (".thumbs img", ".thumbs .thumb-skip", ".thumb-wrap",
+                ".thumb-wrap img", ".thumb-img", ".draft-item img"):
+        # .thumb-wrap sets only the width; the img inside sets the
+        # height, so height is not expected on that selector.
+        width_ok = rules.get(sel, {}).get("width") == "var(--thumb-size)"
+        height_ok = (sel == ".thumb-wrap" or
+                     rules.get(sel, {}).get("height") == "var(--thumb-size)")
+        check("thumbnail slot shares the size: %s" % sel,
+              width_ok and height_ok,
+              str(rules.get(sel, {})))
+    check("no stale .thumbs.small override remains",
+          not any(".thumbs.small" in sel for sel in rules))
+    # Drafts-list row at 320dp with a 128px thumb: line 1 holds the
+    # checkbox (1.4rem) + thumb + gaps (2 x 0.7rem); the title/date
+    # block (flex-basis 10rem, min-width 0) wraps below instead of
+    # clipping. The row already flex-wraps (check 2) and the text
+    # column can shrink (check 3).
+    row_fixed = 22.4 + 128 + 2 * 11.2
+    check("drafts row with 128px thumb fits at 320dp",
+          row_fixed <= content320,
+          "thumb+checkbox+gaps %.0fpx <= content %.0fpx" % (row_fixed, content320))
+    content360 = 360 - 32 - 35.2
+    check("drafts row with 128px thumb fits at 360dp",
+          row_fixed <= content360,
+          "thumb+checkbox+gaps %.0fpx <= content %.0fpx" % (row_fixed, content360))
+
     print()
     if FAILURES:
         print("FAILED (%d): %s" % (len(FAILURES), "; ".join(FAILURES)))

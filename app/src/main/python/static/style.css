@@ -86,27 +86,32 @@ button:disabled { opacity: 0.45; cursor: default; }
 .photobtns .filebtn { flex: 1; min-width: 0; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
-/* v44: thumbnails grow (96 -> 128px, small 72 -> 96px) and the X /
-   Edit buttons trim down, so the buttons stop taking up a third of
-   the photo. The v40 arrange-arrow row is gone (drag to reorder),
-   so the wrap is the photo only. */
-.thumbs img { width: 128px; height: 128px; object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
-.thumbs .thumb-skip { width: 128px; height: 128px; border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
-.thumbs.small img { width: 96px; height: 96px; }
+/* v48: ONE thumbnail size for every photo slot in the app (step-1
+   strip, listing-page draft strip, drafts-list rows): --thumb-size.
+   The v44 sizes were never unified (step-1 128px, draft strip 96px,
+   drafts list 56px), so the smaller screens looked like the photos
+   had gone back to small. Every slot below reads this variable, and
+   the old .thumbs.small 96px overrides are gone, so the sizes
+   cannot drift apart again without touching this one line. */
+:root { --thumb-size: 128px; }
+/* v44: thumbnails grow (96 -> 128px) and the X / Edit buttons trim
+   down, so the buttons stop taking up a third of the photo. The v40
+   arrange-arrow row is gone (drag to reorder), so the wrap is the
+   photo only. */
+.thumbs img { width: var(--thumb-size); height: var(--thumb-size); object-fit: cover; border-radius: 8px; border: 1px solid #ddd; }
+.thumbs .thumb-skip { width: var(--thumb-size); height: var(--thumb-size); border-radius: 8px; border: 1px dashed #bbb; background: #f4f4f4; color: #666; font-size: 0.75rem; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0.3rem; box-sizing: border-box; }
 /* v36: draft thumbnails wrap like step-1 thumbnails so the Edit button
    sits on the photo, not floating beside it. */
-.thumbs.small .thumb-wrap { width: 96px; }
 
 /* v5: remove-photo X on each chosen thumbnail */
-.thumb-wrap { position: relative; width: 128px; user-select: none; -webkit-user-select: none; }
-.thumb-wrap img { width: 128px; height: 128px; }
+.thumb-wrap { position: relative; width: var(--thumb-size); user-select: none; -webkit-user-select: none; }
+.thumb-wrap img { width: var(--thumb-size); height: var(--thumb-size); }
 /* v40: the image keeps its overlaid X and Edit buttons inside .thumb-img.
    v44: touch-action none + grab cursor — the frame is the drag handle
    for reorder, so a touch drag moves the photo instead of scrolling
    the page; taps on the X / Edit buttons still click. */
-.thumb-img { position: relative; width: 128px; height: 128px; touch-action: none; cursor: grab; }
+.thumb-img { position: relative; width: var(--thumb-size); height: var(--thumb-size); touch-action: none; cursor: grab; }
 .thumb-img img { display: block; width: 100%; height: 100%; }
-.thumbs.small .thumb-img { width: 96px; height: 96px; }
 /* v44: drag feedback — the photo being moved goes faint, the photo it
    will land before/after gets a blue edge. */
 .thumb-wrap.dragging { opacity: 0.45; }
@@ -171,7 +176,7 @@ button:disabled { opacity: 0.45; cursor: default; }
 .spinner { padding: 1rem; text-align: center; color: #2a63d8; font-weight: 600; }
 
 .draft-item { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.7rem 0; }
-.draft-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.draft-item img { width: var(--thumb-size); height: var(--thumb-size); object-fit: cover; border-radius: 6px; flex-shrink: 0; }
 .draft-item .t { flex: 1 1 10rem; min-width: 0; }
 .draft-item .t b { display: block; overflow-wrap: break-word; }
 .draft-item .t span { color: #666; font-size: 0.85rem; }

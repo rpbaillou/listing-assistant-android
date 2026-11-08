@@ -56,7 +56,7 @@
   <section id="step-draft" class="step hidden">
     <h2>2. Your listing</h2>
     <p class="hint">Everything about the listing lives here. Fill it in, check it, then post it below.</p>
-    <div id="draft-photos" class="thumbs small"></div>
+    <div id="draft-photos" class="thumbs"></div>
     <div class="photobtns">
       <label class="filebtn" for="draft-photo-input">Choose photos</label>
       <button class="filebtn" id="btn-draft-take-photo" type="button">Take photo</button>
@@ -207,10 +207,10 @@
       <div id="policy-create-form" class="hidden">
         <h4>Create a shipping policy</h4>
         <p class="hint">This creates a policy on your eBay account. Nothing is created until you confirm it on the review below.</p>
-        <label>Policy name</label>
+        <label>Policy name <span id="pc-name-count" class="count">0/64</span></label>
         <input id="pc-name" type="text" maxlength="64" placeholder="e.g. Dolls calculated USPS">
-        <label>Policy description (optional)</label>
-        <input id="pc-description" type="text" maxlength="250" placeholder="Only you see this">
+        <label>Description <span id="pc-description-count" class="count">0/250</span></label>
+        <input id="pc-description" type="text" maxlength="250" placeholder="Only you see this (optional)">
         <label><input id="pc-pickup-only" type="checkbox"> Local pickup only (no shipping)</label>
         <div id="pc-domestic">
           <label>US shipping cost type</label>
