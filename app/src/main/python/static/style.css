@@ -184,6 +184,13 @@ button:disabled { opacity: 0.45; cursor: default; }
 .draft-actions { display: flex; gap: 0.6rem; flex-shrink: 0; flex-wrap: wrap; }
 .draft-actions button { flex-shrink: 0; }
 .draft-item .del { background: #fde8e8; color: #a00; }
+/* v46: drafts list sections. Working drafts on top; drafts already live
+   on eBay in a collapsible section at the bottom, closed by default.
+   The section header is a full-width button with a 44px tap target;
+   the chevron shows open or closed. Colors reuse the verified
+   body-text-on-white pair (#1c1c1e on #ffffff). */
+.draft-section h3 { margin: 0.9rem 0 0.2rem; font-size: 1.05rem; color: #1c1c1e; }
+.draft-section-toggle { display: block; width: 100%; min-height: 44px; margin: 0.9rem 0 0.2rem; padding: 0.4rem 0; border: 0; background: none; text-align: left; font-size: 1.05rem; font-weight: 700; color: #1c1c1e; cursor: pointer; }
 
 /* v24: fast-post pack. Quick-post button is full width like Identify;
    batch tick boxes are finger-sized; batch rows wrap like draft rows

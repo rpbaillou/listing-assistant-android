@@ -1052,6 +1052,67 @@ function dateHtml(iso) {
 /* v20: "My drafts" is a quiet link above step 1 now, not a header button.
    Same panel, same handler; preventDefault keeps the "#" link from
    touching the URL. */
+/* v46: one row builder, shared by both drafts sections (working drafts
+   on top, already-live drafts in the collapsible section below). */
+function makeDraftRow(d) {
+  const row = document.createElement("div");
+  row.className = "draft-item";
+  /* v21: buttons live in one .draft-actions unit so they wrap below the
+     text together instead of one clipping off the right edge. The date
+     renders as two nowrap spans (dateHtml: date, time) so the row can
+     break cleanly between them, never mid-string. "Listed on eBay"
+     is a separate span so it can wrap to the next line cleanly.
+     v24: a tick box (batch posting) and a Post button (straight to
+     the listing page) join the row. Listed drafts get no Post button — they are
+     already live, and the publish step refuses them anyway. */
+  row.innerHTML =
+    '<input type="checkbox" class="draft-check" data-id="' + d.id +
+    '" aria-label="Select for batch posting">' +
+    (d.thumb ? '<img src="/photos/' + d.thumb + '">' : "") +
+    '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated) +
+    (d.listed ? ' <span class="d-listed">· Listed on eBay</span>' : "") + "</div>" +
+    '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
+    (d.listed ? "" : '<button type="button" class="primary post">Post</button>') +
+    '<button type="button" class="del">Delete</button></div>';
+  row.querySelector(".secondary").addEventListener("click", async () => {
+    const { draft: full } = await api("/api/drafts/" + d.id);
+    loadDraftIntoForm(full);
+    await prefillListing();
+    show("step-draft");
+  });
+  const postBtn = row.querySelector(".post");
+  if (postBtn) {
+    postBtn.addEventListener("click", async () => {
+      /* v29: straight to the listing page — photos, title, price and
+         everything else come from the draft, no re-picking, no AI.
+         Nothing goes live from here: the listing page's Post button
+         plus its confirmation dialog still stand between him and a
+         live listing. */
+      const { draft: full } = await api("/api/drafts/" + d.id);
+      loadDraftIntoForm(full);
+      await prefillListing();
+      const notes = [];
+      if (!String($("f-price").value || "").trim())
+        notes.push("Price is not set — add it before listing.");
+      if (!$("p-category").value.trim())
+        notes.push("Category is not set — pick one with Suggest below.");
+      const note = $("listing-note");
+      if (notes.length) {
+        note.textContent = notes.join(" ");
+        note.classList.remove("hidden");
+      } else {
+        note.classList.add("hidden");
+      }
+      show("step-draft");
+    });
+  }
+  row.querySelector(".del").addEventListener("click", async () => {
+    if (!confirm("Delete this draft and its photos?")) return;
+    await api("/api/drafts/" + d.id, { method: "DELETE" });
+    $("btn-drafts").click();
+  });
+  return row;
+}
 $("btn-drafts").addEventListener("click", async (e) => {
   e.preventDefault();
   const list = $("drafts-list");
@@ -1064,65 +1125,49 @@ $("btn-drafts").addEventListener("click", async (e) => {
       return;
     }
     list.innerHTML = "";
-    drafts.forEach((d) => {
-      const row = document.createElement("div");
-      row.className = "draft-item";
-      /* v21: buttons live in one .draft-actions unit so they wrap below the
-         text together instead of one clipping off the right edge. The date
-         renders as two nowrap spans (dateHtml: date, time) so the row can
-         break cleanly between them, never mid-string. "Listed on eBay"
-         is a separate span so it can wrap to the next line cleanly.
-         v24: a tick box (batch posting) and a Post button (straight to
-         the listing page) join the row. Listed drafts get no Post button — they are
-         already live, and the publish step refuses them anyway. */
-      row.innerHTML =
-        '<input type="checkbox" class="draft-check" data-id="' + d.id +
-        '" aria-label="Select for batch posting">' +
-        (d.thumb ? '<img src="/photos/' + d.thumb + '">' : "") +
-        '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated) +
-        (d.listed ? ' <span class="d-listed">· Listed on eBay</span>' : "") + "</div>" +
-        '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
-        (d.listed ? "" : '<button type="button" class="primary post">Post</button>') +
-        '<button type="button" class="del">Delete</button></div>';
-      row.querySelector(".secondary").addEventListener("click", async () => {
-        const { draft: full } = await api("/api/drafts/" + d.id);
-        loadDraftIntoForm(full);
-        await prefillListing();
-        show("step-draft");
-      });
-      const postBtn = row.querySelector(".post");
-      if (postBtn) {
-        postBtn.addEventListener("click", async () => {
-          /* v29: straight to the listing page — photos, title, price and
-             everything else come from the draft, no re-picking, no AI.
-             Nothing goes live from here: the listing page's Post button
-             plus its confirmation dialog still stand between him and a
-             live listing. */
-          const { draft: full } = await api("/api/drafts/" + d.id);
-          loadDraftIntoForm(full);
-          await prefillListing();
-          const notes = [];
-          if (!String($("f-price").value || "").trim())
-            notes.push("Price is not set — add it before listing.");
-          if (!$("p-category").value.trim())
-            notes.push("Category is not set — pick one with Suggest below.");
-          const note = $("listing-note");
-          if (notes.length) {
-            note.textContent = notes.join(" ");
-            note.classList.remove("hidden");
-          } else {
-            note.classList.add("hidden");
-          }
-          show("step-draft");
-        });
-      }
-      row.querySelector(".del").addEventListener("click", async () => {
-        if (!confirm("Delete this draft and its photos?")) return;
-        await api("/api/drafts/" + d.id, { method: "DELETE" });
-        $("btn-drafts").click();
-      });
-      list.appendChild(row);
-    });
+    /* v46: two sections. Working drafts on top, newest first (server
+       order, v45); drafts already live on eBay in a collapsible
+       section at the bottom, closed by default, so the working drafts
+       stay front and center. The section itself is the indication —
+       no badge needed. */
+    const unlisted = drafts.filter((d) => !d.listed);
+    const listed = drafts.filter((d) => d.listed);
+    const top = document.createElement("div");
+    top.className = "draft-section";
+    const topHead = document.createElement("h3");
+    topHead.textContent = "Drafts (" + unlisted.length + ")";
+    top.appendChild(topHead);
+    if (unlisted.length) {
+      unlisted.forEach((d) => top.appendChild(makeDraftRow(d)));
+    } else {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = "No drafts yet. Start one from step 1.";
+      top.appendChild(hint);
+    }
+    list.appendChild(top);
+    if (listed.length) {
+      const bottom = document.createElement("div");
+      bottom.className = "draft-section";
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "draft-section-toggle";
+      toggle.setAttribute("aria-expanded", "false");
+      const body = document.createElement("div");
+      body.className = "hidden";
+      listed.forEach((d) => body.appendChild(makeDraftRow(d)));
+      const setToggle = (open) => {
+        body.classList.toggle("hidden", !open);
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        toggle.textContent = (open ? "▾ " : "▸ ") + "Listed on eBay (" + listed.length + ")";
+      };
+      toggle.addEventListener("click", () =>
+        setToggle(body.classList.contains("hidden")));
+      setToggle(false);
+      bottom.appendChild(toggle);
+      bottom.appendChild(body);
+      list.appendChild(bottom);
+    }
   } catch (e) {
     list.innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
   }

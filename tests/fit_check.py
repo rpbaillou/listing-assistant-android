@@ -221,6 +221,24 @@ def main():
           opt_rule.get("color") in ("#ffffff", "#fff"),
           str(opt_rule))
 
+    # 11. v46 drafts list sections: the Listed section toggle exists in
+    # the shipped JS and CSS, is a 44px tap target, and reuses the
+    # verified body-text-on-white contrast pair.
+    for name, needle, hay in (
+            ("draft sections", "Listed on eBay (", js),
+            ("section toggle style", ".draft-section-toggle", css),
+            ("section header style", ".draft-section h3", css)):
+        check("present: %s" % name, needle in hay)
+    check("section toggle is a 44px tap target",
+          rules.get(".draft-section-toggle", {}).get("min-height") == "44px",
+          str(rules.get(".draft-section-toggle", {})))
+    ratio = contrast("#1c1c1e", "#ffffff")
+    check("contrast draft section header %.1f:1" % ratio,
+          ratio >= 4.5 and "#1c1c1e" in css_expanded and
+          "#ffffff" in css_expanded,
+          "in-css=%s" % ("#1c1c1e" in css_expanded and
+                         "#ffffff" in css_expanded))
+
     print()
     if FAILURES:
         print("FAILED (%d): %s" % (len(FAILURES), "; ".join(FAILURES)))

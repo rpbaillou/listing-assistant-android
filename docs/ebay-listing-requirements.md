@@ -423,3 +423,21 @@ policies" path.
   recently updated, so a draft he just opened or edited jumps to
   the top. The listing page renders drafts in server order, so no
   client change was needed.
+
+## Drafts list sections — v46
+
+- "My drafts" now has two sections. Working (unlisted) drafts sit
+  on top under a "Drafts (n)" header, newest first within the
+  section (v45 sort). Drafts already live on eBay sit in a
+  "Listed on eBay (n)" section at the bottom, collapsible, closed
+  by default; its header is a real button with aria-expanded and a
+  chevron. The section itself is the indication, no badge needed.
+  Listed rows keep no Post button and batch still excludes them.
+  If there are no listed drafts the section is hidden entirely;
+  if there are no working drafts the Drafts section shows the
+  "No drafts yet" hint. Grouping is client-side on the `listed`
+  flag from `GET /api/drafts`; the row's small "Listed on eBay"
+  text stays as-is inside the Listed section. Boundary: the
+  Listed section only knows drafts the app published
+  (`ebay_listing_id` saved on publish); a draft listed outside
+  the app stays in Drafts.
