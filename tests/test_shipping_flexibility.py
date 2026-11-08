@@ -37,25 +37,46 @@ def tearDownModule():
 
 
 # Dummy policies only — never real policy IDs.
-def _calc_policy(pid, services, intl=False):
+def _intl_shell(shape):
+    """v43: an INTERNATIONAL option shell with no real service — the
+    shape eBay may serialize on a domestic-only policy."""
+    if shape == "missing":
+        return {"optionType": "INTERNATIONAL", "costType": "FLAT_RATE"}
+    if shape == "empty":
+        return {"optionType": "INTERNATIONAL", "costType": "FLAT_RATE",
+                "shippingServices": []}
+    if shape == "blank":
+        return {"optionType": "INTERNATIONAL", "costType": "FLAT_RATE",
+                "shippingServices": [{"shippingServiceCode": ""}]}
+    raise ValueError(shape)
+
+
+def _calc_policy(pid, services, intl=False, intl_shell=None):
     opts = [{"optionType": "DOMESTIC", "costType": "CALCULATED",
              "shippingServices": [{"shippingServiceCode": s}
                                   for s in services]}]
     if intl:
         opts.append({"optionType": "INTERNATIONAL", "costType": "FLAT_RATE",
                      "shippingServices": [{"shippingServiceCode": "USPSPriority"}]})
+    if intl_shell is not None:
+        opts.append(_intl_shell(intl_shell))
     return {"fulfillmentPolicyId": pid, "name": "Dummy " + pid,
             "marketplaceId": "EBAY_US", "shippingOptions": opts}
 
 
-def _flat_policy(pid, services):
+def _flat_policy(pid, services, intl=False, intl_shell=None):
+    opts = [{"optionType": "DOMESTIC",
+             "costType": "FLAT_RATE",
+             "shippingServices": [
+                 {"shippingServiceCode": s}
+                 for s in services]}]
+    if intl:
+        opts.append({"optionType": "INTERNATIONAL", "costType": "FLAT_RATE",
+                     "shippingServices": [{"shippingServiceCode": "USPSPriority"}]})
+    if intl_shell is not None:
+        opts.append(_intl_shell(intl_shell))
     return {"fulfillmentPolicyId": pid, "name": "Dummy " + pid,
-            "marketplaceId": "EBAY_US",
-            "shippingOptions": [{"optionType": "DOMESTIC",
-                                 "costType": "FLAT_RATE",
-                                 "shippingServices": [
-                                     {"shippingServiceCode": s}
-                                     for s in services]}]}
+            "marketplaceId": "EBAY_US", "shippingOptions": opts}
 
 
 POLICY_LIST = {"fulfillmentPolicies": [
@@ -84,6 +105,18 @@ class CatalogTest(unittest.TestCase):
             self.assertIn(code, m.SERVICE_LABELS)
             self.assertTrue(m.SERVICE_LABELS[code])
             self.assertNotEqual(m.SERVICE_LABELS[code], code)
+
+    def test_harvested_only_codes_have_plain_labels(self):
+        # v43: UPSGroundSaver and FedExSmartPost are harvested from his
+        # own policies (not picker codes), but they must not render as
+        # raw codes. Labels are display-only; the code itself is
+        # always sent verbatim. They stay out of the picker catalog.
+        self.assertEqual(m.SERVICE_LABELS["UPSGroundSaver"],
+                         "UPS Ground Saver")
+        self.assertEqual(m.SERVICE_LABELS["FedExSmartPost"],
+                         "FedEx Ground Economy")
+        self.assertNotIn("UPSGroundSaver", m.DOCUMENTED_DOMESTIC_SERVICES)
+        self.assertNotIn("FedExSmartPost", m.DOCUMENTED_DOMESTIC_SERVICES)
 
     def test_carrier_map_covers_the_whole_catalog(self):
         mapped = [c for carrier in m.CARRIERS
@@ -315,11 +348,15 @@ class PolicyForServiceTest(unittest.TestCase):
         r = self._call({"carrier": "fedex", "service_code": "FedEx2Day"})
         self.assertEqual(r.status_code, 200)
         # No FedEx policy in POLICY_LIST, so null — but not a 400.
-        self.assertEqual(r.get_json(), {"policy_id": None})
+        self.assertEqual(r.get_json(),
+                         {"policy_id": None, "flat_policy_id": None,
+                          "flat_name": None})
 
     def test_no_match_returns_null(self):
         r = self._call({"carrier": "FedEx", "service_code": "FedEx2Day"})
-        self.assertEqual(r.get_json(), {"policy_id": None})
+        self.assertEqual(r.get_json(),
+                         {"policy_id": None, "flat_policy_id": None,
+                          "flat_name": None})
 
     def test_bad_carrier_and_empty_service_are_400(self):
         r = self._call({"carrier": "DHL", "service_code": "USPSPriority"})
@@ -333,6 +370,72 @@ class PolicyForServiceTest(unittest.TestCase):
                                                   error_id=""))
         self.assertEqual(r.status_code, 200)
         self.assertTrue(r.get_json()["needs_scope_reconnect"])
+
+    def test_empty_international_shell_does_not_disqualify(self):
+        # v43: eBay may serialize an INTERNATIONAL option with no
+        # shippingServices key at all on a domestic-only policy. That
+        # shell is not self-ship international; the policy matches.
+        only = {"fulfillmentPolicies": [
+            _calc_policy("555", ["USPSPriority"], intl_shell="missing")]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], "555")
+
+    def test_international_option_with_empty_services_does_not_disqualify(self):
+        only = {"fulfillmentPolicies": [
+            _calc_policy("555", ["USPSPriority"], intl_shell="empty")]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], "555")
+
+    def test_international_option_with_blank_code_does_not_disqualify(self):
+        only = {"fulfillmentPolicies": [
+            _calc_policy("555", ["USPSPriority"], intl_shell="blank")]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], "555")
+
+    def test_real_international_service_still_disqualifies(self):
+        # v43: the eIS-only intent is preserved — a real self-ship
+        # international service still means the policy never matches.
+        only = {"fulfillmentPolicies": [
+            _calc_policy("222", ["USPSPriority"], intl=True)]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], None)
+        self.assertEqual(r.get_json()["flat_policy_id"], None)
+
+    def test_flat_policy_carrying_service_is_reported_honestly(self):
+        # v43: the matcher is calculated-only, but a flat policy
+        # carrying the service is reported as a flat match — never as
+        # "no policy with that service yet".
+        only = {"fulfillmentPolicies": [
+            _flat_policy("333", ["USPSPriority"])]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], None)
+        self.assertEqual(r.get_json()["flat_policy_id"], "333")
+        self.assertEqual(r.get_json()["flat_name"], "Dummy 333")
+
+    def test_calculated_match_wins_over_flat(self):
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"})
+        self.assertEqual(r.get_json()["policy_id"], "111")
+        self.assertEqual(r.get_json()["flat_policy_id"], None)
+
+    def test_flat_policy_with_international_service_is_not_offered(self):
+        only = {"fulfillmentPolicies": [
+            _flat_policy("333", ["USPSPriority"], intl=True)]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["policy_id"], None)
+        self.assertEqual(r.get_json()["flat_policy_id"], None)
+
+    def test_flat_policy_with_empty_international_shell_is_offered(self):
+        only = {"fulfillmentPolicies": [
+            _flat_policy("333", ["USPSPriority"], intl_shell="empty")]}
+        r = self._call({"carrier": "USPS", "service_code": "USPSPriority"},
+                       fake_list=only)
+        self.assertEqual(r.get_json()["flat_policy_id"], "333")
 
 
 class DraftSaveCarrierTest(unittest.TestCase):

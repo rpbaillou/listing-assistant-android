@@ -332,3 +332,33 @@ policies" path.
   options are dark background with light text (global `select
   option` rule in the stylesheet), because Android draws the open
   option list on a white sheet.
+
+## Shipping fixes, v43 — audit follow-ups
+
+- The carrier/service pickers broke on the real phone because
+  `select.children` is an HTMLCollection (no Array methods), while
+  the node test mocks used arrays. Fixed with `Array.from(...)` at
+  both throw sites; a static guard test now fails the suite if
+  `.children.` or `.options.` is ever followed by an Array method,
+  and a real-DOM regression suite
+  (`tests/real-dom-shipping.test.js`) runs the shipping flows
+  against a browser-faithful DOM in both fetch orders.
+- Two harvested-only service codes are labeled (display only; the
+  code is always sent verbatim): `FedExSmartPost` is the eBay API
+  code for FedEx Ground Economy (isdntek eBay shipping-code table;
+  the seller's orphan policy is named "Calculated: FedExSmartPost"),
+  and `UPSGroundSaver` is the eBay code for UPS Ground Saver
+  (SolidCommerce GetEbayShipService sample enum; eBay's own label
+  screens offer "UPS Ground Saver"). Neither joins the 11-code
+  picker catalog; they are harvested labels only.
+- Policy-for-service: an INTERNATIONAL option with no services at
+  all (an empty shell eBay may serialize on a domestic-only policy)
+  no longer disqualifies the policy; only a real self-ship
+  international service does. When a flat policy carries the
+  picked service, the page says so honestly and offers to select
+  it, instead of claiming no policy exists; the create form opens
+  only when no policy at all carries the service.
+- The "It is live!" note now survives the post-publish page
+  refresh (previously hidden again in the same tick by
+  `prefillListing()`), and a select failure after a successful
+  policy create can no longer report the create itself as failed.

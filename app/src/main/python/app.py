@@ -2102,6 +2102,9 @@ SERVICE_LABELS = {
     "USPSPriority": "USPS Priority Mail",
     "USPSParcel": "USPS Parcel Post",
     "UPSGround": "UPS Ground",
+    # v43: harvested-only labels (see the note on carrierServiceLabels
+    # in static/app.js for the attestation). Not picker codes.
+    "UPSGroundSaver": "UPS Ground Saver",
     "UPS3rdDay": "UPS 3 Day Select",
     "UPS2DayAirAM": "UPS 2nd Day Air",
     "UPSNextDay": "UPS Next Day Air Saver",
@@ -2109,6 +2112,7 @@ SERVICE_LABELS = {
     "FedExHomeDelivery": "FedEx Home Delivery",
     "FedEx2Day": "FedEx 2 Day",
     "FedExExpressSaver": "FedEx Express Saver",
+    "FedExSmartPost": "FedEx Ground Economy",
 }
 
 # v42: service codes for the listing-page carrier picker, in the order
@@ -2495,13 +2499,22 @@ def api_ebay_policy_for_service():
 
     The listing page's carrier picker asks for a policy that ships
     with this service. Returns {"policy_id", "name"} for the first
-    match, or {"policy_id": null} when no policy fits. A policy only
+    match, or {"policy_id": null} when no policy fits. v43: a flat
+    policy carrying the service is reported honestly instead ("Your
+    flat policy X already offers this service") as
+    {"policy_id": null, "flat_policy_id": ..., "flat_name": ...},
+    and the page offers to select it; only when no policy at all
+    carries the service does the page open the v41 create form
+    prefilled with it. A policy only
     matches when: its domestic option charges by weight (CALCULATED —
     the carrier picker is the weight-driven path; flat/free policies
     stay on the saved-policy dropdown), one of its domestic services
     is the requested code, and it has NO international option (the
     eBay International Shipping ONLY decision: a policy with
-    self-ship international must never be picked silently). A 403
+    self-ship international must never be picked silently). v43: an
+    INTERNATIONAL option with no services at all (an empty shell eBay
+    may serialize on a domestic-only policy) does not disqualify.
+    A 403
     maps to the reconnect signal, exactly like the policy list. When
     there is no match, the page opens the v41 create form prefilled
     with this service, and the review-before-create screen still
@@ -2534,6 +2547,7 @@ def api_ebay_policy_for_service():
         for p in (listing.get("fulfillmentPolicies") or []):
             if isinstance(p, dict):
                 policies.append(p)
+    flat_match = None
     for p in policies:
         options = p.get("shippingOptions") or []
         domestic = None
@@ -2545,19 +2559,43 @@ def api_ebay_policy_for_service():
             if opt_type == "DOMESTIC":
                 domestic = opt
             elif opt_type == "INTERNATIONAL":
-                has_international = True
+                # v43: only a real self-ship international service
+                # disqualifies. eBay may serialize an empty
+                # INTERNATIONAL option shell (no shippingServices key,
+                # or an empty list) on a domestic-only policy; that
+                # shell is not self-ship international, and treating
+                # it as one would leave no policy ever matching.
+                services = opt.get("shippingServices") or []
+                if any(isinstance(s, dict) and
+                       str(s.get("shippingServiceCode", "") or "").strip()
+                       for s in services):
+                    has_international = True
         if domestic is None or has_international:
-            continue
-        if str(domestic.get("costType", "") or "").strip().upper() != "CALCULATED":
             continue
         codes = [str(s.get("shippingServiceCode", "") or "").strip()
                  for s in (domestic.get("shippingServices") or [])
                  if isinstance(s, dict)]
-        if service_code in codes:
+        if service_code not in codes:
+            continue
+        cost_type = str(domestic.get("costType", "") or "").strip().upper()
+        if cost_type == "CALCULATED":
             return jsonify({
                 "policy_id": str(p.get("fulfillmentPolicyId", "") or "").strip(),
-                "name": str(p.get("name", "") or "").strip()})
-    return jsonify({"policy_id": None})
+                "name": str(p.get("name", "") or "").strip(),
+                "flat_policy_id": None, "flat_name": None})
+        # v43: the matcher is calculated-only by design, but a flat
+        # policy carrying the service is still worth reporting
+        # honestly (the page offers it instead of claiming no policy
+        # exists). First flat match wins; a calculated match above
+        # always wins over it.
+        if cost_type == "FLAT_RATE" and flat_match is None:
+            flat_match = p
+    if flat_match is not None:
+        return jsonify({
+            "policy_id": None,
+            "flat_policy_id": str(flat_match.get("fulfillmentPolicyId", "") or "").strip(),
+            "flat_name": str(flat_match.get("name", "") or "").strip()})
+    return jsonify({"policy_id": None, "flat_policy_id": None, "flat_name": None})
 
 
 @app.route("/api/ebay/fulfillment-policies/create", methods=["POST"])

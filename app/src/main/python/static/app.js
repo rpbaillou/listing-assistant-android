@@ -1295,7 +1295,10 @@ function renderBatchPolicyPick(policies, message) {
     const b = document.createElement("button");
     b.type = "button"; b.className = "ghost";
     b.textContent = (p.name || "Unnamed policy") + " — " +
-      policyTypeLabel(p.cost_type) + " (" + p.id + ")";
+      policyTypeLabel(p.cost_type); /* v43: no policy ID on the button
+      (the number still travels in the click handler). A policy name
+      is a label; the ID is noise, same rule as the single-listing
+      dropdown fixed in v35. */
     b.addEventListener("click", () => pickBatchPolicy(p.id));
     list.appendChild(b);
   });
@@ -1475,14 +1478,20 @@ function listingPrefill(draftObj, preset, defaults, form) {
    separate panel-save chain anymore. */
 let pickedCat = { id: "", name: "" };
 
-async function prefillListing() {
+async function prefillListing(opts) {
   /* v29: fills the listing page's eBay fields when a draft opens and
      renders the eBay status line. Draft first, preset second, .env
      defaults last (listingPrefill). Never throws: a failed status or
-     preset fetch leaves the page as loaded from the draft. */
+     preset fetch leaves the page as loaded from the draft.
+     v43: opts.keepPublishOk skips hiding the fresh "It is live!"
+     note when this runs right after a successful publish (postPublish
+     calls it to refresh the page state). Without the flag the note
+     set in the same tick is hidden again before the seller ever sees
+     it. The hide stays correct on a plain draft open: it clears a
+     stale note from an earlier visit. */
   if (!draft) return;
   $("publish-error").classList.add("hidden");
-  $("publish-ok").classList.add("hidden");
+  if (!opts || !opts.keepPublishOk) $("publish-ok").classList.add("hidden");
   $("listing-note").classList.add("hidden");
   const box = $("ebay-status");
   try {
@@ -2097,7 +2106,10 @@ async function postPublish(body) {
   ok.innerHTML = "It is live! <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" +
     "<br>Item number: " + esc(r.listing_id);
   ok.classList.remove("hidden");
-  prefillListing();
+  /* v43: refresh the page (status, already-live state) but keep the
+     fresh success note visible — prefillListing hides it by default,
+     which is only right when opening a draft. */
+  prefillListing({ keepPublishOk: true });
   return "listed";
 }
 
@@ -2237,17 +2249,29 @@ let createFromCarrierPick = false;
 let pendingShipService = "";
 
 function carrierServiceLabels() {
+  /* v43: two harvested-only codes his policies carry, labeled from
+     eBay's own data — FedExSmartPost is the eBay API code for FedEx
+     Ground Economy (isdntek eBay shipping-code table; his orphan
+     policy is named "Calculated: FedExSmartPost"); UPSGroundSaver is
+     the eBay code for UPS Ground Saver (SolidCommerce GetEbayShipService
+     sample enum; eBay's own label screens offer "UPS Ground Saver").
+     Labels are display-only: the code itself is always sent verbatim,
+     so a label can never change what eBay receives. These two are
+     NOT added to the 11-code picker catalog (DOCUMENTED_DOMESTIC_SERVICES):
+     they are harvested labels only. */
   return { "USPSGroundAdvantage": "USPS Ground Advantage",
            "USPSPriority": "USPS Priority Mail",
            "USPSParcel": "USPS Parcel Post",
            "UPSGround": "UPS Ground",
+           "UPSGroundSaver": "UPS Ground Saver",
            "UPS3rdDay": "UPS 3 Day Select",
            "UPS2DayAirAM": "UPS 2nd Day Air",
            "UPSNextDay": "UPS Next Day Air Saver",
            "FedExGround": "FedEx Ground",
            "FedExHomeDelivery": "FedEx Home Delivery",
            "FedEx2Day": "FedEx 2 Day",
-           "FedExExpressSaver": "FedEx Express Saver" };
+           "FedExExpressSaver": "FedEx Express Saver",
+           "FedExSmartPost": "FedEx Ground Economy" };
 }
 
 async function fetchCarrierServices() {
@@ -2291,7 +2315,7 @@ async function fetchCarrierServices() {
 
 function serviceListed(code) {
   const sel = $("ship-service");
-  return (sel.children || []).some((o) => o.value === code);
+  return Array.from(sel.children || []).some((o) => o.value === code);
 }
 
 function populateShipService() {
@@ -2429,6 +2453,27 @@ async function onShipServicePicked() {
     await selectShippingPolicy(r.policy_id);
     return;
   }
+  /* v43: the matcher is calculated-only by design, so a service
+     carried only by a flat policy must not be reported as "no
+     policy". Offer the flat policy honestly; the seller picks it,
+     the app never switches the pricing model on its own. */
+  if (r.flat_policy_id) {
+    note.innerHTML = "";
+    note.textContent = "Your flat policy " + (r.flat_name || "on your account") +
+      " already offers " + createServiceLabel(code) + ".";
+    const useFlat = document.createElement("button");
+    useFlat.type = "button";
+    useFlat.id = "btn-use-flat-policy";
+    useFlat.className = "ghost";
+    useFlat.textContent = "Use that policy";
+    useFlat.addEventListener("click", async () => {
+      note.classList.add("hidden");
+      await selectShippingPolicy(r.flat_policy_id);
+    });
+    note.appendChild(useFlat);
+    note.classList.remove("hidden");
+    return;
+  }
   note.textContent = "No policy with that service yet — check the details below and confirm to create one.";
   note.classList.remove("hidden");
   openCreateFormPrefilled(carrier, code);
@@ -2446,7 +2491,7 @@ async function openCreateFormPrefilled(carrier, code) {
   if (!$("pc-name").value) $("pc-name").value = "Calculated " + label;
   $("pc-dom-cost-type").value = "CALCULATED";
   const dom1 = $("pc-dom-service-1");
-  const listed = (dom1.children || []).some((o) => o.value === code);
+  const listed = Array.from(dom1.children || []).some((o) => o.value === code);
   if (listed) {
     dom1.value = code;
     $("pc-dom-service-1-other").value = "";
@@ -2573,17 +2618,22 @@ let pendingCreateForm = null;
 let createRetry = false;
 
 function createServiceLabel(code) {
+  /* v43: UPSGroundSaver and FedExSmartPost labeled — see the note on
+     carrierServiceLabels() for the attestation. Harvested labels
+     only; not added to the picker catalog. */
   const labels = { "USPSGroundAdvantage": "USPS Ground Advantage",
                    "USPSPriority": "USPS Priority Mail",
                    "USPSParcel": "USPS Parcel Post",
                    "UPSGround": "UPS Ground",
+                   "UPSGroundSaver": "UPS Ground Saver",
                    "UPS3rdDay": "UPS 3 Day Select",
                    "UPS2DayAirAM": "UPS 2nd Day Air",
                    "UPSNextDay": "UPS Next Day Air Saver",
                    "FedExGround": "FedEx Ground",
                    "FedExHomeDelivery": "FedEx Home Delivery",
                    "FedEx2Day": "FedEx 2 Day",
-                   "FedExExpressSaver": "FedEx Express Saver" };
+                   "FedExExpressSaver": "FedEx Express Saver",
+                   "FedExSmartPost": "FedEx Ground Economy" };
   return labels[code] || code;
 }
 
@@ -2885,9 +2935,18 @@ async function confirmCreatePolicy() {
     createFromCarrierPick = false;
     $("policy-create-review").classList.add("hidden");
     $("policy-create-form").classList.add("hidden");
-    await selectShippingPolicy(data.policy_id);
+    /* v43: a select failure after a successful create must never
+       report the create itself as failed — the policy exists on
+       eBay either way. Say so plainly and let him pick it from the
+       usual-policies dropdown below. */
+    let selected = false;
+    try {
+      await selectShippingPolicy(data.policy_id);
+      selected = true;
+    } catch (e) { selected = false; }
     const note = $("policy-create-note");
-    note.textContent = "Policy created and selected.";
+    note.textContent = selected ? "Policy created and selected."
+      : "Policy created. Pick it from your usual policies below.";
     note.classList.remove("hidden");
   } catch (e) {
     errEl.textContent = e.message;

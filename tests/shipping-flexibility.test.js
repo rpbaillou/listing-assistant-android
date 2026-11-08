@@ -112,15 +112,26 @@ const serviceTexts = () => $("ship-service").children.map((o) => o.textContent);
 const serviceValues = () => $("ship-service").children.map((o) => o.value);
 
 (async () => {
-  // The service catalog: all 11 attested codes, plain labels, no IDs.
+  // The service catalog: all 11 attested picker codes, plain labels,
+  // no IDs. v43: the label map also carries the 2 harvested-only
+  // codes his policies use (UPSGroundSaver, FedExSmartPost), so the
+  // map is 13 entries — the picker catalog itself stays exactly the
+  // 11 documented codes (Python CatalogTest covers that side).
   const labels = sandbox.carrierServiceLabels();
-  check("catalog has all 11 attested codes", Object.keys(labels).length === 11);
+  const documented = ["USPSGroundAdvantage", "USPSPriority", "USPSParcel",
+    "UPSGround", "UPS3rdDay", "UPS2DayAirAM", "UPSNextDay",
+    "FedExGround", "FedExHomeDelivery", "FedEx2Day", "FedExExpressSaver"];
+  check("catalog has all 11 attested codes",
+    documented.every((c) => c in labels));
   check("catalog labels are plain names, never codes or IDs",
     labels.USPSPriority === "USPS Priority Mail" &&
     labels.USPSGroundAdvantage === "USPS Ground Advantage" &&
     labels.UPS3rdDay === "UPS 3 Day Select" &&
     labels.FedExHomeDelivery === "FedEx Home Delivery" &&
     labels.FedExExpressSaver === "FedEx Express Saver");
+  check("harvested-only codes have plain labels too",
+    labels.UPSGroundSaver === "UPS Ground Saver" &&
+    labels.FedExSmartPost === "FedEx Ground Economy");
   check("no invented codes in the catalog",
     !("USPSExpress" in labels) && !("USPSFirstClass" in labels) &&
     !("UPS3DaySelect" in labels));
