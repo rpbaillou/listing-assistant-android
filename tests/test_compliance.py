@@ -41,15 +41,15 @@ def tearDownModule():
 FLAT_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
                "marketplaceId": "EBAY_US",
                "shippingOptions": [{"optionType": "DOMESTIC",
-                                    "costType": "FLAT_RATE"}]}
+                                    "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 CALC_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy Calculated",
                "marketplaceId": "EBAY_US",
                "shippingOptions": [{"optionType": "DOMESTIC",
-                                    "costType": "CALCULATED"}]}
+                                    "costType": "CALCULATED", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 OTHER_POLICY = {"fulfillmentPolicyId": "999", "name": "Dummy Other",
                 "marketplaceId": "EBAY_US",
                 "shippingOptions": [{"optionType": "DOMESTIC",
-                                     "costType": "FLAT_RATE"}]}
+                                     "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 
 DUMMY_PACKAGE = {"weight_value": "4", "weight_unit": "OUNCE",
                  "length": "12", "width": "9", "height": "1"}

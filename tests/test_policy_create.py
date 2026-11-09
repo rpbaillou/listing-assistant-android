@@ -221,7 +221,7 @@ class CreateEndpointTest(unittest.TestCase):
             {"fulfillmentPolicyId": "777", "name": "Dummy Doll Policy",
              "marketplaceId": "EBAY_US",
              "shippingOptions": [{"optionType": "DOMESTIC",
-                                  "costType": "FLAT_RATE"}]}]}
+                                  "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}]}
 
     def test_success_returns_id_and_fresh_list(self):
         seen = {}
@@ -250,7 +250,7 @@ class CreateEndpointTest(unittest.TestCase):
                         "name": "Dummy Doll Policy",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "FLAT_RATE"}]}
+                                             "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
             return self._list_body()
 
         r = self._call(_flat_form(), fake_call)
@@ -297,7 +297,7 @@ class CreateEndpointTest(unittest.TestCase):
                         "name": "Dummy Doll Policy",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "FLAT_RATE"}]}
+                                             "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
             return self._list_body()
 
         r = self._call(_flat_form(retry=True), fake_call)
@@ -313,7 +313,7 @@ class CreateEndpointTest(unittest.TestCase):
                         "name": "Dummy Doll Policy",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "FLAT_RATE"}]}
+                                             "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
             return self._list_body()
 
         r = self._call(_flat_form(), fake_call)

@@ -48,6 +48,10 @@ EBAY_TOKEN_FILE = os.path.join(DATA_DIR, "ebay_token.json")
 # v24: one saved "usual settings" preset (settings, not secrets — never in
 # .env, which holds keys). Lives with the drafts in private storage.
 PRESET_FILE = os.path.join(DATA_DIR, "preset.json")
+# v50: the one draft to return to on launch — the last draft he had
+# open. A single small file next to the preset, same never-crash
+# pattern: a missing or corrupt file just means no resume.
+RESUME_FILE = os.path.join(DATA_DIR, "resume_draft.json")
 for _d in (PHOTOS_DIR, DRAFTS_DIR):
     os.makedirs(_d, exist_ok=True)
 
@@ -273,6 +277,44 @@ def _save_preset(data):
     return data
 
 
+def _load_resume_draft_id():
+    """v50: the draft id to return to on launch, or None. Never
+    crashes on a missing or corrupt file — no resume just means step
+    1 opens fresh, as before."""
+    if not os.path.isfile(RESUME_FILE):
+        return None
+    try:
+        with open(RESUME_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    draft_id = str(data.get("draft_id", "") or "").strip()
+    return draft_id or None
+
+
+def _save_resume_draft_id(draft_id):
+    """v50: remember (or clear, with None) the draft to return to on
+    launch. Writes through a temp file so a crash mid-write never
+    leaves a half-written resume behind."""
+    if draft_id:
+        tmp = RESUME_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"draft_id": str(draft_id)}, f, indent=2)
+        os.replace(tmp, RESUME_FILE)
+    elif os.path.isfile(RESUME_FILE):
+        os.remove(RESUME_FILE)
+
+
+def _clear_resume_if(draft_id):
+    """v50: forget the resume target when that draft is gone (deleted
+    or listed) so launch never offers a draft that no longer needs
+    returning to."""
+    if draft_id and _load_resume_draft_id() == str(draft_id):
+        _save_resume_draft_id(None)
+
+
 def _gemini_identify(photo_relpaths):
     """Send saved photos to Gemini, return the parsed draft dict."""
     if not GEMINI_KEY or GEMINI_KEY == "PASTE_YOUR_KEY_HERE":
@@ -383,8 +425,17 @@ def _append_uploads(draft, files):
     _store_uploads). An append never replaces existing photos; reorder
     via the v40 move endpoint. New files take the next numbers in the
     same folder (delete renumbers survivors first, so no gaps)."""
-    existing = draft.get("photos") or []
-    folder = existing[0].split("/")[0] if existing else uuid.uuid4().hex[:12]
+    existing = draft.get("photos")
+    if not isinstance(existing, list):
+        # v50: a blank draft (the auto draft starts with no photos)
+        # must get its list bound back into the draft — "draft.get(
+        # 'photos') or []" hands back a throwaway list when the stored
+        # one is empty or missing, so the append succeeded on disk
+        # while the draft stayed empty. Binding here keeps the list
+        # object the loop appends to the same one _save_draft writes.
+        existing = []
+        draft["photos"] = existing
+    folder = existing[0].split("/")[0] if existing else draft["id"]
     folder_path = os.path.join(PHOTOS_DIR, folder)
     os.makedirs(folder_path, exist_ok=True)
     room = MAX_PHOTOS - len(existing)
@@ -536,15 +587,15 @@ def _plain_ebay_error(resp):
     low = (msg + " " + err_id).lower()
     if err_id == "190013":
         return ("Your eBay sign-in is missing a permission eBay needs for "
-                "this action" + code + ". Details: " + msg[:160])
+                "this action" + code + ". Details: " + msg[:160] + params_text)
     if "business polic" in low or err_id == "25710":
         return ("eBay needs your shop's payment, shipping, and return policies on this "
                 "listing. Check the three policy numbers in your .env (setup guide: Connect eBay), "
-                "or pick different ones." + code)
+                "or pick different ones." + params_text + code)
     if "opt" in low and "program" in low:
         return ("Your eBay seller account needs business policies turned on before the "
                 "app can list. In Seller Hub go to Account, then Business policies, and "
-                "opt in. Then try again." + code)
+                "opt in. Then try again." + params_text + code)
     aspecty = ("aspect" in low or "specific" in low)
     # v35: condition is checked BEFORE category. Error 25021 ("provided
     # condition id is invalid for this category") contains BOTH words,
@@ -569,7 +620,7 @@ def _plain_ebay_error(resp):
                 "strange symbols. Details: " + msg[:160] + code + params_text)
     if resp.status_code in (401, 403):
         return ("eBay refused the sign-in for this action. Tap Connect eBay again in "
-                "this browser, then retry." + code)
+                "this browser, then retry." + params_text + code)
     return ("eBay said" + (f" (error {err_id})" if err_id else "") + ": " +
             (msg[:220] if msg else f"error {resp.status_code}") + params_text)
 
@@ -1306,6 +1357,20 @@ class _NeedsFulfillmentPolicyChoice(RuntimeError):
         self.problems = list(problems or [])
 
 
+def _policy_domestic_option(policy):
+    """v50: the DOMESTIC shipping option of a FulfillmentPolicy dict,
+    or None when the policy has no domestic option at all (local
+    pickup only). Only the domestic option decides whether a US
+    listing ships."""
+    if not isinstance(policy, dict):
+        return None
+    for opt in policy.get("shippingOptions") or []:
+        if isinstance(opt, dict) \
+                and str(opt.get("optionType", "")).upper() == "DOMESTIC":
+            return opt
+    return None
+
+
 def _policy_cost_type(policy):
     """'CALCULATED', 'FLAT_RATE', 'NOT_SPECIFIED', or None, from a
     FulfillmentPolicy dict (official Account API type: each
@@ -1545,6 +1610,18 @@ def _check_fulfillment_policy(token, fulfillment_id, package):
             "Pick one of your US shipping policies below.",
             [_policy_pick_entry(p) for p in (policies or [])])
     cost_type = _policy_cost_type(policy)
+    # v50: a policy whose domestic option carries no shipping services
+    # cannot ship anything — eBay fails it later with 25007. Flag it
+    # here, before any photo work or offer creation, with the pick
+    # signal. A policy with NO domestic option at all (local pickup
+    # only) has no option to check, so it falls through to the
+    # pickup-only message below.
+    dom_opt = _policy_domestic_option(policy)
+    if dom_opt is not None and not (dom_opt.get("shippingServices") or []):
+        raise _NeedsFulfillmentPolicyChoice(
+            "That shipping policy has no shipping services set. "
+            "Pick a shipping policy below.",
+            [_policy_pick_entry(p) for p in (policies or [])])
     # v35: a lone weight-unit default is not a package (see
     # _package_has_content) — treat it as no package, so the seller
     # hears "charges by weight" instead of a half-filled-fields error
@@ -2044,6 +2121,8 @@ def _do_publish(d, f, ship_from=None):
     d["ebay_listing_url"] = listing_url
     d["ebay_sku"] = sku
     _save_draft(d)
+    # v50: a listed draft is finished — it is never the resume target.
+    _clear_resume_if(d["id"])
     return listing_id, listing_url
 
 
@@ -2195,6 +2274,32 @@ def _canonical_carrier(value):
     return None
 
 
+def _normalize_service_spelling(text):
+    """v50: one spelling for a service code or label — lowercased,
+    runs of spaces collapsed — so "uspsparcel", "USPSParcel", and
+    "USPS Ground Advantage" all look the same key up."""
+    return " ".join(str(text or "").split()).lower()
+
+
+def _known_service_code_lookup():
+    """v50: every service code the app knows, keyed by a normalized
+    spelling, so a typed code matches even with different casing or
+    spaces. Codes first, then display labels — both map to the code
+    eBay must receive. The rejected code maps to the code eBay
+    accepts, so a typed USPSGroundAdvantage never survives. Labels
+    that share a code (USPSParcel and USPSGroundAdvantage both read
+    "USPS Ground Advantage") keep the first mapping: USPSParcel,
+    which is first in SERVICE_LABELS, is the code that must win."""
+    out = {}
+    for code in list(SERVICE_LABELS) + list(DOCUMENTED_DOMESTIC_SERVICES):
+        canon = "USPSParcel" if code == "USPSGroundAdvantage" else code
+        out.setdefault(_normalize_service_spelling(code), canon)
+    for code, label in SERVICE_LABELS.items():
+        canon = "USPSParcel" if code == "USPSGroundAdvantage" else code
+        out.setdefault(_normalize_service_spelling(label), canon)
+    return out
+
+
 def _canonical_service_code(code):
     """v49: one eBay service code -> the code this account must send.
 
@@ -2211,11 +2316,74 @@ def _canonical_service_code(code):
     Ground Economy) is left as-is: whether create accepts it is
     UNPROVEN, and the retry test settles it (see the v49 docs
     section); do not guess it away by mapping or dropping it.
+
+    v50: the match is now case-insensitive and accepts the display
+    label too ("uspsparcel", "USPS Ground Advantage"), so a typed
+    code is never sent verbatim. Anything unknown still passes
+    through unchanged — callers that must not send an unknown code
+    check _resolve_typed_service_code first.
     """
     code = str(code or "").strip()
-    if code == "USPSGroundAdvantage":
-        return "USPSParcel"
-    return code
+    if not code:
+        return code
+    known = _known_service_code_lookup().get(_normalize_service_spelling(code))
+    return known if known else code
+
+
+def _resolve_typed_service_code(text):
+    """v50: a code typed into an Other box, resolved against the
+    known list. Returns (code, known): known is False when nothing
+    matches, so the caller can warn instead of sending a code eBay
+    will fail with 20403."""
+    typed = str(text or "").strip()
+    if not typed:
+        return "", False
+    known = _known_service_code_lookup().get(_normalize_service_spelling(typed))
+    if known:
+        return known, True
+    return typed, False
+
+
+# v50: service codes held back from the create form. UPSGroundSaver is
+# NOT in eBay's Trading API ShippingServiceCodeType enum and is
+# unproven on create (harvested from his "Calculated 2lb - Framed
+# Prints" policy). It stays offered for matching existing policies
+# and for display, but a new policy must never be created with it —
+# eBay would fail it with 20403. FedExSmartPost is deliberately NOT
+# here: whether create accepts it is unproven, and the live retry on
+# 1.48 settles it.
+CREATE_EXCLUDED_SERVICE_CODES = frozenset({"UPSGroundSaver"})
+
+
+def _validate_create_service_code(form, prefix, n):
+    """v50: a service on the create form must be a code eBay knows,
+    and must not be one held back from create. An unknown typed code
+    or a held-back code fails here, in plain words, instead of
+    reaching eBay and failing with 20403. A dropdown pick can never
+    be unknown (the form only offers known codes), so the typed
+    Other path is where this bites."""
+    raw = str(form.get(f"{prefix}_service_{n}", "") or "")
+    if raw == "__OTHER__":
+        typed = str(form.get(f"{prefix}_service_{n}_other", "") or "").strip()
+        if not typed:
+            return
+        code, known = _resolve_typed_service_code(typed)
+        if not known:
+            raise _PublishValidationError(
+                "eBay may not know the shipping code \"" + typed + "\". "
+                "Pick a service from the list, or check the code.")
+        if code in CREATE_EXCLUDED_SERVICE_CODES:
+            raise _PublishValidationError(
+                SERVICE_LABELS.get(code, code) + " cannot be used for a new "
+                "policy yet. eBay has not confirmed that code, so pick a "
+                "different service or use a policy you already have.")
+    elif raw:
+        canon = _canonical_service_code(raw)
+        if canon in CREATE_EXCLUDED_SERVICE_CODES:
+            raise _PublishValidationError(
+                SERVICE_LABELS.get(canon, canon) + " cannot be used for a new "
+                "policy yet. eBay has not confirmed that code, so pick a "
+                "different service or use a policy you already have.")
 
 
 DOCUMENTED_DOMESTIC_SERVICES = [
@@ -2372,6 +2540,9 @@ def _build_shipping_option(form, prefix):
             "Pick flat rate or calculated for " + where)
     services = []
     for n in (1, 2):
+        # v50: a typed or held-back code fails here, in plain words,
+        # before anything is sent to eBay.
+        _validate_create_service_code(form, prefix, n)
         code = _create_service_code(form, prefix, n)
         if code is None:
             if n == 1:
@@ -2563,7 +2734,18 @@ def api_ebay_shipping_services():
         for p in (listing.get("fulfillmentPolicies") or []):
             if isinstance(p, dict):
                 policies.append(p)
-    return jsonify(_harvest_shipping_services(policies))
+    harvested = _harvest_shipping_services(policies)
+    # v50: the create form offers everything the picker offers EXCEPT
+    # codes held back from create (UPSGroundSaver: not in eBay's enum,
+    # unproven on create). The matcher and display keep the full
+    # lists — only the create form is narrowed.
+    harvested["create_domestic"] = [
+        s for s in harvested.get("domestic", [])
+        if s.get("code") not in CREATE_EXCLUDED_SERVICE_CODES]
+    harvested["create_international"] = [
+        s for s in harvested.get("international", [])
+        if s.get("code") not in CREATE_EXCLUDED_SERVICE_CODES]
+    return jsonify(harvested)
 
 
 @app.route("/api/ebay/policy-for-service", methods=["POST"])
@@ -2625,6 +2807,7 @@ def api_ebay_policy_for_service():
             if isinstance(p, dict):
                 policies.append(p)
     flat_match = None
+    not_specified_match = None
     for p in policies:
         options = p.get("shippingOptions") or []
         domestic = None
@@ -2660,7 +2843,9 @@ def api_ebay_policy_for_service():
             return jsonify({
                 "policy_id": str(p.get("fulfillmentPolicyId", "") or "").strip(),
                 "name": str(p.get("name", "") or "").strip(),
-                "flat_policy_id": None, "flat_name": None})
+                "flat_policy_id": None, "flat_name": None,
+                "not_specified_policy_id": None,
+                "not_specified_name": None})
         # v43: the matcher is calculated-only by design, but a flat
         # policy carrying the service is still worth reporting
         # honestly (the page offers it instead of claiming no policy
@@ -2668,12 +2853,32 @@ def api_ebay_policy_for_service():
         # always wins over it.
         if cost_type == "FLAT_RATE" and flat_match is None:
             flat_match = p
+        # v50: same honest treatment for a policy whose price type is
+        # NOT_SPECIFIED — it still offers the service, so report it
+        # by name instead of saying no policy exists and opening the
+        # create form toward a duplicate. The publish gate still
+        # decides whether it can list (it raises the pick signal if
+        # eBay cannot use it), so reporting it never silently lists
+        # on a policy that cannot ship.
+        if cost_type == "NOT_SPECIFIED" and not_specified_match is None:
+            not_specified_match = p
     if flat_match is not None:
         return jsonify({
             "policy_id": None,
             "flat_policy_id": str(flat_match.get("fulfillmentPolicyId", "") or "").strip(),
-            "flat_name": str(flat_match.get("name", "") or "").strip()})
-    return jsonify({"policy_id": None, "flat_policy_id": None, "flat_name": None})
+            "flat_name": str(flat_match.get("name", "") or "").strip(),
+            "not_specified_policy_id": None,
+            "not_specified_name": None})
+    if not_specified_match is not None:
+        return jsonify({
+            "policy_id": None,
+            "flat_policy_id": None, "flat_name": None,
+            "not_specified_policy_id": str(
+                not_specified_match.get("fulfillmentPolicyId", "") or "").strip(),
+            "not_specified_name": str(
+                not_specified_match.get("name", "") or "").strip()})
+    return jsonify({"policy_id": None, "flat_policy_id": None, "flat_name": None,
+                    "not_specified_policy_id": None, "not_specified_name": None})
 
 
 @app.route("/api/ebay/fulfillment-policies/create", methods=["POST"])
@@ -3152,6 +3357,63 @@ def api_quick_post():
     return jsonify({"draft": draft})
 
 
+@app.route("/api/auto-draft", methods=["POST"])
+def api_auto_draft():
+    """v50: a blank draft, made the moment the first photo is picked
+    or taken — so photos have a home on the server before "Draft my
+    listing with AI" or Quick post is ever tapped. No Gemini call,
+    no photos yet: the client uploads each photo to it as it arrives
+    through the existing draft photo append path. The auto draft is
+    an ordinary draft in every other way: it shows in My drafts
+    (newest first, "(untitled)" until he types a title), it can be
+    deleted there, and Analyze/Quick post reuse it instead of
+    making a second draft. An abandoned auto draft just sits in My
+    drafts like any other draft — nothing is ever deleted for him.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    draft = {"id": uuid.uuid4().hex[:12], "created": now, "photos": [],
+             "price": "", "condition": "", "condition_details": "",
+             "best_offer": False, "best_offer_auto_decline": "",
+             "best_offer_auto_accept": "",
+             "title": "", "description": "", "category": "",
+             "attributes": {}, "identification_notes": ""}
+    _save_draft(draft)
+    return jsonify({"draft": draft})
+
+
+@app.route("/api/resume-draft", methods=["GET"])
+def api_resume_draft_get():
+    """v50: the draft to return to on launch, or {"draft_id": null}.
+    A draft that was listed or deleted since it was remembered is
+    forgotten here (and the stale record cleared), so launch never
+    offers a finished draft."""
+    draft_id = _load_resume_draft_id()
+    if not draft_id:
+        return jsonify({"draft_id": None})
+    d = _load_draft(draft_id)
+    if d is None or d.get("ebay_listing_id"):
+        _save_resume_draft_id(None)
+        return jsonify({"draft_id": None})
+    return jsonify({"draft_id": d["id"],
+                    "title": str(d.get("title", "") or ""),
+                    "photo_count": len(d.get("photos") or []),
+                    "updated": str(d.get("updated", "") or "")})
+
+
+@app.route("/api/resume-draft", methods=["POST"])
+def api_resume_draft_set():
+    """v50: remember (or clear, with {"draft_id": null}) the draft to
+    return to on launch. The client records every draft as it opens
+    in the listing page, and clears it on "Start a new item". A
+    draft id that does not exist is still stored — the GET above
+    validates it and forgets it — so a record can never break
+    launch."""
+    body = request.get_json(force=True) or {}
+    draft_id = str(body.get("draft_id", "") or "").strip()
+    _save_resume_draft_id(draft_id or None)
+    return jsonify({"draft_id": draft_id or None})
+
+
 @app.route("/api/drafts", methods=["GET"])
 def api_draft_list():
     out = []
@@ -3167,7 +3429,10 @@ def api_draft_list():
             # as strings. A draft missing both dates gets "" and sorts
             # last. Filenames are random UUIDs, so the old
             # reverse-filename order was effectively random.
-            out.append({"id": d["id"], "title": d.get("title", "(untitled)"),
+            # v50: a blank title shows as "(untitled)", not an empty
+            # row — a photo-only auto draft (or a blank quick-post
+            # draft) has no title yet, and the thumb is its identifier.
+            out.append({"id": d["id"], "title": d.get("title") or "(untitled)",
                         "updated": d.get("updated", ""),
                         "listed": bool(d.get("ebay_listing_id")),
                         "thumb": d["photos"][0] if d.get("photos") else None,
@@ -3246,7 +3511,11 @@ def api_draft_save(draft_id):
     if "ship_carrier" in body:
         d["ship_carrier"] = _canonical_carrier(body["ship_carrier"]) or ""
     if "ship_service_code" in body:
-        d["ship_service_code"] = str(body["ship_service_code"])[:60]
+        # v50: canonicalize on save too, so the rejected code
+        # USPSGroundAdvantage can never sit in storage waiting for a
+        # future direct read. Every consumer already canonicalizes on
+        # read; this closes the storage side.
+        d["ship_service_code"] = _canonical_service_code(str(body["ship_service_code"])[:60])
     if "attributes" in body and isinstance(body["attributes"], dict):
         d["attributes"] = {str(k)[:80]: str(v)[:200] for k, v in body["attributes"].items()}
     _save_draft(d)
@@ -3259,6 +3528,8 @@ def api_draft_delete(draft_id):
     if d is None:
         return jsonify({"error": "Draft not found."}), 404
     os.remove(_draft_path(draft_id))
+    # v50: a deleted draft is never the resume target again.
+    _clear_resume_if(draft_id)
     return jsonify({"ok": True})
 
 

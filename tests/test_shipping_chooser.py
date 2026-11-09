@@ -41,11 +41,11 @@ def tearDownModule():
 CALC_FOR = lambda pid: {"fulfillmentPolicyId": pid, "name": "Dummy Calculated",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "CALCULATED"}]}
+                                             "costType": "CALCULATED", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 FLAT_FOR = lambda pid: {"fulfillmentPolicyId": pid, "name": "Dummy Flat",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "FLAT_RATE"}]}
+                                             "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 
 POLICY_LIST = {"fulfillmentPolicies": [CALC_FOR("111"), FLAT_FOR("222")]}
 

@@ -280,6 +280,16 @@ still gates every live post; the check never posts anything itself.
 
 ## Shipping flexibility, v42 — carrier + service pick, lb/oz weight
 
+SUPERSEDED, v50 (F5): two claims in this section are stale since
+v49. The catalog is 10 codes, not 11 (see the v49 section), and the
+attestation below — "live production fulfillment policies
+(USPSGroundAdvantage)" — was disproven live on Nov 8, 2026: eBay's
+LSAS checker rejects USPSGroundAdvantage on this account, and the
+working code for the same service is USPSParcel. The catalog is
+pinned against eBay's official Trading API ShippingServiceCodeType
+enum in v50 (`tests/ebay_shipping_service_codes.py`), so a code
+eBay never issued cannot be offered again.
+
 The listing page's Shipping section works like eBay's own lister:
 a carrier picker (USPS, UPS, FedEx) plus a service picker per
 carrier, pounds + ounces weight boxes (the way a scale reads it),
@@ -616,3 +626,134 @@ policies" path.
   14 pins the design-4 structure (headers, grid, collapsed rows,
   Open outlined, Delete grey, batch confirm card, exact button
   wordings, no £ or ₹).
+## v50: shipping audit fixes + photos save as they are taken + resume your draft
+
+Part A — the Nov 8 second shipping audit, fixes F1–F5, F7, F8 and
+the never-again guard. The v49 USPS fix is real and complete, but
+the same 20403 could come back through a second door.
+
+- F1: UPS Ground Saver (UPSGroundSaver) is NOT in eBay's Trading
+  API ShippingServiceCodeType enum and is unproven on create. The
+  create form no longer offers it (`CREATE_EXCLUDED_SERVICE_CODES`
+  on the server, `create_domestic` / `create_international` in the
+  shipping-services response, and the same exclusion in JS, so a
+  prefilled carrier pick leaves the service blank with the plain
+  "cannot be used for a new policy yet" note). It stays in the
+  harvest, the matcher, and the labels, so existing policies that
+  carry it (his "Calculated 2lb - Framed Prints") still match and
+  still read as "UPS Ground Saver". FedExSmartPost (FedEx Ground
+  Economy) is deliberately NOT removed: it stays offered until his
+  live retry on 1.48 settles whether create accepts it.
+- F8: draft save canonicalizes `ship_service_code` now, so the
+  rejected USPSGroundAdvantage can never sit in storage again.
+  Every consumer already canonicalized on read; the storage side
+  is closed too.
+- F2: a code typed in Other is matched case-insensitively against
+  the known-code list (picker catalog plus harvested labels) before
+  anything is sent: "uspsparcel" and "USPS Ground Advantage" both
+  become USPSParcel. A typed code that matches nothing known is
+  refused in the form with plain words ("may not know the shipping
+  code... double-check it against eBay's list"), instead of being
+  sent verbatim for eBay to fail with 20403. The server enforces
+  the same check in `_validate_create_service_code`, so the
+  browser can never sneak one past.
+- F3: the policy-for-service matcher reports a NOT_SPECIFIED
+  domestic option by name, like the flat honest-note path, instead
+  of saying "no policy" and opening the create form toward a
+  duplicate. The note says its price type isn't set on eBay, and a
+  "Use that policy" button picks it. Flat still wins over
+  NOT_SPECIFIED, CALCULATED still wins over both. The publish gate
+  still decides whether a NOT_SPECIFIED policy can actually list,
+  so reporting it never silently lists on a policy that cannot
+  ship.
+- F4: the publish gate rejects a policy whose domestic option has
+  no shipping services at all, with the pick signal, before any
+  photo work or offer creation. A pickup-only policy (no domestic
+  option) still gets the old "offers no shippable service" message.
+  Note for future builders: real eBay policies always carry
+  shippingServices, so the test fixtures had to be made realistic
+  (19 fixtures gained one) rather than the gate being loosened.
+- F7: eBay's parameters text is now appended to EVERY
+  `_plain_ebay_error` branch, including 190013, business-policies,
+  opt/program, and 401/403 — the four branches that used to return
+  without it.
+- F5: the v42 section above is annotated as superseded by v49
+  (catalog 10 codes, not 11; the USPSGroundAdvantage attestation
+  disproven live Nov 8).
+- The never-again guard: eBay's ShippingServiceCodeType enum is
+  pinned in the repo as `tests/ebay_shipping_service_codes.py`
+  (87 US codes, read off eBay's official Trading API page Nov 9,
+  2026). Two tests guard it: the picker catalog
+  (DOCUMENTED_DOMESTIC_SERVICES) is a subset of the enum, and any
+  harvested code not in the enum is flagged as unproven on create.
+  Run today, the flag test names exactly FedExSmartPost and
+  UPSGroundSaver. Harvested codes stay exempt from the subset rule
+  (they come from his live policies) but are flagged, never
+  silently trusted. Honest limit: an enum allowlist catches codes
+  eBay never issued; it would NOT catch an account-specific LSAS
+  rejection of a code that IS in the enum — only a live create
+  test catches that class.
+- NOT in v50: the create-review clarity line (audit F6) still
+  needs his separate tap; sale type/auction, RuName help note,
+  insurance/signature, PC/browser version stay parked.
+
+Part B — photos save the moment they are taken, and the app
+remembers the open draft.
+
+- Auto draft: the first photo taken or picked on step 1 creates a
+  blank draft on the server right away (POST /api/auto-draft, the
+  quick-post shape, no Gemini call) and every photo is uploaded to
+  it as it arrives through the existing draft-photo append path.
+  The auto draft is an ordinary draft: it shows in My drafts
+  newest first (v45 sort). A photo-only draft has no title yet, so
+  it shows as "(untitled)" with its thumbnail as the identifier.
+  The 24 cap, the downscale, the replace-vs-append semantics of
+  Choose photos vs Take photo, and the v44 CameraX flow are all
+  unchanged. Remove, drag-reorder, and edit-save on step 1 also
+  land on the auto draft (delete, move, replace endpoints, queued
+  in order so a fast tap targets the right photo). If a photo save
+  fails, the app says so in plain words ("Your photos didn't save
+  to the app yet — they are still on this screen and will go with
+  your listing"), abandons the auto draft, and Analyze/Quick post
+  fall back to uploading the photos on screen. An abandoned auto
+  draft is never deleted for him: it stays in My drafts, deletable
+  there like any draft.
+- No duplicates: when he taps "Draft my listing with AI" or Quick
+  post with photos already in the auto draft, the app reuses that
+  draft's photos (reanalyze for Analyze, GET draft for Quick post)
+  and never uploads them a second time. The auto draft id is
+  cleared once the real draft exists, so the next item starts
+  fresh.
+- Resume: the app remembers the open draft across restarts in
+  `resume_draft.json` on the server (GET/POST /api/resume-draft),
+  set whenever a draft opens on the listing page and cleared on
+  "Start a new item", on delete, and on publish. On launch, a
+  titled draft shows a plain white "Resume your draft" card on
+  step 1 with the draft's name and a Continue button (one tap
+  opens it), or dismiss it; a photo-only draft restores its photos
+  straight into the step-1 grid instead, so he is back where he
+  was. If the process died while the photo editor was open, the
+  relaunch still returns to the draft; a lost edit result needs no
+  special handling — the original photo is unchanged on the server,
+  the draft reopens with its saved fields, and no stale error
+  shows. Typed fields survive the round trip the same way
+  `reloadDraftPhotosOnly` already protects them.
+- Bug found by the v50 tests and fixed in the same build:
+  `_append_uploads` handed back a throwaway list when a blank
+  draft's photos list was empty, so the file landed on disk while
+  the draft stayed empty. The auto draft starts blank, so this
+  fired on the very first photo. The list is now bound into the
+  draft when missing, and a blank draft's photo folder is its own
+  id (keeps the "photo folder == draft id" invariant).
+- Tests: Python 436/436, node 13 suites, fit check passes at
+  320/360/768dp. New `tests/test_shipping_audit_v50.py` (F1/F2/F3/
+  F4/F7/F8 plus the enum guard and the harvested-flag test),
+  `tests/test_auto_draft_resume.py` (auto draft, reanalyze reuse,
+  24 cap, the `_append_uploads` regression, resume set/get/clear,
+  resume forgets a listed or deleted draft, corrupt resume file
+  never 500s), `tests/v50-photo-resume.test.js` (typed-code
+  normalization and warnings, create-form exclusion, NOT_SPECIFIED
+  note, auto-draft persistence, no duplicates on Analyze/Quick
+  post, stale fallback, resume card/restore/dismiss), and fit
+  check 15 pins the resume card (white card, text shrinks and
+  wraps, buttons wrap, fits at 320dp).

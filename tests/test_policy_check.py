@@ -43,19 +43,19 @@ def tearDownModule():
 FLAT_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
                "marketplaceId": "EBAY_US",
                "shippingOptions": [{"optionType": "DOMESTIC",
-                                    "costType": "FLAT_RATE"}]}
+                                    "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 CALC_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy Calculated",
                "marketplaceId": "EBAY_US",
                "shippingOptions": [{"optionType": "DOMESTIC",
-                                    "costType": "CALCULATED"}]}
+                                    "costType": "CALCULATED", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 OTHER_POLICY = {"fulfillmentPolicyId": "999", "name": "Dummy Other",
                 "marketplaceId": "EBAY_US",
                 "shippingOptions": [{"optionType": "DOMESTIC",
-                                     "costType": "FLAT_RATE"}]}
+                                     "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 GB_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy GB",
              "marketplaceId": "EBAY_GB",
              "shippingOptions": [{"optionType": "DOMESTIC",
-                                  "costType": "FLAT_RATE"}]}
+                                  "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 PICKUP_POLICY = {"fulfillmentPolicyId": "111", "name": "Dummy Pickup",
                  "marketplaceId": "EBAY_US", "localPickup": True,
                  "shippingOptions": []}

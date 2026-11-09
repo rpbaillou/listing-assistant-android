@@ -172,6 +172,12 @@ button:disabled { opacity: 0.45; cursor: default; }
 .banner { background: #fde8e8; color: #7a1010; padding: 0.8rem 1rem; font-size: 0.95rem; }
 .error { background: #fde8e8; color: #7a1010; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; white-space: pre-wrap; }
 .ok { background: #e6f7e6; color: #145214; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; }
+/* v50: the way back to the open draft. A white card, not an error
+   banner — dark text on white, text shrinks and wraps (min-width: 0)
+   so the Continue and dismiss buttons never clip off at 320dp. */
+#resume-card { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; background: #fff; border: 1px solid #d9d9de; border-radius: 8px; padding: 0.6rem 0.8rem; margin: 0 0 0.8rem 0; }
+#resume-text { flex: 1 1 10rem; min-width: 0; overflow-wrap: break-word; }
+#btn-resume-dismiss { padding: 0.4rem 0.7rem; min-height: 0; }
 .spinner { padding: 1rem; text-align: center; color: #2a63d8; font-weight: 600; }
 
 .draft-item { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.7rem 0; }

@@ -44,6 +44,13 @@
       <span class="screen-head-spacer" aria-hidden="true"></span>
     </div>
     <p class="hint">Choose up to 24 photos of one item — from your photo library, or take new ones with the camera.</p>
+    <!-- v50: the way back to the draft he had open. Hidden unless the
+         server remembers one; Continue opens it in one tap, × drops it. -->
+    <div id="resume-card" class="hidden">
+      <span id="resume-text"></span>
+      <button id="btn-resume" class="primary" type="button">Continue</button>
+      <button id="btn-resume-dismiss" class="ghost" type="button" aria-label="Dismiss">×</button>
+    </div>
     <div id="thumbs" class="thumbs photo-grid"></div>
     <p id="photo-count" class="hint">0 of 24 photos</p>
     <div class="photobtns">

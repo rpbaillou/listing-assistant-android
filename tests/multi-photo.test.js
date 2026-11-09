@@ -233,9 +233,14 @@ const fakeFile = (name) => new File(["x"], name, { type: "image/jpeg" });
   /* Step-1 onCameraPhoto fires the append without awaiting it (fine in
      production: the UI updates when it lands); flush here before asserting. */
   await new Promise((r) => setTimeout(r, 20));
-  check("step-1 camera snap appends, never posts to a draft",
-    ctx("selectedFiles.length") === 1 &&
-    !fetchCalls.some((c) => String(c.url).includes("/api/drafts/")));
+  /* v50: the snap is also saved to the server the moment it arrives
+     (auto draft), so closing the app loses nothing — the harness fetch
+     returns no draft id, so the save fails soft and the photo still
+     lands in the grid. */
+  check("step-1 camera snap appends to the grid",
+    ctx("selectedFiles.length") === 1);
+  check("step-1 camera snap saves to the auto draft endpoint",
+    fetchCalls.some((c) => String(c.url) === "/api/auto-draft"));
   ctx("draft = { id: 'd9', photos: ['d9/1.jpg'] };");
   fetchCalls.length = 0;
   fetchQueue.push({ draft: { id: "d9", photos: ["d9/1.jpg", "d9/2.jpg"] }, added: 1, dropped: 0 });

@@ -71,7 +71,7 @@ def _ebay_patches(fail_sku=None):
             flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
                     "marketplaceId": "EBAY_US",
                     "shippingOptions": [{"optionType": "DOMESTIC",
-                                         "costType": "FLAT_RATE"}]}
+                                         "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
             if "?" in path:
                 return {"fulfillmentPolicies": [flat]}
             return flat

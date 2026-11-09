@@ -5,6 +5,20 @@ let saveTimer = null;
 let saveDirty = false; /* v5: true while edits are waiting for the debounced save */
 let maxPhotos = 10; /* v8: overwritten by /api/config (eBay allows 24 free) */
 
+/* v50: the auto draft — a blank draft made on the server the moment
+   the first photo is picked or taken, so closing the app loses
+   nothing. autoDraftId is its id (null until the first photo);
+   autoDraftStale means a save to it failed, so the photos on this
+   screen are the truth and Analyze/Quick post must upload them
+   directly instead of reusing the draft. autoDraftQueue serializes
+   every server op on the auto draft (create, append, delete, move,
+   replace) so rapid snaps can never race each other on photo
+   numbering. */
+let autoDraftId = null;
+let autoDraftStale = false;
+let autoDraftQueue = Promise.resolve();
+let resumeDraftId = null;
+
 const $ = (id) => document.getElementById(id);
 
 function show(stepId) {
@@ -150,6 +164,8 @@ function removePhoto(i) {
   selectedFiles.splice(i, 1);
   renderThumbs();
   hideError();
+  /* v50: the same photo leaves the auto draft. */
+  removeAutoDraftPhoto(i);
 }
 
 /* ---------- v44: drag to reorder photos (touch + mouse) ---------- */
@@ -256,9 +272,11 @@ function attachThumbDrag(frame, wrap, box, from, commit) {
 }
 
 /* v44: step-1 reorder by drag (client-side only — Identify uploads
-   in this order, first = main). */
+   in this order, first = main). v50: the same move lands in the auto
+   draft, so the saved order stays the order on this screen. */
 function reorderPhoto(from, to) {
   if (moveArrayItem(selectedFiles, from, to)) renderThumbs();
+  moveAutoDraftPhoto(from, to);
 }
 
 /* ---------- v18: photo editor (crop + rotate) ---------- */
@@ -514,6 +532,8 @@ $("btn-edit-save").addEventListener("click", async () => {
     entry.blob = blob;
     entry.url = URL.createObjectURL(blob);
     renderThumbs();
+    /* v50: the edited photo replaces the saved one in the auto draft. */
+    replaceAutoDraftPhoto(editIndex, blob);
     closeEditor();
     hideError();
   } catch (e) {
@@ -547,11 +567,14 @@ async function handlePickedFiles(fileList, replace) {
   const dropped = all.length - picked.length;
   if (replace) clearPreviews();
   skippedCount = 0;
+  const addedEntries = [];
   for (let i = 0; i < picked.length; i++) {
     const r = await downscaleFile(picked[i], selectedFiles.length + i);
     if (r.skipped) { skippedCount++; continue; }
     const u = URL.createObjectURL(r.blob);
-    selectedFiles.push({ blob: r.blob, name: r.name, url: u });
+    const entry = { blob: r.blob, name: r.name, url: u };
+    selectedFiles.push(entry);
+    addedEntries.push(entry);
   }
   renderThumbs();
   const notes = [];
@@ -571,6 +594,216 @@ async function handlePickedFiles(fileList, replace) {
     n.classList.remove("hidden");
   }
   hideError();
+  /* v50: save each photo to the server the moment it is picked or
+     taken, so closing the app loses nothing. Fire and forget — the
+     queue keeps the order, and a failed save only marks the draft
+     stale (Analyze falls back to the photos on this screen). */
+  syncPickedPhotosToAutoDraft(addedEntries, replace);
+}
+
+/* ---------- v50: auto draft + return to draft ---------- */
+/* Photos used to live only in memory until "Draft my listing with AI"
+   or Quick post was tapped, so closing the app lost them — and
+   relaunch forgot the open draft entirely. Now every photo is saved
+   to the server the moment it arrives (a blank auto draft, made on
+   the first photo, no AI call), and the open draft is remembered so
+   launch can offer it back in one tap. */
+
+function queueAutoDraft(fn) {
+  /* Serial queue for every server op on the auto draft. The .then(fn,
+     fn) shape keeps the chain alive after a failure, so one failed
+     save never blocks the next one. */
+  autoDraftQueue = autoDraftQueue.then(fn, fn);
+  return autoDraftQueue;
+}
+
+function showAutoDraftError() {
+  /* Plain words when a photo did not save yet. The photos are still
+     on this screen, and Analyze/Quick post upload them directly,
+     so nothing is lost — the draft is just not the source of truth
+     until the next save lands. */
+  showError("Your photos didn't save to the app yet — they are still on this screen and will go with your listing.");
+}
+
+function recordResumeDraft(draftId) {
+  /* Remember the open draft so launch can offer it back. Fire and
+     forget: a failed record just means no resume card, never a
+     broken listing page. null clears it ("Start a new item"). */
+  api("/api/resume-draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ draft_id: draftId || null }),
+  }).catch(() => {});
+}
+
+async function syncPickedPhotosToAutoDraft(entries, replace) {
+  /* Save picked/taken photos to the auto draft, in queue order.
+     Choose photos replaces the set, so the old auto draft is
+     deleted with it (no orphan draft lingers); Take photo appends.
+     The first photo creates the draft. On any failure the draft is
+     abandoned (autoDraftId cleared, stale set) and the photos on
+     this screen stay the truth — Analyze/Quick post upload them
+     directly, and the abandoned draft stays visible in My drafts,
+     deletable there. */
+  if (!entries.length && !autoDraftId) return;
+  return queueAutoDraft(async () => {
+    try {
+      if (replace && autoDraftId) {
+        await api("/api/drafts/" + autoDraftId, { method: "DELETE" });
+        autoDraftId = null;
+      }
+      if (!entries.length) return;
+      if (!autoDraftId) {
+        const created = await api("/api/auto-draft", { method: "POST" });
+        autoDraftId = created.draft.id;
+        recordResumeDraft(autoDraftId);
+      }
+      const fd = new FormData();
+      entries.forEach((e) => fd.append("photos", e.blob, e.name));
+      await api("/api/drafts/" + autoDraftId + "/photos",
+                { method: "POST", body: fd });
+      autoDraftStale = false;
+    } catch (e) {
+      autoDraftId = null;
+      autoDraftStale = true;
+      showAutoDraftError();
+    }
+  });
+}
+
+function removeAutoDraftPhoto(i) {
+  /* The same photo leaves the auto draft, so the saved set stays the
+     set on this screen. The index is captured now but the delete
+     runs in queue order, after any append still in flight, so it
+     always targets the right photo. */
+  if (!autoDraftId) return;
+  const draftId = autoDraftId;
+  queueAutoDraft(async () => {
+    try {
+      await api("/api/drafts/" + draftId + "/photos/" + i,
+                { method: "DELETE" });
+    } catch (e) {
+      autoDraftStale = true;
+      showAutoDraftError();
+    }
+  });
+}
+
+function moveAutoDraftPhoto(from, to) {
+  /* The same move lands in the auto draft, so the saved order stays
+     the order on this screen (first photo is the main one). */
+  if (!autoDraftId || from === to) return;
+  const draftId = autoDraftId;
+  queueAutoDraft(async () => {
+    try {
+      await api("/api/drafts/" + draftId + "/photos/" + from + "/move", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: to }),
+      });
+    } catch (e) {
+      autoDraftStale = true;
+      showAutoDraftError();
+    }
+  });
+}
+
+function replaceAutoDraftPhoto(index, blob) {
+  /* An edited photo replaces the saved one in the auto draft, in
+     place — order and publish inclusion are unchanged. */
+  if (!autoDraftId) return;
+  const draftId = autoDraftId;
+  queueAutoDraft(async () => {
+    try {
+      const fd = new FormData();
+      fd.append("photo", blob, "edited.jpg");
+      await api("/api/drafts/" + draftId + "/photos/" + index + "/replace",
+                { method: "POST", body: fd });
+    } catch (e) {
+      autoDraftStale = true;
+      showAutoDraftError();
+    }
+  });
+}
+
+async function discardAutoDraft() {
+  /* The auto draft is redundant once Analyze/Quick post made the
+     real draft from the same photos — delete it so My drafts never
+     shows the same photos twice. Best effort: a failed delete just
+     leaves a visible, deletable draft behind. */
+  if (!autoDraftId) return;
+  const draftId = autoDraftId;
+  autoDraftId = null;
+  try {
+    await api("/api/drafts/" + draftId, { method: "DELETE" });
+  } catch (e) { /* leave it in My drafts; he can delete it there */ }
+}
+
+function showResumeCard(d) {
+  /* The one-tap way back to the open draft. A titled draft names
+     itself; a photo-only draft says how many photos are waiting. */
+  resumeDraftId = d.id;
+  const photos = (d.photos || []).length;
+  const title = String(d.title || "").trim();
+  $("resume-text").textContent = title
+    ? "Continue your draft: " + title
+    : "You have photos waiting (" + photos +
+      (photos === 1 ? " photo" : " photos") + "), no title yet.";
+  $("resume-card").classList.remove("hidden");
+}
+
+async function restoreAutoDraftPhotos(d) {
+  /* A photo-only draft (no title yet) puts its photos back in the
+     grid, so closing the app mid-picking loses nothing — he is back
+     where he was, and Analyze works on the restored set. One
+     unreadable photo is skipped; the rest still return. Returns
+     false when nothing could be restored, so the caller can fall
+     back to the resume card instead. */
+  const photos = d.photos || [];
+  if (!photos.length) return false;
+  const entries = [];
+  for (const rel of photos) {
+    try {
+      const res = await fetch("/photos/" + rel);
+      if (!res.ok) continue;
+      const blob = await res.blob();
+      entries.push({ blob: blob,
+                     name: String(rel).split("/").pop() || "photo.jpg",
+                     url: URL.createObjectURL(blob) });
+    } catch (e) { /* skip one unreadable photo */ }
+  }
+  if (!entries.length) return false;
+  selectedFiles = entries;
+  autoDraftId = d.id;
+  autoDraftStale = false;
+  renderThumbs();
+  return true;
+}
+
+async function checkResumeDraft() {
+  /* On launch, offer the draft he had open. A titled draft gets the
+     one-tap Continue card; a photo-only draft restores its photos
+     into the grid instead. No record, a listed draft, or a deleted
+     draft means step 1 opens fresh, as before. A lost edit result
+     (the process died while the photo editor was open) needs no
+     special handling here: the original photo is unchanged on the
+     server, the draft reopens with its saved fields, and no stale
+     error is shown — the error element starts hidden. */
+  let r;
+  try {
+    r = await api("/api/resume-draft");
+  } catch (e) { return; }
+  if (!r || !r.draft_id) return;
+  let d;
+  try {
+    d = (await api("/api/drafts/" + r.draft_id)).draft;
+  } catch (e) { return; }
+  if (!d) return;
+  if (String(d.title || "").trim()) {
+    showResumeCard(d);
+    return;
+  }
+  if (!(await restoreAutoDraftPhotos(d))) showResumeCard(d);
 }
 
 /* v20: update check and Edit keys moved to the app's native top-right
@@ -612,45 +845,94 @@ async function onCameraPhoto(dataUrl) {
   }
 }
 
-$("btn-analyze").addEventListener("click", async () => {
+/* v50: the Analyze flow, as a named function so node tests can call
+   it directly. Reuses the auto draft when it holds the photos
+   (reanalyze — no second upload, no second draft). If the auto draft
+   is stale or the reuse fails, falls back to uploading the photos on
+   this screen, and deletes the redundant auto draft. */
+async function analyzePhotos() {
   hideError();
   $("spinner").classList.remove("hidden");
   $("btn-analyze").disabled = true;
   try {
-    const fd = new FormData();
-    selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
-    const { draft: d } = await api("/api/analyze", { method: "POST", body: fd });
-    loadDraftIntoForm(d);
-    await prefillListing();
-    show("step-draft");
+    await autoDraftQueue.catch(() => {});
+    let done = false;
+    if (autoDraftId && !autoDraftStale) {
+      try {
+        const { draft: d } = await api("/api/drafts/" + autoDraftId + "/reanalyze",
+                                       { method: "POST" });
+        autoDraftId = null;
+        loadDraftIntoForm(d);
+        await prefillListing();
+        show("step-draft");
+        done = true;
+      } catch (e) {
+        autoDraftStale = true; /* fall through: upload the photos on this screen */
+      }
+    }
+    if (!done) {
+      const fd = new FormData();
+      selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
+      const { draft: d } = await api("/api/analyze", { method: "POST", body: fd });
+      await discardAutoDraft();
+      loadDraftIntoForm(d);
+      await prefillListing();
+      show("step-draft");
+    }
   } catch (err) {
     showError(err.message);
   } finally {
     $("spinner").classList.add("hidden");
     $("btn-analyze").disabled = selectedFiles.length === 0;
   }
-});
+}
+
+$("btn-analyze").addEventListener("click", analyzePhotos);
 
 /* ---------- v24: quick post (skip AI) ---------- */
 /* Same photo upload as Identify, but the server starts a BLANK draft —
    no Gemini call, no AI wait. He types the title himself in step 2,
    then the listing page takes over, prefilled with his usual settings. */
-$("btn-quick-post").addEventListener("click", async () => {
+/* v50: the Quick post flow, as a named function so node tests can
+   call it directly. Same reuse as Analyze — the auto draft already
+   holds the photos, so it opens directly instead of uploading them
+   again into a second draft. Stale or failed reuse falls back to the
+   old upload path. */
+async function quickPostPhotos() {
   hideError();
   $("btn-quick-post").disabled = true;
   try {
-    const fd = new FormData();
-    selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
-    const { draft: d } = await api("/api/quick-post", { method: "POST", body: fd });
-    loadDraftIntoForm(d);
-    await prefillListing();
-    show("step-draft");
+    await autoDraftQueue.catch(() => {});
+    let done = false;
+    if (autoDraftId && !autoDraftStale) {
+      try {
+        const { draft: d } = await api("/api/drafts/" + autoDraftId);
+        autoDraftId = null;
+        loadDraftIntoForm(d);
+        await prefillListing();
+        show("step-draft");
+        done = true;
+      } catch (e) {
+        autoDraftStale = true; /* fall through: upload the photos on this screen */
+      }
+    }
+    if (!done) {
+      const fd = new FormData();
+      selectedFiles.forEach((f) => fd.append("photos", f.blob, f.name));
+      const { draft: d } = await api("/api/quick-post", { method: "POST", body: fd });
+      await discardAutoDraft();
+      loadDraftIntoForm(d);
+      await prefillListing();
+      show("step-draft");
+    }
   } catch (err) {
     showError(err.message);
   } finally {
     $("btn-quick-post").disabled = selectedFiles.length === 0;
   }
-});
+}
+
+$("btn-quick-post").addEventListener("click", quickPostPhotos);
 
 /* ---------- step 2: edit draft ---------- */
 function loadDraftIntoForm(d) {
@@ -673,6 +955,8 @@ function loadDraftIntoForm(d) {
     notes.classList.remove("hidden");
   } else notes.classList.add("hidden");
   $("btn-photos-zip").href = "/api/drafts/" + d.id + "/photos.zip";
+  /* v50: the open draft is the one launch returns to. */
+  recordResumeDraft(d.id);
 }
 
 /* v36: draft thumbnails on the listing page. Every photo — existing or
@@ -1036,6 +1320,12 @@ $("btn-new").addEventListener("click", () => {
   flushSave(); /* v5: save any last-second edits before abandoning the form */
   draft = null;
   selectedFiles = [];
+  /* v50: starting fresh abandons the auto draft (it stays in My
+     drafts, deletable there) and clears the resume — there is no
+     open draft to return to. */
+  autoDraftId = null;
+  autoDraftStale = false;
+  recordResumeDraft(null);
   $("photo-input").value = "";
   clearPreviews();
   $("btn-analyze").disabled = true;
@@ -1570,6 +1860,42 @@ api("/api/config").then((c) => {
     renderThumbs(); /* v36: refresh the count line for the real cap */
   }
 }).catch(() => {});
+
+/* v50: return to the draft he had open. Runs after the config fetch
+   so the photo cap is already set when a photo-only draft restores
+   its photos into the grid. */
+checkResumeDraft();
+
+/* v50: the resume Continue flow, as a named function so node tests
+   can call it directly. Opens the remembered draft in the listing
+   page; a failure says so plainly and leaves My drafts as the way
+   back. */
+async function openResumeDraft() {
+  if (!resumeDraftId) return;
+  $("btn-resume").disabled = true;
+  try {
+    const { draft: d } = await api("/api/drafts/" + resumeDraftId);
+    $("resume-card").classList.add("hidden");
+    resumeDraftId = null;
+    loadDraftIntoForm(d);
+    await prefillListing();
+    show("step-draft");
+  } catch (e) {
+    showError("Couldn't open that draft. Find it in My drafts.");
+  } finally {
+    $("btn-resume").disabled = false;
+  }
+}
+
+function dismissResumeCard() {
+  $("resume-card").classList.add("hidden");
+  resumeDraftId = null;
+  recordResumeDraft(null);
+}
+
+$("btn-resume").addEventListener("click", openResumeDraft);
+
+$("btn-resume-dismiss").addEventListener("click", dismissResumeCard);
 
 /* ---------- v2: eBay one-tap listing ---------- */
 let ebayStatus = null;
@@ -2537,9 +2863,68 @@ function carrierServiceLabels() {
    still restores onto the USPSParcel option. FedExSmartPost is
    left as-is: whether create accepts it is unproven, and the retry
    test settles it. */
+/* v50: one spelling for a service code or label — lowercased, runs
+   of spaces collapsed — so "uspsparcel", "USPSParcel", and "USPS
+   Ground Advantage" all look the same key up. Mirror of the server's
+   _normalize_service_spelling. */
+function normalizeServiceSpelling(text) {
+  return String(text || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/* v50: every known service code, keyed by a normalized spelling.
+   Mirror of the server's _known_service_code_lookup: codes first,
+   then display labels, both mapping to the code eBay must receive.
+   The rejected code maps to the code eBay accepts, so a typed
+   USPSGroundAdvantage never survives. The shared label "USPS Ground
+   Advantage" keeps its first mapping (USPSParcel, first in
+   carrierServiceLabels()). */
+function knownServiceCodeLookup() {
+  const out = {};
+  const labels = carrierServiceLabels();
+  Object.keys(labels).forEach((code) => {
+    out[normalizeServiceSpelling(code)] = code;
+  });
+  Object.keys(labels).forEach((code) => {
+    const key = normalizeServiceSpelling(labels[code]);
+    if (!(key in out)) out[key] = code;
+  });
+  out[normalizeServiceSpelling("USPSGroundAdvantage")] = "USPSParcel";
+  return out;
+}
+
 function canonicalServiceCode(code) {
   const c = String(code || "").trim();
-  return c === "USPSGroundAdvantage" ? "USPSParcel" : c;
+  if (!c) return c;
+  /* v50: the match is now case-insensitive and accepts the display
+     label too ("uspsparcel", "USPS Ground Advantage"), so a typed
+     code is never sent verbatim. Anything unknown passes through
+     unchanged — callers that must not send an unknown code check
+     resolveTypedServiceCode first. */
+  const known = knownServiceCodeLookup()[normalizeServiceSpelling(c)];
+  return known || c;
+}
+
+/* v50: a code typed into an Other box, resolved against the known
+   list. Returns {code, known}: known is false when nothing matches,
+   so the caller can warn instead of sending a code eBay will fail
+   with 20403. Mirror of the server's _resolve_typed_service_code. */
+function resolveTypedServiceCode(text) {
+  const typed = String(text || "").trim();
+  if (!typed) return { code: "", known: false };
+  const known = knownServiceCodeLookup()[normalizeServiceSpelling(typed)];
+  return known ? { code: known, known: true } : { code: typed, known: false };
+}
+
+/* v50: service codes held back from the create form. UPSGroundSaver
+   is NOT in eBay's Trading API ShippingServiceCodeType enum and is
+   unproven on create. It stays offered for matching existing
+   policies and for display, but a new policy must never be created
+   with it. FedExSmartPost is deliberately NOT here: whether create
+   accepts it is unproven, and the live retry on 1.48 settles it.
+   Mirror of the server's CREATE_EXCLUDED_SERVICE_CODES. */
+const CREATE_EXCLUDED_SERVICE_CODES = ["UPSGroundSaver"];
+function isCreateExcludedCode(code) {
+  return CREATE_EXCLUDED_SERVICE_CODES.indexOf(canonicalServiceCode(code)) >= 0;
 }
 
 async function fetchCarrierServices() {
@@ -2746,6 +3131,29 @@ async function onShipServicePicked() {
     note.classList.remove("hidden");
     return;
   }
+  /* v50: same honest treatment for a policy whose price type is not
+     set on eBay — it still offers the service, so offer it by name
+     instead of claiming no policy exists and opening the create form
+     toward a duplicate. The publish gate still decides whether it
+     can list, so offering it never silently lists on a policy that
+     cannot ship. */
+  if (r.not_specified_policy_id) {
+    note.innerHTML = "";
+    note.textContent = "Your policy " + (r.not_specified_name || "on your account") +
+      " already offers " + createServiceLabel(code) + " (its price type isn't set on eBay).";
+    const useIt = document.createElement("button");
+    useIt.type = "button";
+    useIt.id = "btn-use-not-specified-policy";
+    useIt.className = "ghost";
+    useIt.textContent = "Use that policy";
+    useIt.addEventListener("click", async () => {
+      note.classList.add("hidden");
+      await selectShippingPolicy(r.not_specified_policy_id);
+    });
+    note.appendChild(useIt);
+    note.classList.remove("hidden");
+    return;
+  }
   note.textContent = "No policy with that service yet — check the details below and confirm to create one.";
   note.classList.remove("hidden");
   openCreateFormPrefilled(carrier, code);
@@ -2764,11 +3172,24 @@ async function openCreateFormPrefilled(carrier, code) {
      Advantage"), never the rejected code in the Other box. */
   code = canonicalServiceCode(code);
   const label = createServiceLabel(code);
-  if (!$("pc-name").value) $("pc-name").value = "Calculated " + label;
+  const excluded = isCreateExcludedCode(code);
+  if (!excluded && !$("pc-name").value) $("pc-name").value = "Calculated " + label;
   $("pc-dom-cost-type").value = "CALCULATED";
   const dom1 = $("pc-dom-service-1");
   const listed = Array.from(dom1.children || []).some((o) => o.value === code);
-  if (listed) {
+  if (excluded) {
+    /* v50: UPS Ground Saver cannot be used for a new policy yet —
+       eBay has not confirmed that code. Leave the service blank and
+       say so plainly, instead of prefilling a code create would
+       refuse. The seller can pick another service, or use the policy
+       that already carries it. */
+    dom1.value = "";
+    $("pc-dom-service-1-other").value = "";
+    $("pc-dom-service-1-other").classList.add("hidden");
+    const errEl = $("policy-create-error");
+    errEl.textContent = label + " cannot be used for a new policy yet. eBay has not confirmed that code, so pick a different service or use a policy you already have.";
+    errEl.classList.remove("hidden");
+  } else if (listed) {
     dom1.value = code;
     $("pc-dom-service-1-other").value = "";
     $("pc-dom-service-1-other").classList.add("hidden");
@@ -3001,6 +3422,12 @@ function collectPolicyCreateForm() {
     form.dom_cost_2 = ($("pc-dom-cost-2").value || "").trim();
     form.dom_free_shipping = form.dom_cost_type === "FLAT_RATE" && !!$("pc-dom-free-1").checked;
     if (!createServiceResolved("dom", 1, form)) errors.push("Pick a shipping service for US shipping.");
+    const dom1Err = createServiceTypedError("dom", 1, form);
+    if (dom1Err) errors.push(dom1Err);
+    if (form.dom_service_2) {
+      const dom2Err = createServiceTypedError("dom", 2, form);
+      if (dom2Err) errors.push(dom2Err);
+    }
     if (form.dom_cost_type === "FLAT_RATE") {
       if (!form.dom_free_shipping && !validCreateCost(form.dom_cost_1)) errors.push("Enter the cost for US service 1, or check Free shipping.");
       if (form.dom_service_2 && !validCreateCost(form.dom_cost_2)) errors.push("Enter the cost for US service 2.");
@@ -3014,6 +3441,12 @@ function collectPolicyCreateForm() {
       form.intl_cost_1 = ($("pc-intl-cost-1").value || "").trim();
       form.intl_cost_2 = ($("pc-intl-cost-2").value || "").trim();
       if (!createServiceResolved("intl", 1, form)) errors.push("Pick a shipping service for international shipping.");
+      const intl1Err = createServiceTypedError("intl", 1, form);
+      if (intl1Err) errors.push(intl1Err);
+      if (form.intl_service_2) {
+        const intl2Err = createServiceTypedError("intl", 2, form);
+        if (intl2Err) errors.push(intl2Err);
+      }
       if (form.intl_cost_type === "FLAT_RATE") {
         if (!validCreateCost(form.intl_cost_1)) errors.push("Enter the cost for international service 1.");
         if (form.intl_service_2 && !validCreateCost(form.intl_cost_2)) errors.push("Enter the cost for international service 2.");
@@ -3032,6 +3465,31 @@ function createServiceResolved(prefix, n, form) {
   const v = form[prefix + "_service_" + n] || "";
   if (v === "__OTHER__") return !!(form[prefix + "_service_" + n + "_other"] || "").trim();
   return !!v;
+}
+
+/* v50: a code typed into an Other box must be one eBay knows, and
+   must not be one held back from create. Returns the plain-words
+   error, or "" when the slot is fine. A dropdown pick is always
+   known, so only a typed code (or a held-back code) can fail this.
+   Mirror of the server's _validate_create_service_code — the server
+   re-checks, so a client/server mismatch only costs a round trip,
+   never a bad policy. */
+function createServiceTypedError(prefix, n, form) {
+  const v = form[prefix + "_service_" + n] || "";
+  const excludedMsg = (code) => createServiceLabel(code) +
+    " cannot be used for a new policy yet. eBay has not confirmed that code, so pick a different service or use a policy you already have.";
+  if (v === "__OTHER__") {
+    const typed = (form[prefix + "_service_" + n + "_other"] || "").trim();
+    if (!typed) return "";
+    const resolved = resolveTypedServiceCode(typed);
+    if (!resolved.known) {
+      return "eBay may not know the shipping code \"" + typed + "\". Pick a service from the list, or check the code.";
+    }
+    if (isCreateExcludedCode(resolved.code)) return excludedMsg(resolved.code);
+    return "";
+  }
+  if (v && isCreateExcludedCode(v)) return excludedMsg(canonicalServiceCode(v));
+  return "";
 }
 
 function createServiceCodeFor(prefix, n, form) {
@@ -3164,7 +3622,12 @@ async function openCreateForm() {
         errEl.classList.remove("hidden");
         return;
       }
-      createServices = { domestic: r.domestic || [], international: r.international || [] };
+      /* v50: the create form offers everything except codes held back
+         from create (UPSGroundSaver); the matcher keeps the full
+         lists. A server without the new keys falls back to the full
+         lists, so an old response never breaks the form. */
+      createServices = { domestic: r.create_domestic || r.domestic || [],
+                         international: r.create_international || r.international || [] };
       createServicesFetched = true;
       populateServiceSelect("pc-dom-service-1", createServices.domestic);
       populateServiceSelect("pc-dom-service-2", createServices.domestic);

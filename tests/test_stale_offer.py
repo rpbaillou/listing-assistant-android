@@ -45,7 +45,7 @@ def tearDownModule():
 FLAT_FOR = lambda pid: {"fulfillmentPolicyId": pid, "name": "Dummy Flat",
                         "marketplaceId": "EBAY_US",
                         "shippingOptions": [{"optionType": "DOMESTIC",
-                                             "costType": "FLAT_RATE"}]}
+                                             "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 
 
 class _ChainBase(unittest.TestCase):

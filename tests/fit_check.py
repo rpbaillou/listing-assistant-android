@@ -400,6 +400,45 @@ def main():
           rules.get(".collapse-row .cr-sub", {}).get("overflow-wrap") == "break-word",
           str(rules.get(".collapse-row .cr-text", {})))
 
+    # 15. v50 resume card on step 1: a plain white card (not an error
+    # banner) with the draft's name, a blue Continue button and a
+    # small dismiss. It starts hidden and only shows when the server
+    # remembers an open draft. The text shrinks and wraps, the
+    # buttons wrap below it on a narrow phone — nothing clips.
+    for name, needle, hay in (
+            ("resume card", 'id="resume-card" class="hidden"', html),
+            ("resume text", 'id="resume-text"', html),
+            ("resume Continue is the primary button", 'id="btn-resume" class="primary"', html),
+            ("resume dismiss has a label", 'id="btn-resume-dismiss" class="ghost" type="button" aria-label="Dismiss"', html),
+            ("resume check on launch", "checkResumeDraft", js),
+            ("resume card builder", "showResumeCard", js),
+            ("resume open", "openResumeDraft", js),
+            ("resume dismiss", "dismissResumeCard", js)):
+        check("present: %s" % name, needle in hay)
+    check("resume card is a flex row that wraps",
+          rules.get("#resume-card", {}).get("display") == "flex" and
+          rules.get("#resume-card", {}).get("flex-wrap") == "wrap",
+          str(rules.get("#resume-card", {})))
+    check("resume card is a white card, not an error banner",
+          rules.get("#resume-card", {}).get("background") == "#fff",
+          str(rules.get("#resume-card", {})))
+    check("resume text shrinks and wraps",
+          rules.get("#resume-text", {}).get("flex") == "1 1 10rem" and
+          rules.get("#resume-text", {}).get("min-width") == "0" and
+          rules.get("#resume-text", {}).get("overflow-wrap") == "break-word",
+          str(rules.get("#resume-text", {})))
+    # At 320dp the text flex-basis is 10rem (160px) of a 252.8px
+    # content width; the buttons wrap below it when they cannot fit
+    # beside it, so the card never overflows — flex-wrap is the fit.
+    check("resume card wraps instead of overflowing at 320dp",
+          rules.get("#resume-card", {}).get("flex-wrap") == "wrap" and
+          px(rules.get("#resume-text", {}).get("flex", "").split()[2]
+             if len(rules.get("#resume-text", {}).get("flex", "").split()) == 3
+             else None) is not None and
+          px(rules.get("#resume-text", {}).get("flex").split()[2]) <= content320,
+          "text basis %s <= content %.0fpx" % (
+              rules.get("#resume-text", {}).get("flex"), content320))
+
     print()
     if FAILURES:
         print("FAILED (%d): %s" % (len(FAILURES), "; ".join(FAILURES)))

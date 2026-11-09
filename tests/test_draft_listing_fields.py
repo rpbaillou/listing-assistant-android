@@ -185,7 +185,7 @@ class DraftListingFieldsTestCase(unittest.TestCase):
         flat = {"fulfillmentPolicyId": "111", "name": "Dummy Flat",
                 "marketplaceId": "EBAY_US",
                 "shippingOptions": [{"optionType": "DOMESTIC",
-                                     "costType": "FLAT_RATE"}]}
+                                     "costType": "FLAT_RATE", "shippingServices": [{"shippingServiceCode": "USPSParcel"}]}]}
 
         def fake_call(method, path, token, payload=None):
             if path.startswith("/sell/account/v1/fulfillment_policy"):

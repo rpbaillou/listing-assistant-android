@@ -353,13 +353,15 @@ class PolicyForServiceTest(unittest.TestCase):
         # No FedEx policy in POLICY_LIST, so null — but not a 400.
         self.assertEqual(r.get_json(),
                          {"policy_id": None, "flat_policy_id": None,
-                          "flat_name": None})
+                          "flat_name": None, "not_specified_policy_id": None,
+                          "not_specified_name": None})
 
     def test_no_match_returns_null(self):
         r = self._call({"carrier": "FedEx", "service_code": "FedEx2Day"})
         self.assertEqual(r.get_json(),
                          {"policy_id": None, "flat_policy_id": None,
-                          "flat_name": None})
+                          "flat_name": None, "not_specified_policy_id": None,
+                          "not_specified_name": None})
 
     def test_bad_carrier_and_empty_service_are_400(self):
         r = self._call({"carrier": "DHL", "service_code": "USPSPriority"})
