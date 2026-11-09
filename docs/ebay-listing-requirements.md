@@ -873,3 +873,52 @@ remembers the open draft.
   holds nothing now. All JS references are by element id, so the
   move needs no code change; the fit gate checks the big button in
   its new spot at 320dp.
+
+## v52: photos are 2K (2048px) + optical stabilization in the in-app camera
+
+- Photo cap raised from 1600px to 2048px on the long edge (2K),
+  on all three paths that can shrink a photo, so no path shrinks
+  one twice: native `CameraDownscale.downscale`
+  (`CameraDownscale.kt`, `MAX_EDGE` constant, default), JS
+  `downscaleFile` (`app.js`, `MAX_EDGE`), and server
+  `_save_image_file` (`app.py`, `img.thumbnail((2048, 2048))`).
+  JPEG quality stays 85 and EXIF rotation is untouched. The
+  larger base64 handoff at 2048 is fine. Thumbnails stay 128px
+  (the v48 shared `--thumb-size` variable) and the v49
+  pick-photos grid is unchanged — this cap is only about the
+  stored listing photo. Tests: `tests/test_photo_2048.py`
+  (server save shrinks 4096x3072 to 2048x1536, tall photo to
+  1536x2048, at-cap and smaller photos untouched; source
+  contracts pin all three caps at 2048 and sweep the photo path
+  for a stale 1600 cap), `tests/photo-2048.test.js` (the real
+  `downscaleFile` against a stubbed canvas: 4096x3072 to
+  2048x1536, 1800x2400 to 1536x2048, at-cap and smaller
+  untouched), and Kotlin `CameraDownscaleTest` (MAX_EDGE is
+  2048, targetSize/sampleSize math at the 2048 cap).
+
+- Optical stabilization in the in-app camera (v44 CameraX),
+  requested explicitly for the first time. `InAppCamera`
+  asks the back camera, via the Camera2 interop extender,
+  for `LENS_OPTICAL_STABILIZATION_MODE ON` on both the
+  preview and the capture use cases — but only when the camera
+  reports ON in `LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION`.
+  When it does not report OIS, or the bind rejects the request,
+  the camera binds exactly as before: the bind is retried once
+  without OIS, and only then does the existing "Couldn't start
+  the camera" fallback to the camera app run. No crash, no
+  blocked capture. Capture mode stays
+  `CAPTURE_MODE_MINIMIZE_LATENCY` — the fast shutter for rapid
+  multi-shot is unchanged. Honest limits, recorded so the next
+  builder does not overclaim: this is the lens hardware
+  steadying the shot, NOT video stabilization (EIS is a video
+  feature and does not apply to a still capture), and on this
+  Pixel the lens may already steady by default — the change
+  makes the request explicit and visible in code, it does not
+  guarantee a measured shake reduction, and no on-phone shake
+  test has been run. The `camera-camera2` artifact that carries
+  the interop classes was already a dependency; no new
+  dependency was added. Tests: source contracts in
+  `tests/test_photo_2048.py` (interop imports, OIS ON
+  requested, availability gate, bind retry without OIS, fast
+  mode kept, no video stabilization); CI Gradle compilation is
+  the Kotlin execution gate.

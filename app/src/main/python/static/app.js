@@ -56,10 +56,13 @@ async function api(path, opts = {}) {
 }
 
 /* ---------- step 1: photos ---------- */
-/* v2.8: shrink each photo on the phone before upload (max 1600px long edge,
+/* v2.8: shrink each photo on the phone before upload (max 2048px long edge,
    JPEG q85) so 10 photos stay well under the tunnel timeout. Files the
-   browser cannot decode (e.g. HEIC) are skipped with a plain-words note. */
-const MAX_EDGE = 1600;
+   browser cannot decode (e.g. HEIC) are skipped with a plain-words note.
+   v52: the cap was 1600px; raised to 2048px (2K), matching the native
+   CameraDownscale and the server _save_image_file, so no path shrinks a
+   photo twice. */
+const MAX_EDGE = 2048;
 
 function decodeFile(file) {
   if (window.createImageBitmap) {
@@ -280,7 +283,7 @@ function reorderPhoto(from, to) {
 }
 
 /* ---------- v18: photo editor (crop + rotate) ---------- */
-/* Photos arrive here already downscaled to 1600px (intake), so canvas
+/* Photos arrive here already downscaled to 2048px (intake), so canvas
    work stays small. The editor works on the entry's current blob, so
    tapping Edit again on an already-edited photo re-edits that version.
    Save replaces the entry's blob, so Identify uploads the edited photo
@@ -301,7 +304,7 @@ function clampCropRect(rect, bw, bh, minSize) {
 }
 
 let editIndex = -1;
-let editImg = null;      /* full-res source image (<=1600px) */
+let editImg = null;      /* full-res source image (<=2048px) */
 let editImgUrl = null;   /* object URL for editImg, revoked on close */
 let editRot = 0;         /* 0/90/180/270, clockwise */
 let editCrop = null;     /* {x,y,w,h} in ROTATED image coordinates */
@@ -828,7 +831,7 @@ function takeStep1Photo() {
 $("btn-take-photo").addEventListener("click", takeStep1Photo);
 
 /* Called by native code after a camera snap. dataUrl is a natively
-   downscaled JPEG (1600px, q85). Appends, so he can snap several angles.
+   downscaled JPEG (2048px, q85). Appends, so he can snap several angles.
    v36: routes by cameraTarget — on the listing page the snap uploads to
    the draft instead of joining the step-1 set. */
 async function onCameraPhoto(dataUrl) {

@@ -9,16 +9,26 @@ import java.io.File
 
 /**
  * v14: native downscale for the JS-interface camera path ("Take photo" ->
- * Android.openCamera()). The captured JPEG is shrunk to max 1600px on the
- * long edge (matching the JS downscaleFile), EXIF-rotated so it is never
+ * Android.openCamera()). The captured JPEG is shrunk to max 2048px on the
+ * long edge (2K, matching the JS downscaleFile), EXIF-rotated so it is never
  * sideways, and JPEG-compressed — keeping the base64 handed to
  * evaluateJavascript small enough to be fast.
+ *
+ * v52: the cap was 1600px; raised to 2048px (2K) so listing photos keep
+ * more detail. The server (_save_image_file in app.py) and the JS
+ * downscaleFile use the same 2048 cap, so no path shrinks a photo twice.
+ * Thumbnails are a different thing (128px, the v48 shared variable) and
+ * are untouched by this cap.
  *
  * v12's Take photo relied on the WebView honoring <input capture="camera">;
  * his phone's WebView ignores the attribute, so both buttons opened the
  * gallery. The JS interface bypasses the WebView entirely.
  */
 object CameraDownscale {
+
+    /** v52: the photo cap, 2K on the long edge. Pinned by unit test so a
+     *  future edit cannot silently shrink photos back to the old cap. */
+    const val MAX_EDGE = 2048
 
     /** Power-of-2 sample size for decoding. Keeps the decoded bitmap within
      *  2x of maxEdge per side (targetSize() then does the exact shrink) —
@@ -58,7 +68,7 @@ object CameraDownscale {
      * Reads src, applies EXIF rotation, fits within maxEdge, returns JPEG
      * bytes at the given quality. Null when the file can't be decoded.
      */
-    fun downscale(src: File, maxEdge: Int = 1600, quality: Int = 85): ByteArray? {
+    fun downscale(src: File, maxEdge: Int = MAX_EDGE, quality: Int = 85): ByteArray? {
         return try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(src.absolutePath, bounds)

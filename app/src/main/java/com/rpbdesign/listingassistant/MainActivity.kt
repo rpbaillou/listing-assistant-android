@@ -682,7 +682,7 @@ class MainActivity : Activity(), LifecycleOwner {
     /**
      * v44: one shutter tap. Saves to a temp file, then runs the same
      * pipeline as the old camera-app result: native downscale to
-     * 1600px, base64, hand to the WebView's onCameraPhoto — which
+     * 2048px, base64, hand to the WebView's onCameraPhoto — which
      * routes it by cameraTarget (step 1 or draft). The count on the
      * camera screen shows the running total. The shutter is ignored
      * while a capture is in flight.
@@ -761,7 +761,7 @@ class MainActivity : Activity(), LifecycleOwner {
     }
 
     /**
-     * Handles the JS-interface camera result: downscales natively to 1600px,
+     * Handles the JS-interface camera result: downscales natively to 2048px,
      * base64-encodes, and hands the data URL to JS. On cancel, just cleans up.
      * Runs on the UI thread (onActivityResult), so evaluateJavascript is safe.
      */

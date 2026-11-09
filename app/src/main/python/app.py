@@ -396,7 +396,7 @@ def _save_image_file(fs, out_path):
     try:
         img = Image.open(fs.stream)
         img = img.convert("RGB")
-        img.thumbnail((1600, 1600))
+        img.thumbnail((2048, 2048))
         img.save(out_path, "JPEG", quality=85)
         return True
     except Exception:

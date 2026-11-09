@@ -32,6 +32,34 @@ class CameraDownscaleTest {
     }
 
     @Test
+    fun maxEdgeConstantIs2048() {
+        // v52: the photo cap is 2K on the long edge. The default
+        // downscale() cap and the JS/server caps must match it, so a
+        // photo is never shrunk twice.
+        assertEquals(2048, CameraDownscale.MAX_EDGE)
+    }
+
+    @Test
+    fun targetSizeAt2048Cap() {
+        // Larger than 2K: shrinks to 2048 on the long edge, aspect kept.
+        assertEquals(Pair(2048, 1536), CameraDownscale.targetSize(4096, 3072, 2048))
+        assertEquals(Pair(1536, 2048), CameraDownscale.targetSize(1800, 2400, 2048))
+        // Square.
+        assertEquals(Pair(2048, 2048), CameraDownscale.targetSize(4000, 4000, 2048))
+        // At the cap or smaller: untouched, never upscaled.
+        assertEquals(Pair(2048, 1536), CameraDownscale.targetSize(2048, 1536, 2048))
+        assertEquals(Pair(1600, 1200), CameraDownscale.targetSize(1600, 1200, 2048))
+        assertEquals(Pair(800, 600), CameraDownscale.targetSize(800, 600, 2048))
+    }
+
+    @Test
+    fun sampleSizeAt2048Cap() {
+        assertEquals(1, CameraDownscale.computeSampleSize(4096, 3072, 2048))
+        assertEquals(2, CameraDownscale.computeSampleSize(8000, 6000, 2048))
+        assertEquals(4, CameraDownscale.computeSampleSize(16000, 12000, 2048))
+    }
+
+    @Test
     fun exifDegreesMapsOrientations() {
         assertEquals(90, CameraDownscale.exifDegrees(ExifInterface.ORIENTATION_ROTATE_90))
         assertEquals(180, CameraDownscale.exifDegrees(ExifInterface.ORIENTATION_ROTATE_180))

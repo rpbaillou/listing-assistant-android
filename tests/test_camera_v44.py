@@ -9,7 +9,7 @@ camera stays open, no review screen, no check.
 Kotlin cannot execute in this sandbox (no working Gradle daemon here,
 as with v15-v38), so these are source-contract regression tests over
 the real sources: they pin the permission, the CameraX wiring, the
-Take-photo routing, the fallback, and the photo pipeline (same 1600px
+Take-photo routing, the fallback, and the photo pipeline (same 2048px
 downscale + onCameraPhoto handoff as the old path). CI Gradle
 compilation is the Kotlin execution gate; the rapid multi-shot test
 on his Pixel is the proof. Dummy data only; eBay is never touched.
