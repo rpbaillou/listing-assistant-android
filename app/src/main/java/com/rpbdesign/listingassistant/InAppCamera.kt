@@ -100,10 +100,16 @@ class InAppCamera(private val context: Context) {
      */
     private fun opticalStabilizationAvailable(provider: ProcessCameraProvider): Boolean {
         return try {
-            val info = Camera2CameraInfo.from(
-                provider.getCameraInfo(CameraSelector.DEFAULT_BACK_CAMERA)
-            )
-            val modes = info.getCameraCharacteristic(
+            // ProcessCameraProvider has no getCameraInfo(selector):
+            // the back camera's CameraInfo comes from
+            // availableCameraInfos, picked by lens facing. (v52 CI
+            // fix: the first build called provider.getCameraInfo and
+            // compileDebugKotlin failed with "Unresolved reference:
+            // getCameraInfo".)
+            val info = provider.availableCameraInfos.firstOrNull {
+                it.lensFacing == CameraSelector.LENS_FACING_BACK
+            } ?: return false
+            val modes = Camera2CameraInfo.from(info).getCameraCharacteristic(
                 CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION
             )
             modes?.contains(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON) == true

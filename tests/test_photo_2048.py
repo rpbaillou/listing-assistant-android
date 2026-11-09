@@ -171,6 +171,16 @@ class TestOpticalStabilizationContracts(unittest.TestCase):
         self.assertIn("CAPTURE_MODE_MINIMIZE_LATENCY", self.SRC)
         self.assertNotIn("CAPTURE_MODE_MAXIMIZE_QUALITY", self.SRC)
 
+    def test_back_camera_info_comes_from_available_camera_infos(self):
+        # v52 CI fix: ProcessCameraProvider has no
+        # getCameraInfo(selector) — the first build failed
+        # compileDebugKotlin with "Unresolved reference:
+        # getCameraInfo". The back camera's CameraInfo comes from
+        # availableCameraInfos, picked by lens facing.
+        self.assertIn("availableCameraInfos", self.SRC)
+        self.assertIn("LENS_FACING_BACK", self.SRC)
+        self.assertNotIn("provider.getCameraInfo(", self.SRC)
+
     def test_no_video_stabilization(self):
         # EIS is a video feature; it does not apply to still capture
         # and must not be claimed or requested here.
