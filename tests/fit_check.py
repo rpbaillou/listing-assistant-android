@@ -533,6 +533,27 @@ def main():
           rules.get("button.primary.big", {}).get("width") == "100%",
           str(rules.get("button.primary.big", {})))
 
+    # 18. v53 status card tells the truth: after a token-death
+    # failure the page re-runs the status check and the
+    # not-connected card shows a Connect eBay button in a wrapping
+    # row (the v22 narrow-safe rule), so it fits at 320dp with no
+    # clipping; the card hint no longer says "in this browser".
+    check("status card refreshes after a token-death message",
+          "async function refreshEbayStatus()" in js and
+          "async function refreshStatusIfTokenDied(text)" in js)
+    check("token-death refresh is wired into the failure paths",
+          js.count("refreshStatusIfTokenDied(") >= 12,
+          "%d call sites" % js.count("refreshStatusIfTokenDied("))
+    check("not-connected card has a Connect eBay button",
+          "btn-ebay-connect" in js)
+    check("Connect button sits in a wrapping row",
+          "btnrow wrap" in js and
+          rules.get(".btnrow", {}).get("flex-wrap") == "wrap",
+          str(rules.get(".btnrow", {})))
+    check("no 'in this browser' left in the UI",
+          "in this browser" not in js,
+          "%d occurrences" % js.count("in this browser"))
+
     print()
 
 

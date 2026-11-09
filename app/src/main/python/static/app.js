@@ -1900,6 +1900,9 @@ $("btn-batch-confirm").addEventListener("click", async () => {
     if (isScopeReconnectText(e.message)) {
       $("batch-scope-box").classList.remove("hidden");
     }
+    /* v53: a token-death message in a batch run means the sign-in
+       died — flip the listing-page status card too. */
+    await refreshStatusIfTokenDied(e.message);
     $("btn-batch-done").classList.remove("hidden");
   } finally {
     $("batch-progress").classList.add("hidden");
@@ -1954,6 +1957,8 @@ $("btn-batch-ship-from").addEventListener("click", async () => {
   } catch (e) {
     $("batch-results").innerHTML = "<p class='error'>" + esc(e.message) + "</p>";
     $("batch-ship-from-form").classList.add("hidden");
+    /* v53: see the batch-confirm catch above. */
+    await refreshStatusIfTokenDied(e.message);
     $("btn-batch-done").classList.remove("hidden");
   } finally {
     $("batch-progress").classList.add("hidden");
@@ -2074,46 +2079,43 @@ function listingPrefill(draftObj, preset, defaults, form) {
    separate panel-save chain anymore. */
 let pickedCat = { id: "", name: "" };
 
-async function prefillListing(opts) {
-  /* v29: fills the listing page's eBay fields when a draft opens and
-     renders the eBay status line. Draft first, preset second, .env
-     defaults last (listingPrefill). Never throws: a failed status or
-     preset fetch leaves the page as loaded from the draft.
-     v43: opts.keepPublishOk skips hiding the fresh "It is live!"
-     note when this runs right after a successful publish (postPublish
-     calls it to refresh the page state). Without the flag the note
-     set in the same tick is hidden again before the seller ever sees
-     it. The hide stays correct on a plain draft open: it clears a
-     stale note from an earlier visit. */
-  if (!draft) return;
-  $("publish-error").classList.add("hidden");
-  if (!opts || !opts.keepPublishOk) $("publish-ok").classList.add("hidden");
-  $("listing-note").classList.add("hidden");
+/* v53: re-render the eBay status card from a fresh /api/ebay/status
+   read. Extracted verbatim from prefillListing so any token-death
+   failure can re-run it: the card must reflect the token file AFTER
+   a wipe, not the snapshot from page load (the live v1.51 bug: the
+   card said "connected" while the publish error said "not
+   connected", because a failed renewal or a 401 had wiped the tokens
+   between the two checks). Never throws: a failed check leaves the
+   "Could not check" hint and the List button visible, as before.
+   Returns the status object, or null when the check itself fails. */
+async function refreshEbayStatus() {
   const box = $("ebay-status");
+  let st = null;
   try {
-    ebayStatus = await api("/api/ebay/status");
+    st = await api("/api/ebay/status");
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0'>Could not check eBay status.</p>";
     $("btn-publish").classList.remove("hidden");
-    return;
+    return null;
   }
-  if (!ebayStatus.ebay_configured) {
+  ebayStatus = st;
+  if (!st.ebay_configured) {
     box.innerHTML = "<p style='margin:0'><b>eBay is not set up yet.</b></p>" +
       "<p class='hint'>Add your eBay App ID and Cert ID to the .env file " +
       "(setup guide: Connect eBay), then restart the app. The manual copy buttons below still work.</p>";
     $("btn-publish").classList.add("hidden");
-    return;
+    return st;
   }
-  if (!ebayStatus.connected) {
+  if (!st.connected) {
     // v22: the sign-in name in use is always shown here, so a wrong one
     // can never hide again. When it is anything but the working name,
     // offer the one-tap fix instead of a text field: the button rewrites
     // the saved name, restarts the app, and starts the connect flow.
     // The buttons live in a wrapping row (v21 narrow-safe rule) so they
     // can never clip off a narrow phone screen.
-    const runame = (ebayStatus.runame || "").trim();
+    const runame = (st.runame || "").trim();
     let html = "<p style='margin:0'><b>eBay is not connected.</b></p>" +
-      "<p class='hint'>Tap the button below in this browser, sign in to eBay, " +
+      "<p class='hint'>Tap the button below, sign in to eBay, " +
       "and approve access. You only do this once.</p>" +
       "<p class='hint runame-line'>Sign-in name in use: " + esc(runame) + "</p>" +
       "<div class='btnrow wrap'>" +
@@ -2140,7 +2142,7 @@ async function prefillListing(opts) {
       });
     }
     $("btn-publish").classList.add("hidden");
-    return;
+    return st;
   }
   const alreadyLive = !!(draft && draft.ebay_listing_id);
   if (alreadyLive) {
@@ -2150,8 +2152,8 @@ async function prefillListing(opts) {
     $("btn-publish").classList.add("hidden");
   } else {
     let statusHtml = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
-      "<p class='hint runame-line'>Sign-in name in use: " + esc((ebayStatus.runame || "").trim()) + "</p>";
-    if (!ebayStatus.policies_configured) {
+      "<p class='hint runame-line'>Sign-in name in use: " + esc((st.runame || "").trim()) + "</p>";
+    if (!st.policies_configured) {
       // v29: unlike the old panel, the listing page lets him TYPE the
       // missing policy numbers right here, so the Post button stays —
       // the server still refuses a post with numbers missing.
@@ -2160,6 +2162,31 @@ async function prefillListing(opts) {
     box.innerHTML = statusHtml;
     $("btn-publish").classList.remove("hidden");
   }
+  return st;
+}
+
+async function prefillListing(opts) {
+  /* v29: fills the listing page's eBay fields when a draft opens and
+     renders the eBay status line. Draft first, preset second, .env
+     defaults last (listingPrefill). Never throws: a failed status or
+     preset fetch leaves the page as loaded from the draft.
+     v43: opts.keepPublishOk skips hiding the fresh "It is live!"
+     note when this runs right after a successful publish (postPublish
+     calls it to refresh the page state). Without the flag the note
+     set in the same tick is hidden again before the seller ever sees
+     it. The hide stays correct on a plain draft open: it clears a
+     stale note from an earlier visit. */
+  if (!draft) return;
+  $("publish-error").classList.add("hidden");
+  if (!opts || !opts.keepPublishOk) $("publish-ok").classList.add("hidden");
+  $("listing-note").classList.add("hidden");
+  /* v53: the status card is rendered by refreshEbayStatus (above), so
+     a token-death failure anywhere can re-run it and flip the card to
+     not-connected. Only a connected card goes on to prefill the
+     listing fields; every other outcome returns here, exactly as the
+     inline version did. */
+  const st = await refreshEbayStatus();
+  if (!st || !st.ebay_configured || !st.connected) return;
   // Prefill the listing page's eBay fields: a category number saved into
   // the draft is restored here, so Post works straight away after an
   // update or restart — no re-pick.
@@ -2622,6 +2649,9 @@ $("btn-publish").addEventListener("click", async () => {
     if (isScopeReconnectText(e.message)) {
       $("scope-reconnect-box").classList.remove("hidden");
     }
+    /* v53: a token-death message here means the sign-in died after
+       the status card rendered — flip the card to not-connected. */
+    await refreshStatusIfTokenDied(e.message);
   } finally {
     $("publish-spinner").classList.add("hidden");
     $("btn-publish").disabled = false;
@@ -2661,6 +2691,35 @@ function isScopeReconnectText(text) {
     text.indexOf("needs one new permission to read your shipping policies") !== -1;
 }
 
+/* v53: the server messages that mean the saved eBay sign-in is gone —
+   a failed renewal or a 401 wiped the tokens (app.py clears them on
+   refresh non-200 and on 401, Media API included). Any of them
+   reaching the page must flip the status card to not-connected, so
+   the card never keeps saying "connected" after the sign-in died
+   (the live v1.51 bug). The scope message is a token-death message
+   too, but it has its own typed signal and Connect box;
+   isScopeReconnectText stays the check for that one. "Could not
+   reach eBay" is deliberately NOT here: a dropped connection does
+   not wipe the tokens, so the card stays as it is. */
+function isTokenDeathText(text) {
+  if (typeof text !== "string" || !text) return false;
+  const low = text.toLowerCase();
+  return low.indexOf("is not connected") !== -1 ||
+    low.indexOf("sign-in stopped working") !== -1 ||
+    low.indexOf("sign-in expired and could not be renewed") !== -1 ||
+    low.indexOf("missing the photo permission") !== -1 ||
+    isScopeReconnectText(text);
+}
+
+/* v53: after any eBay failure, re-run the status check when the
+   message means the sign-in died, so the card flips to
+   not-connected with the Connect button right there and the List
+   button hides until he reconnects. Never throws:
+   refreshEbayStatus catches its own fetch failure. */
+async function refreshStatusIfTokenDied(text) {
+  if (isTokenDeathText(text)) await refreshEbayStatus();
+}
+
 async function postPublish(body) {
   let r;
   try {
@@ -2678,6 +2737,9 @@ async function postPublish(body) {
       el.textContent = e.message;
       el.classList.remove("hidden");
       $("scope-reconnect-box").classList.remove("hidden");
+      /* v53: the sign-in is dead (or its consent is short a scope) —
+         flip the status card so it stops saying "connected". */
+      await refreshStatusIfTokenDied(e.message);
       return "needs-scope";
     }
     throw e;
@@ -2696,6 +2758,8 @@ async function postPublish(body) {
     el.textContent = r.error || "The app needs one new permission to read your shipping policies.";
     el.classList.remove("hidden");
     $("scope-reconnect-box").classList.remove("hidden");
+    /* v53: same flip as the thrown-scope path above. */
+    await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
     return "needs-scope";
   }
   /* v34: the shipping policy number is unusable. The Shipping dropdown
@@ -2768,6 +2832,8 @@ async function fetchShippingPolicies() {
       /* v49: the error lives inside the collapsed Shipping row — open
          the row so it is actually seen. */
       openListingRow("row-shipping");
+      /* v53: the sign-in is short a scope — flip the status card too. */
+      await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
       return;
     }
     shippingPolicies = r.policies || [];
@@ -2780,6 +2846,10 @@ async function fetchShippingPolicies() {
     openListingRow("row-shipping");
     const retry = $("btn-shipping-retry");
     if (retry) retry.addEventListener("click", fetchShippingPolicies);
+    /* v53: the policies fetch is the call most likely to wipe the
+       tokens between the status render and a List tap — if its
+       error says the sign-in died, flip the card now. */
+    await refreshStatusIfTokenDied(e.message);
   } finally {
     sel.disabled = false;
     shippingFetchInFlight = false;
@@ -3206,6 +3276,9 @@ async function onShipServicePicked() {
   } catch (e) {
     note.textContent = "Could not check your policies (" + e.message + "). Pick one from your usual policies below.";
     note.classList.remove("hidden");
+    /* v53: the policy lookup needs the sign-in too — flip the card
+       when its error says the sign-in died. */
+    await refreshStatusIfTokenDied(e.message);
     return;
   }
   if (r.needs_scope_reconnect) {
@@ -3213,6 +3286,7 @@ async function onShipServicePicked() {
       "The app needs one new permission to read your shipping policies.") +
       "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
     note.classList.remove("hidden");
+    await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
     return;
   }
   if (r.policy_id) {
@@ -3375,6 +3449,8 @@ async function selectShippingPolicy(policyId) {
   } catch (e) {
     errEl.textContent = e.message;
     errEl.classList.remove("hidden");
+    /* v53: a re-post that dies on the sign-in flips the card too. */
+    await refreshStatusIfTokenDied(e.message);
   } finally {
     $("publish-spinner").classList.add("hidden");
   }
@@ -3407,6 +3483,8 @@ $("btn-ship-from").addEventListener("click", async () => {
   } catch (e) {
     errEl.textContent = e.message;
     errEl.classList.remove("hidden");
+    /* v53: a re-post that dies on the sign-in flips the card too. */
+    await refreshStatusIfTokenDied(e.message);
   } finally {
     $("publish-spinner").classList.add("hidden");
     $("btn-ship-from").disabled = false;
@@ -3750,6 +3828,9 @@ async function openCreateForm() {
       errEl.classList.remove("hidden");
       const retry = $("btn-pc-services-retry");
       if (retry) retry.addEventListener("click", () => { createServicesFetched = false; openCreateForm(); });
+      /* v53: the service list needs the sign-in — flip the card when
+         its error says the sign-in died. */
+      await refreshStatusIfTokenDied(e.message);
     }
   }
   refreshCreateFormVisibility();
@@ -3838,6 +3919,9 @@ async function confirmCreatePolicy() {
     errEl.classList.remove("hidden");
     $("policy-create-review").classList.add("hidden");
     $("policy-create-form").classList.remove("hidden");
+    /* v53: creating a policy needs the sign-in — flip the card when
+       its error says the sign-in died. */
+    await refreshStatusIfTokenDied(e.message);
   } finally {
     btn.disabled = false;
   }
@@ -3892,7 +3976,7 @@ function hidePublishMsg() {
     if (flag === "connected") {
       el.textContent = "eBay is connected. You can now list straight from the listing page.";
     } else {
-      el.textContent = "eBay connection did not finish. Try Connect eBay again in this browser.";
+      el.textContent = "eBay connection did not finish. Try Connect eBay again.";
       el.className = "banner";
       el.style.margin = "0.8rem 1rem 0 1rem";
     }

@@ -496,7 +496,7 @@ def _ebay_access_token():
     toks = _load_ebay_tokens()
     if not toks or not toks.get("refresh_token"):
         raise RuntimeError(
-            "eBay is not connected. Open the app in this browser and tap Connect eBay.")
+            "eBay is not connected. Tap Connect eBay to sign in again.")
     if toks.get("expires_at", 0) > time.time() + 120:
         return toks["access_token"]
     # refresh (eBay rotates the refresh token; always save the new one)
@@ -535,7 +535,7 @@ def _ebay_access_token():
             raise _NeedsScopeReconnect(SCOPE_RECONNECT_MSG)
         raise RuntimeError(
             "Your eBay sign-in expired and could not be renewed. "
-            "Tap Connect eBay again in this browser.")
+            "Tap Connect eBay to sign in again.")
     body = resp.json()
     new_toks = {
         "access_token": body["access_token"],
@@ -664,7 +664,7 @@ def _ebay_call(method, path, token, payload=None):
     if resp.status_code == 401:
         _clear_ebay_tokens()
         raise _EbayApiError(
-            "Your eBay sign-in stopped working. Tap Connect eBay again in this browser.",
+            "Your eBay sign-in stopped working. Tap Connect eBay to sign in again.",
             status=401, error_id=_ebay_error_id(resp))
     if resp.status_code == 403:
         # v30 (audit F7): do NOT clear on 403 — a scope error is not fixed
@@ -793,11 +793,10 @@ def _ebay_upload_picture(photo_path, token):
                                             or "nauthorized" in detail.lower()):
                 raise RuntimeError(
                     "Your eBay sign-in is missing the photo permission "
-                    "(sell.inventory). Tap Connect eBay again in this "
-                    "browser to grant it.")
+                    "(sell.inventory). Tap Connect eBay to grant it.")
             raise RuntimeError(
                 "Your eBay sign-in stopped working. "
-                "Tap Connect eBay again in this browser.")
+                "Tap Connect eBay to sign in again.")
         if resp.status_code == 201:
             try:
                 body = resp.json()

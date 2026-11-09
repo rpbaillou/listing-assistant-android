@@ -922,3 +922,46 @@ remembers the open draft.
   requested, availability gate, bind retry without OIS, fast
   mode kept, no video stabilization); CI Gradle compilation is
   the Kotlin execution gate.
+
+## v53: the status card tells the truth after the sign-in dies
+
+- Live v1.51 bug (Nov 9 02:08 CST): the listing page said BOTH
+  "eBay connected. Ready to list." (status card, from
+  GET /api/ebay/status, which only checks the token file for a
+  refresh_token at page load) AND "eBay is not connected. Open the
+  app in this browser and tap Connect eBay." (publish error, from
+  _ebay_access_token() after a failed renewal or a 401 wiped the
+  tokens mid-page — the shipping-policies fetch runs on every
+  listing-page open and is one of the calls that can trigger the
+  wipe). Two checks, two moments, one dead sign-in; the card never
+  re-checked.
+- Fix: the status-card rendering moved out of prefillListing into
+  refreshEbayStatus(), and a new isTokenDeathText() +
+  refreshStatusIfTokenDied() pair re-runs it after any token-death
+  message ("not connected", "sign-in stopped working", "sign-in
+  expired and could not be renewed", the photo-permission message,
+  the scope-reconnect message) at every place that surfaces one:
+  publish catch, postPublish scope paths, policies fetch, policy
+  lookup, batch catches, pick/ship-from re-posts, policy create.
+  The card flips to not-connected with the Connect eBay button
+  right there, and the List button hides until he reconnects. A
+  dropped connection ("Could not reach eBay") is deliberately not
+  a token death — it wipes nothing, so the card stays. The token
+  refresh/clear behavior itself is unchanged.
+- Plain wording: the server token-death messages no longer say "in
+  this browser" (he IS in the app): "eBay is not connected. Tap
+  Connect eBay to sign in again.", "Your eBay sign-in expired and
+  could not be renewed. Tap Connect eBay to sign in again.",
+  "Your eBay sign-in stopped working. Tap Connect eBay to sign in
+  again.", and the photo-permission "Tap Connect eBay to grant
+  it." The not-connected card hint and the "connection did not
+  finish" banner were fixed the same way. SCOPE_RECONNECT_MSG is
+  byte-identical — the JS matches on its substring.
+- Tests: tests/test_status_card_truth.py (all five messages in
+  their new wording, scope message unchanged, never-again guard
+  that "in this browser" appears nowhere in app.py or app.js),
+  tests/status-card-refresh.test.js (the live v1.51 case replayed:
+  connected card, token death, card flips with Connect button and
+  List hidden; non-death messages do not re-fetch; failed status
+  check never throws), fit_check.py check 18 (Connect button in a
+  wrapping row, no "in this browser" left).
