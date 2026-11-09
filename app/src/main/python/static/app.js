@@ -1108,6 +1108,7 @@ function attrRow(k, v) {
   row.innerHTML =
     '<input type="text" class="ak" placeholder="Name (Brand)" value="">' +
     '<input type="text" class="av" placeholder="Value" value="">' +
+    '<span class="count av-count" aria-hidden="true">0/65</span>' +
     '<button type="button" title="Remove">×</button>';
   row.querySelector(".ak").value = k;
   row.querySelector(".av").value = v;
@@ -1118,7 +1119,27 @@ function attrRow(k, v) {
   });
   row.querySelectorAll("input").forEach((i) =>
     i.addEventListener("input", () => { scheduleSave(); updateAttrsSummary(); }));
+  /* v51: live n/65 counter on the value (eBay caps aspect values at
+     65 characters). Set from the value at creation, then refreshed
+     from the live input on every keystroke, so an over-long value
+     is visible before List. */
+  row.querySelector(".av").addEventListener("input", () => updateAttrCount(row));
+  updateAttrCount(row);
   return row;
+}
+
+/* v51: refresh one row's n/65 counter from its live value input.
+   Walks the row's children (the row is built with innerHTML, so in
+   the node harness the inputs are not parsed children — a missing
+   input just leaves the count as it was, never a crash). */
+function updateAttrCount(row) {
+  let av = null, count = null;
+  for (let i = 0; i < row.children.length; i++) {
+    const child = row.children[i];
+    if (child.classList && child.classList.contains("av")) av = child;
+    if (child.classList && child.classList.contains("av-count")) count = child;
+  }
+  if (av && count) count.textContent = av.value.length + "/65";
 }
 
 $("btn-add-attr").addEventListener("click", () => {
@@ -1253,16 +1274,103 @@ function updateCount() {
   $("title-count").textContent = $("f-title").value.length + "/80";
 }
 
-/* v5: save first — the pop-up opens over the draft, and "Use this price"
-   later refreshes the form from the server, so the server must be current. */
+/* v51: "Check sold prices" opens one results screen with two halves.
+   Sold half: the title-based eBay sold search, exactly as before —
+   it opens eBay's sold search page in the pop-up, where "Use this
+   price" still works. Sold data has no public eBay API, so this half
+   never changes. Image half: the draft's first photo goes to eBay's
+   Browse image search, and similar active listings come back in the
+   page. If the image half fails, a plain note shows and the sold
+   half keeps working — never the other way round. Save first, as in
+   v5, so the server has the current title before anything opens. */
 $("btn-solds").addEventListener("click", async () => {
   await saveDraft();
+  $("sold-results").classList.remove("hidden");
+  $("sold-price-note").classList.add("hidden");
+  $("similar-note").classList.add("hidden");
+  $("similar-list").innerHTML = "";
+  $("similar-status").textContent = "Looking at your first photo…";
+  $("similar-status").classList.remove("hidden");
+  $("sold-results").scrollIntoView({ block: "nearest" });
+  loadSimilarItems();
+});
+
+$("btn-solds-open").addEventListener("click", () => {
   const q = encodeURIComponent($("f-title").value.trim() || "vintage item");
   window.open(
     "https://www.ebay.com/sch/i.html?_nkw=" + q + "&LH_Sold=1&LH_Complete=1",
     "_blank"
   );
 });
+
+async function loadSimilarItems() {
+  if (!draft) return;
+  try {
+    const res = await api("/api/drafts/" + draft.id + "/similar");
+    const matches = res.matches || [];
+    $("similar-status").classList.add("hidden");
+    if (res.note) {
+      const n = $("similar-note");
+      n.textContent = res.note;
+      n.classList.remove("hidden");
+    }
+    renderSimilarItems(matches);
+  } catch (e) {
+    $("similar-status").classList.add("hidden");
+    const n = $("similar-note");
+    n.textContent = "Could not reach eBay for similar items. The sold search above still works.";
+    n.classList.remove("hidden");
+  }
+}
+
+function renderSimilarItems(matches) {
+  const list = $("similar-list");
+  list.innerHTML = "";
+  matches.forEach((m) => {
+    const row = document.createElement("div");
+    row.className = "similar-row";
+    if (m.thumb) {
+      const img = document.createElement("img");
+      img.src = m.thumb;
+      img.alt = "";
+      row.appendChild(img);
+    }
+    const t = document.createElement("div");
+    t.className = "st";
+    const b = document.createElement("b");
+    b.textContent = m.title;
+    t.appendChild(b);
+    row.appendChild(t);
+    const p = document.createElement("span");
+    p.className = "sp";
+    p.textContent = "$" + m.price;
+    row.appendChild(p);
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = "secondary";
+    use.textContent = "Use this price";
+    use.addEventListener("click", () => useSimilarPrice(m.price));
+    row.appendChild(use);
+    list.appendChild(row);
+  });
+}
+
+/* v51: a similar listing's price sets the draft price, the same way
+   the sold pop-up's "Use this price" does (PUT the draft, then the
+   field shows the saved value). The note only confirms when the
+   server actually saved it. */
+async function useSimilarPrice(price) {
+  if (!draft) return;
+  $("f-price").value = price;
+  await saveDraft();
+  const n = $("sold-price-note");
+  if (draft && draft.price === price) {
+    n.textContent = "Price set to $" + price + " from a similar listing.";
+  } else {
+    n.textContent = "Couldn't save the price. Type it in the draft instead.";
+  }
+  n.classList.remove("hidden");
+}
 
 $("btn-reanalyze").addEventListener("click", async () => {
   if (!draft || !confirm("Ask the AI to look at the photos again? Your typed price is kept.")) return;

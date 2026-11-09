@@ -124,7 +124,29 @@
       <input id="f-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00">
       <button id="btn-solds" class="secondary" type="button">Check sold prices on eBay</button>
     </div>
-    <p class="hint">Opens eBay with your title pre-filled so you can see what similar items sold for. Sign in on eBay if it asks. For 3-year history and real Best Offer prices, use Product Research in the eBay app or Seller Hub.</p>
+    <p class="hint">Checks two ways at once: sold listings from your title words, and similar items listed now found from your first photo.</p>
+
+    <!-- v51: combined price check — two halves on one screen. The sold
+         half keeps the title-based eBay sold search exactly as before
+         (it opens eBay's sold search page in the pop-up, where "Use
+         this price" still works); the image half shows similar active
+         listings found from the draft's first photo, each with its
+         own "Use this price". -->
+    <div id="sold-results" class="card hidden">
+      <h3>Price check</h3>
+      <div class="sold-half">
+        <h4>What they sold for</h4>
+        <p class="hint">Sold prices come from your title words. eBay has no sold-price feed for apps, so this opens eBay's own sold search.</p>
+        <button id="btn-solds-open" class="secondary" type="button">See sold listings on eBay</button>
+      </div>
+      <div class="similar-half">
+        <h4>Similar items listed now</h4>
+        <p id="similar-status" class="hint">Looking at your first photo…</p>
+        <div id="similar-list"></div>
+        <p id="similar-note" class="hint hidden"></p>
+      </div>
+      <p id="sold-price-note" class="ok hidden"></p>
+    </div>
 
     <label>eBay category number</label>
     <div class="pricerow">
@@ -148,13 +170,6 @@
       <input id="p-bo-accept" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
       <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
-
-    <!-- v49: the List button sits right after the core fields, before
-         the collapsed rows, as in design 4. -->
-    <div id="publish-error" class="error hidden"></div>
-    <div id="publish-ok" class="ok hidden"></div>
-    <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
-    <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
     <!-- v42: Shipping, like eBay's lister. Two grouped cards (layout
          from the Diffui design 1 look, re-skinned to this app's light
@@ -394,6 +409,17 @@
       <p class="hint">The app needs one new permission to read your shipping policies.</p>
       <a class="primary btnlink" href="/api/ebay/connect">Connect eBay</a>
     </div>
+
+    <!-- v51: the List button sits at the bottom of the listing page,
+         just above Or list manually, at the seller's request (it used
+         to sit right after the core fields, per design 4 in v49).
+         The error/ok feedback and the spinner move with it, so the
+         result shows where he tapped. There is exactly one List
+         button; nothing is duplicated. -->
+    <div id="publish-error" class="error hidden"></div>
+    <div id="publish-ok" class="ok hidden"></div>
+    <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
+    <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
     <!-- v49: Or list manually is a collapsed row (design 4). The
          summary is the plain line "Copy details and download photos";

@@ -757,3 +757,119 @@ remembers the open draft.
   post, stale fallback, resume card/restore/dismiss), and fit
   check 15 pins the resume card (white card, text shrinks and
   wraps, buttons wrap, fits at 320dp).
+
+## v51: combined price check — sold prices plus similar items by image
+
+- The "Check sold prices" button now opens one results screen
+  with two halves, instead of opening eBay's sold search straight
+  away. Nothing is removed: the sold half is the same title-based
+  search, and the image half is new.
+- Sold half — "What they sold for": the title text opens eBay's
+  sold search page
+  (`https://www.ebay.com/sch/i.html?_nkw=<title>&LH_Sold=1&LH_Complete=1`)
+  in the native pop-up, exactly as before, and "Use this price"
+  on an eBay item page still sets the draft price. Sold data has
+  NO public eBay API: the Finding API was decommissioned
+  February 5, 2025, the Marketplace Insights API is restricted
+  and approval-only, and the app does not scrape eBay. The title
+  already comes from Gemini looking at the photos during Analyze,
+  so the photo is already informing this half.
+- Image half — "Similar items listed now": eBay Browse API
+  `POST https://api.ebay.com/buy/browse/v1/item_summary/search_by_image`
+  (official Buy Browse API spec:
+  https://developer.ebay.com/api-docs/master/buy/browse/openapi/3/buy_browse_v1_oas3.yaml).
+  The request sends the draft's first photo as a base64 string
+  (`SearchByImageRequest.image`), with `limit` 10 and the draft's
+  category id as `category_ids` when it is a number. Auth is an
+  application token from the client-credentials grant (the Client
+  ID and Client Secret already in the app's `.env`); the app
+  reuses the cached `_app_token()` that the Taxonomy API already
+  uses, so there is no new sign-in, no new keys, and no user
+  consent. The response is a `SearchPagedCollection` with
+  `itemSummaries` (title, price value + currency, imageUrl,
+  itemWebUrl, itemId). The app keeps only rows with a title and
+  a numeric USD price above zero, and shows each with thumbnail,
+  title, and price; a "Use this price" button on the row sets
+  the draft price the same way the sold pop-up does (PUT the
+  draft, confirm only when the server saved it).
+- Honest limit, stated in the app's own words too: the image half
+  returns ACTIVE listings only. It cannot show sold prices.
+  The sold half still comes from the title words, and the two
+  halves answer different questions — what it looks like now,
+  and what ones like it sold for.
+- The image half can never block the sold half. The server
+  endpoint `GET /api/drafts/<draft_id>/similar` returns 200 with
+  an empty list and a plain-words note on any eBay failure, token
+  failure, missing photo, or empty result (404 only for a missing
+  draft). Results are cached in memory for 10 minutes, keyed by
+  draft, photo, category, and the photo file's modification time.
+- Match thumbnails are eBay's own listing pictures, not the
+  user's photos, so they are small reference images (72px) and
+  deliberately do NOT read the shared `--thumb-size` variable —
+  that variable is only for the user's photo slots (see
+  `tests/test_thumbnail_size.py`).
+- Tests: Python 454/454, node 15 suites, fit check passes at
+  320/360/768dp. New `tests/test_similar_by_image.py` (request
+  shape with and without a category, parsing keeps only priced
+  USD rows, empty results, eBay 500, token failure, no photos,
+  missing photo file, missing draft, cache reuse) and
+  `tests/sold-image.test.js` (results screen opens, rows render
+  thumb/title/price/button, sold URL unchanged with the
+  "vintage item" fallback, price pick saves and confirms, stale
+  rows clear on a re-check, empty image search leaves the sold
+  half working), and fit check 16 pins the results screen
+  (rows wrap, title shrinks, price never wraps, 72px thumbs,
+  floor fits at 320dp).
+
+- Aspect values are capped at 65 characters by eBay (v51 fold-in).
+  Live failure Nov 8 2026 on v1.49: tapping List failed with eBay
+  error 25002, "Set Includes's value of 'Doll, Gown, Stole,
+  Gloves, Jewelry, Shoes, Doll Stand, Certificate of
+  Authenticity' is too long. Enter a value of no more than 65
+  characters." The AI had written an 82-character value and
+  `_clean_aspects` only caps values at 500 (`v[:500]`), so it
+  sailed through to the inventory item PUT. `_listing_readiness`
+  checked missing required specifics but never value lengths, so
+  nothing caught it first. The v47 parameters surfacing is what
+  named the field, which is why the fix was clear. The failure is
+  at the inventory item PUT (aspects ride on that call), before
+  any offer is created, so a retry after shortening the value is
+  clean and no stale offer exists. The fix, three parts: (1)
+  `_listing_readiness` checks every item-specific value against
+  the 65 limit and reports ALL over-long values at once in plain
+  words, each naming the field, its current length, and the 65
+  limit, before any eBay call; values are NEVER silently
+  truncated — truncation would mangle his words. (2) The Gemini
+  analyze prompt now tells the AI each detail value has to be 65
+  characters or less, so it stops writing over-long values in the
+  first place. (3) The listing page shows a live "n/65" counter
+  on each item-specifics value field (same `.count` style as the
+  v48 policy counters), so he sees it as he types. Tests:
+  `tests/test_aspect_length.py` (82-char live value flagged by
+  name, several over-long at once, exactly 65 passes, 66 fails,
+  prompt carries the limit, publish blocked before any eBay call)
+  and `tests/attrs-counter.test.js` (counter span on the row,
+  82/65 then 65/65 then 5/65 as the value shortens); fit check 16
+  pins the counter (centered, never shrinks, row wraps).
+
+- Drafts sort tie-break (v51, found by the release gate): "updated"
+  is stamped to the second, so two drafts touched in the same
+  second tie — and a stable sort over random UUID filenames made
+  the tie order a coin flip. The v50 newest-first test failed 4
+  times in 5 runs on the v51 gate run. `api_draft_list` now breaks
+  the tie with the draft file's write time (the draft written
+  later is the newer one); the write time never overrides the
+  shown date, it only orders drafts whose dates are equal.
+  Pinned by a new test in `tests/test_draft_sort.py`, and the
+  flaky v50 test now passes 10 times in 10 runs.
+
+- List button moved (v51, seller's pick Nov 9 2026): the whole
+  publish block — `#publish-error`, `#publish-ok`, `#btn-publish`
+  ("List it on eBay now"), `#publish-spinner` — moved from right
+  after the core fields (v49 design 4 spot) to the bottom of the
+  listing page, directly above the Or list manually collapsed row.
+  The error/ok feedback moves with the button so the result shows
+  where he tapped. There is exactly one List button; the top spot
+  holds nothing now. All JS references are by element id, so the
+  move needs no code change; the fit gate checks the big button in
+  its new spot at 320dp.

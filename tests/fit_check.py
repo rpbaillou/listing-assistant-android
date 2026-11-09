@@ -439,12 +439,101 @@ def main():
           "text basis %s <= content %.0fpx" % (
               rules.get("#resume-text", {}).get("flex"), content320))
 
+    # 16. v51 combined price check: one white card with two halves.
+    # Sold half opens eBay's title-based sold search in the pop-up
+    # (same URL as before); image half renders similar active
+    # listings from the first photo, thumb + title + price + a
+    # "Use this price" button per row. Rows wrap, the title column
+    # shrinks below its basis (min-width 0), the price never wraps,
+    # and the thumb is a fixed 72px reference image — never the
+    # shared 128px photo size (see tests/test_thumbnail_size.py).
+    # At 320dp the fixed floor (72px thumb + 16px padding + two
+    # 0.6rem gaps + an 80px price allowance) fits the 252.8px
+    # content width with room to spare; the button wraps below
+    # when it cannot fit beside the price.
+    for name, needle, hay in (
+            ("results section", 'id="sold-results" class="card hidden"', html),
+            ("sold half heading", "What they sold for", html),
+            ("sold half button", 'id="btn-solds-open"', html),
+            ("image half heading", "Similar items listed now", html),
+            ("similar status", 'id="similar-status"', html),
+            ("similar list", 'id="similar-list"', html),
+            ("similar note", 'id="similar-note"', html),
+            ("price pick note", 'id="sold-price-note"', html),
+            ("similar loader", "loadSimilarItems", js),
+            ("similar renderer", "renderSimilarItems", js),
+            ("similar price pick", "useSimilarPrice", js),
+            ("sold search still title based", "LH_Sold=1", js)):
+        check("present: %s" % name, needle in hay)
+    check("similar row is a flex row that wraps",
+          rules.get(".similar-row", {}).get("display") == "flex" and
+          rules.get(".similar-row", {}).get("flex-wrap") == "wrap",
+          str(rules.get(".similar-row", {})))
+    check("similar thumb is a fixed 72px reference image",
+          rules.get(".similar-row img", {}).get("width") == "72px" and
+          rules.get(".similar-row img", {}).get("height") == "72px",
+          str(rules.get(".similar-row img", {})))
+    check("similar title column shrinks and wraps",
+          rules.get(".similar-row .st", {}).get("flex") == "1 1 10rem" and
+          rules.get(".similar-row .st", {}).get("min-width") == "0" and
+          rules.get(".similar-row .st", {}).get("overflow-wrap") == "break-word",
+          str(rules.get(".similar-row .st", {})))
+    check("similar price never wraps, dark on white",
+          rules.get(".similar-row .sp", {}).get("white-space") == "nowrap" and
+          rules.get(".similar-row .sp", {}).get("color") == "#1c1c1e",
+          str(rules.get(".similar-row .sp", {})))
+    check("results headings are dark on white",
+          rules.get("#sold-results h4", {}).get("color") == "#1c1c1e",
+          str(rules.get("#sold-results h4", {})))
+    floor = (px(rules.get(".similar-row img", {}).get("width")) or 0) + 16 + 2 * 9.6 + 80
+    check("similar row floor fits at 320dp",
+          floor <= content320,
+          "floor %.0fpx <= content %.0fpx" % (floor, content320))
+    # v51 (aspect length): the live n/65 counter on each item-specifics
+    # value field uses the same .count style as the v48 policy
+    # counters (#666 on white, 5.7:1). It sits beside the value input,
+    # vertically centered, never shrinks, and the row wraps before
+    # anything clips.
+    for name, needle, hay in (
+            ("attrs counter span", "av-count", js),
+            ("attrs counter updater", "updateAttrCount", js)):
+        check("present: %s" % name, needle in hay)
+    check("attrs counter is vertically centered and never shrinks",
+          rules.get(".attr-row .av-count", {}).get("align-self") == "center" and
+          rules.get(".attr-row .av-count", {}).get("flex-shrink") == "0",
+          str(rules.get(".attr-row .av-count", {})))
+    check("attrs row wraps",
+          rules.get(".attr-row", {}).get("flex-wrap") == "wrap",
+          str(rules.get(".attr-row", {})))
+
+    # 17. v51 List button move: the whole publish block sits at the
+    # bottom of the listing page, directly above Or list manually.
+    # Exactly one List button exists, the error/ok feedback and the
+    # spinner sit with it in the new spot (after the scope-reconnect
+    # box, before the manual row), and the big button is width 100%
+    # so it fits at 320dp with no fixed width to overflow.
+    pub = html.find('id="btn-publish"')
+    scope_box = html.find('id="scope-reconnect-box"')
+    manual = html.find('id="row-manual"')
+    check("exactly one List button", html.count('id="btn-publish"') == 1)
+    check("List button sits above Or list manually",
+          0 < pub < manual,
+          "button at %d, manual row at %d" % (pub, manual))
+    check("List button sits below the collapsed rows",
+          html.find('id="row-shipping"') < pub and scope_box < pub)
+    for name, needle, before in (
+            ("publish error", 'id="publish-error"', True),
+            ("publish ok", 'id="publish-ok"', True),
+            ("publish spinner", 'id="publish-spinner"', False)):
+        pos = html.find(needle)
+        ok = (scope_box < pos < pub) if before else (pub < pos < manual)
+        check("publish feedback %s moves with the button" % name,
+              ok, "%s at %d" % (name, pos))
+    check("big List button is full width, fits at 320dp",
+          rules.get("button.primary.big", {}).get("width") == "100%",
+          str(rules.get("button.primary.big", {})))
+
     print()
-    if FAILURES:
-        print("FAILED (%d): %s" % (len(FAILURES), "; ".join(FAILURES)))
-        return 1
-    print("All fit/contrast checks pass.")
-    return 0
 
 
 if __name__ == "__main__":

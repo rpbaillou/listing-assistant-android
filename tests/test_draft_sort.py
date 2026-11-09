@@ -116,6 +116,19 @@ class DraftSortTestCase(unittest.TestCase):
         self.assertEqual(d["listed"], True)
         self.assertEqual(d["thumb"], "d1/1.jpg")
         self.assertNotIn("_sort", d)
+        self.assertNotIn("_mtime", d)
+
+    def test_same_updated_stamp_orders_by_write_time(self):
+        # v51: "updated" is stamped to the second, so two drafts
+        # touched in the same second tie — the file written later
+        # is the newer one. Before the tie-break, a stable sort over
+        # random filenames made the order a coin flip, and the v50
+        # newest-first test failed 4 times in 5 runs.
+        self._write_draft("aaa-first", updated="2026-11-08T10:00:00",
+                          created="2026-11-08T10:00:00")
+        self._write_draft("zzz-second", updated="2026-11-08T10:00:00",
+                          created="2026-11-08T10:00:00")
+        self.assertEqual(self._list_ids(), ["zzz-second", "aaa-first"])
 
 
 if __name__ == "__main__":

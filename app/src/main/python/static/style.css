@@ -152,6 +152,9 @@ button:disabled { opacity: 0.45; cursor: default; }
 .attr-row input { min-width: 0; }
 .attr-row input:first-child { flex: 1; }
 .attr-row input:last-of-type { flex: 1.4; }
+/* v51: the n/65 counter sits beside the value input, vertically
+   centered, and never shrinks — the row wraps before it clips. */
+.attr-row .av-count { align-self: center; flex-shrink: 0; }
 .attr-row button { background: #fde8e8; color: #a00; min-height: 40px; padding: 0.4rem 0.7rem; flex-shrink: 0; }
 
 .pricerow { display: flex; gap: 0.6rem; flex-wrap: wrap; }
@@ -294,3 +297,21 @@ details summary { font-weight: 700; cursor: pointer; }
 .batch-row img { width: var(--thumb-size); height: var(--thumb-size); object-fit: cover; border-radius: 6px; flex-shrink: 0; }
 .batch-row .bt b { display: block; }
 .batch-row .bt .d-date { color: #666; font-size: 0.85rem; }
+
+/* v51: combined price check. Two halves in one white card: sold
+   prices from the title words (opens eBay's sold search in the
+   pop-up, as before) and similar active listings found from the
+   first photo. Match thumbs are eBay's own listing pictures, not
+   the user's photos, so they are small reference images (72px) and
+   deliberately do NOT read --thumb-size — that variable is only
+   for the user's photo slots (see tests/test_thumbnail_size.py).
+   No aspect-ratio here either: only the step-1 grid may use it.
+   Rows wrap and the title column shrinks, so nothing clips at
+   320dp. */
+#sold-results h4 { margin: 0.9rem 0 0.2rem 0; font-size: 1rem; color: #1c1c1e; }
+.similar-list { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.5rem 0; }
+.similar-row { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; background: #fff; border: 1px solid #d9d9de; border-radius: 8px; padding: 0.5rem; }
+.similar-row img { width: 72px; height: 72px; object-fit: cover; border-radius: 4px; background: #ececef; flex-shrink: 0; }
+.similar-row .st { flex: 1 1 10rem; min-width: 0; overflow-wrap: break-word; }
+.similar-row .st b { display: block; font-weight: 600; }
+.similar-row .sp { font-weight: 700; white-space: nowrap; color: #1c1c1e; }

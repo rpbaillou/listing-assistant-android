@@ -200,7 +200,7 @@ Rules:
 - Description: 2 to 4 short factual sentences: what it is (maker, model or pattern name, era, materials, colors, visible markings, shape). Measurements only if visible. Never invent measurements, marks, or brands you cannot see. If you are unsure about the maker, say so.
 - CONDITION RULE (strict, never break it): Do NOT describe, assess, or speculate about the item's condition in any way. Never write claims like "no chips", "no cracks", "good condition", "great shape", "mint", "appears to be in excellent condition", or anything similar. You cannot hold the item or see every angle, so any condition claim would be a guess, and a wrong guess misleads the buyer. The seller states the condition separately. Leave condition out of the description entirely.
 - Category: the most specific eBay category path you can, for example "Collectibles > Decorative Collectibles > Plates".
-- Attributes: key/value item specifics buyers filter by (Brand, Model, Era, Material, Color...). Use "Unknown" instead of guessing.
+- Attributes: key/value item specifics buyers filter by (Brand, Model, Era, Material, Color...). Use "Unknown" instead of guessing. Each value must be 65 characters or less — eBay refuses any longer value, so keep lists short.
 
 Return ONLY valid JSON, no markdown fences, exactly this shape:
 {"title": "...", "description": "...", "category": "...", "attributes": {"Brand": "...", "Era": "..."}, "identification_notes": "..."}
@@ -1004,7 +1004,10 @@ def _clean_aspects(attributes):
     """Drop empty and 'Unknown' aspect values before sending to eBay.
 
     The AI is told to write "Unknown" instead of guessing; eBay gets no value
-    at all in that case rather than the literal word "Unknown".
+    at all in that case rather than the literal word "Unknown". The 500 cap
+    here is only a safety net, not eBay's limit: eBay caps each value at
+    65 characters, and that is enforced (with a plain-words message, never
+    a silent truncation) in _listing_readiness — see v51.
     """
     out = {}
     for k, v in (attributes or {}).items():
@@ -1839,6 +1842,24 @@ def _listing_readiness(d, f, token):
                     "eBay requires these details for this category: " +
                     ", ".join(missing) + ". Fill them in under "
                     "'Details eBay requires', then try again.")
+    # v51: eBay caps every item-specific (aspect) value at 65
+    # characters. The AI once wrote an 82-character "Set Includes"
+    # value that sailed through (_clean_aspects only caps at 500),
+    # and eBay refused the whole listing with error 25002. Report
+    # ALL over-long values at once, each naming the field, its
+    # length, and the limit — never silently truncate his words.
+    overlong = []
+    for k, v in (f.get("attributes") or {}).items():
+        value = str(v).strip()
+        if value and len(value) > 65:
+            overlong.append((str(k).strip() or "Detail", len(value)))
+    if overlong:
+        problems.append(
+            "These details are too long for eBay (each value can be "
+            "65 characters at most): " +
+            "; ".join("%s is %d characters" % (name, n)
+                      for name, n in overlong) +
+            ". Shorten them under 'Item specifics', then try again.")
     return problems, notes
 
 
@@ -3414,6 +3435,126 @@ def api_resume_draft_set():
     return jsonify({"draft_id": draft_id or None})
 
 
+# v51: eBay Browse API image search (search_by_image). The app sends
+# the draft's first photo to eBay's own visual matcher and gets back
+# active listings that look like it. The Browse API needs an
+# application token (client credentials, no user consent);
+# _app_token() already fetches and caches exactly that. The image
+# half returns ACTIVE listings only: eBay offers no sold-data API
+# (the Finding API was decommissioned Feb 2025), so the sold half
+# stays the title-based web search and this endpoint never pretends
+# otherwise.
+SIMILAR_LIMIT = 10
+_similar_cache = {}
+
+
+def _similar_matches(body):
+    """Parse a search_by_image reply into plain match rows.
+
+    Keeps only rows with a title and a numeric USD price — the price
+    is what "Use this price" sets, so a row without one is useless
+    here. Thumbs and links pass through untouched; a missing thumb is
+    fine, the row just shows no picture."""
+    matches = []
+    try:
+        items = body.get("itemSummaries") or []
+    except AttributeError:
+        return matches
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title", "")).strip()
+        price = it.get("price") or {}
+        try:
+            value = float(price.get("value", ""))
+        except (TypeError, ValueError):
+            continue
+        if not title or value <= 0:
+            continue
+        currency = str(price.get("currency", "USD")).strip() or "USD"
+        if currency != "USD":
+            continue
+        img = it.get("image") or {}
+        matches.append({
+            "title": title,
+            "price": "%.2f" % value,
+            "thumb": str(img.get("imageUrl", "") or ""),
+            "url": str(it.get("itemWebUrl", "") or ""),
+            "item_id": str(it.get("itemId", "") or ""),
+        })
+        if len(matches) >= SIMILAR_LIMIT:
+            break
+    return matches
+
+
+@app.route("/api/drafts/<draft_id>/similar", methods=["GET"])
+def api_draft_similar(draft_id):
+    """v51: similar items listed now, found from the draft's first photo.
+
+    Never errors hard: every failure comes back as 200 with an empty
+    list and a plain-words note, so the image half can never block the
+    sold half. Only a missing draft is a 404."""
+    d = _load_draft(draft_id)
+    if d is None:
+        return jsonify({"error": "Draft not found."}), 404
+    photos = d.get("photos") or []
+    if not photos:
+        return jsonify({"matches": [],
+                        "note": "Add a photo first, then check again."})
+    full = _safe_photo_path(photos[0])
+    if not full or not os.path.isfile(full):
+        return jsonify({"matches": [],
+                        "note": "The first photo could not be read. Try again."})
+    try:
+        stamp = os.path.getmtime(full)
+    except OSError:
+        stamp = 0
+    cache_key = (draft_id, photos[0], str(d.get("category_id", "")).strip(),
+                 stamp)
+    hit = _similar_cache.get(cache_key)
+    if hit and hit[0] > time.time():
+        return jsonify({"matches": hit[1], "note": ""})
+    try:
+        with open(full, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+    except OSError:
+        return jsonify({"matches": [],
+                        "note": "The first photo could not be read. Try again."})
+    try:
+        token = _app_token()
+    except RuntimeError as exc:
+        return jsonify({"matches": [], "note": str(exc)})
+    params = {"limit": SIMILAR_LIMIT}
+    cat = str(d.get("category_id", "")).strip()
+    if cat.isdigit():
+        params["category_ids"] = cat
+    try:
+        resp = requests.post(
+            EBAY_API + "/buy/browse/v1/item_summary/search_by_image",
+            headers={"Authorization": "Bearer " + token,
+                     "Content-Type": "application/json"},
+            params=params,
+            json={"image": image_b64},
+            timeout=30)
+    except requests.RequestException as exc:
+        return jsonify({"matches": [],
+                        "note": f"Could not reach eBay: {exc}"})
+    if resp.status_code != 200:
+        return jsonify({"matches": [],
+                        "note": _plain_ebay_error(resp)})
+    try:
+        body = resp.json()
+    except ValueError:
+        return jsonify({"matches": [],
+                        "note": "eBay's answer could not be read. Try again."})
+    matches = _similar_matches(body)
+    _similar_cache[cache_key] = (time.time() + 600, matches)
+    if not matches:
+        return jsonify({"matches": [],
+                        "note": "eBay found no similar items for this photo."})
+    return jsonify({"matches": matches, "note": ""})
+
+
 @app.route("/api/drafts", methods=["GET"])
 def api_draft_list():
     out = []
@@ -3421,7 +3562,8 @@ def api_draft_list():
         if not fn.endswith(".json"):
             continue
         try:
-            with open(os.path.join(DRAFTS_DIR, fn), encoding="utf-8") as f:
+            path = os.path.join(DRAFTS_DIR, fn)
+            with open(path, encoding="utf-8") as f:
                 d = json.load(f)
             # v45: sort key is the date shown on the row. "updated" is
             # stamped on every save; "created" is the fallback for a
@@ -3429,6 +3571,13 @@ def api_draft_list():
             # as strings. A draft missing both dates gets "" and sorts
             # last. Filenames are random UUIDs, so the old
             # reverse-filename order was effectively random.
+            # v51: "updated" is stamped to the second, so two drafts
+            # touched in the same second tie — and a stable sort over
+            # random filenames made the tie order a coin flip (the
+            # v50 newest-first test failed 4 times in 5 runs). The
+            # file's write time breaks the tie: the draft written
+            # later is the newer one. It never overrides the date —
+            # it only orders drafts whose shown dates are equal.
             # v50: a blank title shows as "(untitled)", not an empty
             # row — a photo-only auto draft (or a blank quick-post
             # draft) has no title yet, and the thumb is its identifier.
@@ -3437,12 +3586,14 @@ def api_draft_list():
                         "listed": bool(d.get("ebay_listing_id")),
                         "thumb": d["photos"][0] if d.get("photos") else None,
                         "_sort": str(d.get("updated") or d.get("created")
-                                     or "")})
+                                     or ""),
+                        "_mtime": os.path.getmtime(path)})
         except (OSError, KeyError, ValueError):
             continue
-    out.sort(key=lambda e: e["_sort"], reverse=True)
+    out.sort(key=lambda e: (e["_sort"], e["_mtime"]), reverse=True)
     for e in out:
         del e["_sort"]
+        del e["_mtime"]
     return jsonify({"drafts": out})
 
 
