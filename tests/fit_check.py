@@ -116,21 +116,26 @@ def main():
     check("no fixed width over 320px", not bad, "; ".join(bad))
 
     # 5. Draft-row width budget at 320dp: content = 320 - main padding
-    # (2rem) - step padding (2.2rem). Line 1 holds checkbox + thumb +
-    # gaps + text; actions wrap below. Longest nowrap token is the date
-    # part "2026-10-27" (10 chars, 0.85rem, ~0.62em/char, conservative).
+    # (2rem) - step padding (2.2rem). Since v48 the thumb is 128px, so
+    # line 1 holds checkbox + thumb + gaps only; the title/date block
+    # and the actions wrap below (the row flex-wraps by design, see
+    # check 13). The date part "2026-10-27" (10 chars, 0.85rem,
+    # ~0.62em/char, conservative) fits on its own wrapped line, which
+    # gets the full content width.
     content = 320 - 32 - 35.2
-    fixed = 22.4 + 56 + 3 * 11.2  # checkbox + thumb + gaps
-    budget = content - fixed
-    date_part = 10 * 13.6 * 0.62
+    fixed = 22.4 + 128 + 3 * 11.2  # checkbox + thumb + gaps
     check("draft-row budget at 320dp",
-          budget >= date_part,
-          "budget %.0fpx >= date %.0fpx" % (budget, date_part))
+          content >= fixed,
+          "content %.0fpx >= line-1 fixed %.0fpx" % (content, fixed))
+    date_part = 10 * 13.6 * 0.62
+    check("draft-row date fits on its wrapped line",
+          content >= date_part,
+          "content %.0fpx >= date %.0fpx" % (content, date_part))
     # Same budget at tablet width is comfortably larger.
     content768 = 640 - 32 - 35.2  # main caps at 640px
     check("draft-row budget at 768dp",
-          content768 - fixed >= date_part,
-          "budget %.0fpx" % (content768 - fixed))
+          content768 >= fixed,
+          "content %.0fpx >= line-1 fixed %.0fpx" % (content768, fixed))
 
     # 6. Batch rows: price/reason text wraps (row wraps, .bp wraps text).
     check("batch price wraps",
@@ -164,7 +169,10 @@ def main():
         ("step text", "#1c1c1e", "#ffffff"),
         ("hint", "#555555", "#ffffff"),
         ("count/draft date/batch price", "#666666", "#ffffff"),
-        ("delete button", "#aa0000", "#fde8e8"),
+        # v49: the drafts-list Delete is a grey button now (design 4),
+        # not the old red one. The red #aa0000 on white pair still
+        # lives on in "batch skipped" below.
+        ("draft delete grey", "#1c1c1e", "#ececef"),
         ("batch skipped", "#aa0000", "#ffffff"),
         ("error/banner", "#7a1010", "#fde8e8"),
         ("ok banner", "#145214", "#e6f7e6"),
@@ -275,7 +283,8 @@ def main():
     check("shared thumbnail size defined at 128px",
           re.search(r"--thumb-size\s*:\s*128px", css) is not None)
     for sel in (".thumbs img", ".thumbs .thumb-skip", ".thumb-wrap",
-                ".thumb-wrap img", ".thumb-img", ".draft-item img"):
+                ".thumb-wrap img", ".thumb-img", ".draft-item img",
+                ".batch-row img"):
         # .thumb-wrap sets only the width; the img inside sets the
         # height, so height is not expected on that selector.
         width_ok = rules.get(sel, {}).get("width") == "var(--thumb-size)"
@@ -299,6 +308,97 @@ def main():
     check("drafts row with 128px thumb fits at 360dp",
           row_fixed <= content360,
           "thumb+checkbox+gaps %.0fpx <= content %.0fpx" % (row_fixed, content360))
+
+    # 14. v49 Diffui design 4 on all four screens (look-and-layout
+    # only): screen headers with a 44px back arrow and a centered
+    # title; step-1 photos in a 2x2 grid of uniform square thumbs
+    # (the deliberate exception to the shared-size rule — the grid
+    # cells fill their column); the listing page's collapsed rows
+    # with live summaries; drafts Open outlined and Delete grey;
+    # the batch confirm card. Currency is $ everywhere — the
+    # mockups' £ and ₹ never reach the app.
+    for name, needle, hay in (
+            ("back arrow step 1", 'id="btn-back-photos"', html),
+            ("back arrow listing page", 'id="btn-back-draft"', html),
+            ("photo grid class", 'id="thumbs" class="thumbs photo-grid"', html),
+            ("shipping collapsed row", 'id="row-shipping" class="collapse-row"', html),
+            ("item specifics collapsed row", 'id="row-attrs" class="collapse-row"', html),
+            ("policy numbers collapsed row", 'id="row-policies" class="collapse-row"', html),
+            ("manual collapsed row", 'id="row-manual" class="collapse-row"', html),
+            ("shipping summary span", 'id="shipping-summary" class="cr-sub"', html),
+            ("item specifics summary span", 'id="attrs-summary" class="cr-sub"', html),
+            ("batch confirm card", 'id="batch-confirm" class="card batch-confirm"', html),
+            ("batch confirm heading", 'id="batch-confirm-heading"', html),
+            ("List button wording", ">List it on eBay now<", html),
+            ("analyze button wording", ">Draft my listing with AI<", html),
+            ("batch category label", "Category for the whole batch", html),
+            ("batch category placeholder", 'placeholder="e.g. 123456"', html),
+            ("shipping summary updater", "updateShippingSummary", js),
+            ("attrs summary updater", "updateAttrsSummary", js),
+            ("batch confirm updater", "updateBatchConfirm", js),
+            ("row opener", "openListingRow", js),
+            ("take-another gone from HTML", "btn-take-another", html),
+            ("take-another gone from JS", "btn-take-another", js)):
+        if name.startswith("take-another gone"):
+            check("present: %s" % name, needle not in hay)
+        else:
+            check("present: %s" % name, needle in hay)
+    check("no pound or rupee sign anywhere in the app",
+          "£" not in html and "₹" not in html and
+          "£" not in js and "₹" not in js)
+    check("back arrow is a 44px tap target",
+          rules.get(".screen-head .back", {}).get("min-height") == "44px" and
+          rules.get(".screen-head .back", {}).get("width") == "44px",
+          str(rules.get(".screen-head .back", {})))
+    check("screen-head title centers",
+          rules.get(".screen-head h2", {}).get("text-align") == "center",
+          str(rules.get(".screen-head h2", {})))
+    check("photo grid is two equal columns",
+          rules.get(".thumbs.photo-grid", {}).get("grid-template-columns") == "1fr 1fr",
+          str(rules.get(".thumbs.photo-grid", {})))
+    check("photo grid cells are square",
+          rules.get(".thumbs.photo-grid .thumb-wrap", {}).get("aspect-ratio") == "1 / 1",
+          str(rules.get(".thumbs.photo-grid .thumb-wrap", {})))
+    check("collapsed row summary is a 48px tap target",
+          rules.get(".collapse-row summary", {}).get("min-height") == "48px",
+          str(rules.get(".collapse-row summary", {})))
+    check("collapsed row summary line is readable",
+          rules.get(".collapse-row .cr-sub", {}).get("color") == "#666",
+          str(rules.get(".collapse-row .cr-sub", {})))
+    check("listing Edit below photo is a real button, min-height 26px",
+          rules.get(".thumb-edit-below", {}).get("min-height") == "26px" and
+          rules.get(".thumb-edit-below", {}).get("color") == "#2a63d8",
+          str(rules.get(".thumb-edit-below", {})))
+    check("drafts Open is the outlined button",
+          rules.get(".draft-actions .secondary", {}).get("background") == "#fff" and
+          rules.get(".draft-actions .secondary", {}).get("color") == "#2a63d8",
+          str(rules.get(".draft-actions .secondary", {})))
+    check("drafts Delete is grey, not red",
+          rules.get(".draft-item .del", {}).get("background") == "#ececef" and
+          rules.get(".draft-item .del", {}).get("color") == "#1c1c1e",
+          str(rules.get(".draft-item .del", {})))
+    check("batch title is big and bold",
+          rules.get("#batch-panel > h2", {}).get("font-size") == "1.7rem" and
+          rules.get("#batch-panel > h2", {}).get("font-weight") == "800",
+          str(rules.get("#batch-panel > h2", {})))
+    check("batch confirm heading centers",
+          rules.get(".batch-confirm h3", {}).get("text-align") == "center",
+          str(rules.get(".batch-confirm h3", {})))
+    # The grid at 320dp: two columns share the content width
+    # (252.8px) minus the 0.5rem gap, so each cell is ~122px square
+    # — large thumbs that still fit.
+    grid_cell = (content320 - 8) / 2
+    check("photo grid cells fit at 320dp",
+          grid_cell >= 100,
+          "cell %.0fpx" % grid_cell)
+    # The collapsed-row summary line at 320dp: icon (24px) + gaps +
+    # chevron (~22px) leave room for the title + summary to wrap
+    # below the icon row rather than clip — the summary wraps
+    # (overflow-wrap) and the row is a flex item with min-width 0.
+    check("collapsed summary can shrink and wrap",
+          rules.get(".collapse-row .cr-text", {}).get("min-width") == "0" and
+          rules.get(".collapse-row .cr-sub", {}).get("overflow-wrap") == "break-word",
+          str(rules.get(".collapse-row .cr-text", {})))
 
     print()
     if FAILURES:

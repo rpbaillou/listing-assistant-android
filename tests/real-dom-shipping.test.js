@@ -179,7 +179,7 @@ function newContext(source) {
    "batch-policy-pick-error", "batch-policy-pick-form", "batch-progress",
    "batch-scope-box", "batch-ship-from-error", "batch-ship-from-form",
    "batch-suggestions", "best-offer-fields", "btn-batch-done",
-   "btn-take-another", "cat-saved", "cat-suggestions",
+   "cat-saved", "cat-suggestions",
    "condition-fetch-hint", "copy-ok", "draft-photo-error",
    "draft-photo-note", "drafts-panel", "ebay-banner", "editor",
    "key-warning", "listing-note", "pc-dom-service-1-other",
@@ -226,14 +226,14 @@ function newContext(source) {
 /* ---- fixtures (dummy IDs; shapes mirror the real account) ---- */
 const POLICIES = [
   { id: "111", name: "Calculated: USPSParcel", cost_type: "CALCULATED",
-    service_code: "USPSGroundAdvantage", carrier: "USPS" },
+    service_code: "USPSParcel", carrier: "USPS" },
   { id: "222", name: "Free Shipping - Unframed Prints", cost_type: "FLAT_RATE",
-    service_code: "USPSGroundAdvantage", carrier: "USPS" },
+    service_code: "USPSParcel", carrier: "USPS" },
   { id: "333", name: "Calculated 2lb - Framed Prints", cost_type: "CALCULATED",
     service_code: "UPSGroundSaver", carrier: "UPS" },
 ];
 const CARRIERS = {
-  USPS: [{ code: "USPSGroundAdvantage", label: "USPS Ground Advantage" },
+  USPS: [{ code: "USPSParcel", label: "USPS Ground Advantage" },
          { code: "USPSPriority", label: "USPS Priority Mail" }],
   UPS: [{ code: "UPSGround", label: "UPS Ground" }],
   FedEx: [{ code: "FedExGround", label: "FedEx Ground" },
@@ -277,9 +277,10 @@ async function main() {
     c.$("p-fulfillment").value = "111";
     c.setCtx(`shippingPolicies = []; carrierServicesFetched = false; carrierServices = {USPS:[],UPS:[],FedEx:[]};`);
     c.sandbox.populateShipService();
-    c.sandbox.restoreShipService("USPSGroundAdvantage"); // parks in pending
+    c.sandbox.restoreShipService("USPSGroundAdvantage"); // v49: an old saved
+    // code parks canonicalized as USPSParcel, never the rejected code
     check("restore parks the code while services unfetched",
-      c.setCtx("pendingShipService") === "USPSGroundAdvantage");
+      c.setCtx("pendingShipService") === "USPSParcel");
     // services fetch has now resolved (carrierServicesFetched=true)
     c.setCtx(`carrierServicesFetched = true; carrierServices = ${JSON.stringify(CARRIERS)};`);
     c.sandbox.fetchShippingPolicies();
@@ -291,7 +292,7 @@ async function main() {
     check("saved policy IS selected in the dropdown",
       c.$("shipping-select").value === "111");
     check("carrier/service pickers synced to the saved policy",
-      c.$("ship-service").value === "USPSGroundAdvantage");
+      c.$("ship-service").value === "USPSParcel");
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
@@ -302,19 +303,19 @@ async function main() {
     c.$("p-fulfillment").value = "111";
     c.setCtx(`shippingPolicies = []; carrierServicesFetched = false; carrierServices = {USPS:[],UPS:[],FedEx:[]};`);
     c.sandbox.populateShipService();
-    c.sandbox.restoreShipService("USPSGroundAdvantage");
+    c.sandbox.restoreShipService("USPSGroundAdvantage"); // v49: old saved code
     c.sandbox.fetchShippingPolicies();
     c.resolveFetch("fulfillment-policies", { policies: POLICIES });
     await c.tick(); await c.tick();
     check("no pink error when policies win the race",
       c.hidden("shipping-error"));
-    check("code still parked as pending", c.setCtx("pendingShipService") === "USPSGroundAdvantage");
+    check("code still parked as pending", c.setCtx("pendingShipService") === "USPSParcel");
     // services fetch resolves afterwards; restore applies the parked code.
     c.sandbox.fetchCarrierServices();
     c.resolveFetch("shipping-services", { carriers: CARRIERS });
     await c.tick(); await c.tick();
     check("still no error shown", c.hidden("shipping-error"));
-    check("service picker WAS restored", c.$("ship-service").value === "USPSGroundAdvantage");
+    check("service picker WAS restored", c.$("ship-service").value === "USPSParcel");
     check("pending code cleared after a successful restore",
       c.setCtx("pendingShipService") === "");
     check("no unhandled rejection", c.unhandled.length === 0);
@@ -333,7 +334,7 @@ async function main() {
       setupThrew && setupThrew.message);
     c.$("ship-carrier").value = "USPS";
     c.sandbox.populateShipService();
-    c.$("ship-service").value = "USPSGroundAdvantage";
+    c.$("ship-service").value = "USPSParcel";
     let threw = null;
     const p = c.sandbox.selectShippingPolicy("333").catch((e) => { threw = e; });
     c.resolveFetch("/api/drafts/d1", { draft: { id: "d1" } });
@@ -577,7 +578,7 @@ async function main() {
     c.$("p-fulfillment").value = "111";
     c.setCtx(`shippingPolicies = []; carrierServicesFetched = true; carrierServices = ${JSON.stringify(CARRIERS)};`);
     c.sandbox.populateShipService();
-    c.sandbox.restoreShipService("USPSGroundAdvantage");
+    c.sandbox.restoreShipService("USPSGroundAdvantage"); // v49: old saved code
     c.sandbox.fetchShippingPolicies();
     c.resolveFetch("fulfillment-policies", { error: "boom" }, false);
     await c.tick(); await c.tick();
@@ -589,7 +590,7 @@ async function main() {
       c.hidden("shipping-error") &&
       c.$("shipping-select").children.length === 4);
     check("retry succeeds: service restored",
-      c.$("ship-service").value === "USPSGroundAdvantage");
+      c.$("ship-service").value === "USPSParcel");
     check("retry fired a second policy fetch",
       c.fetchCalls.filter((f) => String(f.url).includes("fulfillment-policies")).length === 2);
     check("no unhandled rejection", c.unhandled.length === 0);
@@ -632,7 +633,7 @@ async function main() {
     c.sandbox.renderShippingDropdown(); // real page: policies fetched, dropdown rendered
     c.$("ship-carrier").value = "USPS";
     c.sandbox.populateShipService();
-    c.$("ship-service").value = "USPSGroundAdvantage";
+    c.$("ship-service").value = "USPSParcel";
     c.sandbox.onShipServicePicked();
     await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: { id: "d1" } }); // onShipServicePicked saves first

@@ -189,13 +189,15 @@ const fakeFile = (name) => new File(["x"], name, { type: "image/jpeg" });
   check("Choose on step 1 still replaces the set", ctx("selectedFiles.length") === 1);
 
   // Listing-page render: every photo gets an Edit button + count.
-  // v40: thumbnails now hold a frame (img + X + Edit) plus a move row.
+  // v49: thumbnails hold a frame (img + X) with the Edit button
+  // below it (design 4), not overlaid on the frame.
   sandbox.renderDraftPhotos({ photos: ["d1/1.jpg", "d1/2.jpg"] });
   const wraps = $("draft-photos").children;
   check("draft render shows both photos", wraps.length === 2);
   const frameButtons = (w) => w.children[0].children.map((c) => c.textContent);
-  check("every draft photo gets an Edit button",
-    wraps.every((w) => frameButtons(w).includes("Edit")));
+  check("every draft photo gets an Edit button below the photo",
+    wraps.every((w) => w.children[1] && w.children[1].textContent === "Edit" &&
+      w.children[1].className === "thumb-edit-below"));
   check("every draft photo gets a Delete button",
     wraps.every((w) => frameButtons(w).includes("×")));
   check("draft count line shows 2 of 24", $("draft-photo-count").textContent === "2 of 24 photos");

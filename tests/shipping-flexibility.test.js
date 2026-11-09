@@ -112,23 +112,31 @@ const serviceTexts = () => $("ship-service").children.map((o) => o.textContent);
 const serviceValues = () => $("ship-service").children.map((o) => o.value);
 
 (async () => {
-  // The service catalog: all 11 attested picker codes, plain labels,
+  // The service catalog: all 10 attested picker codes, plain labels,
   // no IDs. v43: the label map also carries the 2 harvested-only
   // codes his policies use (UPSGroundSaver, FedExSmartPost), so the
-  // map is 13 entries — the picker catalog itself stays exactly the
-  // 11 documented codes (Python CatalogTest covers that side).
+  // map is 12 entries — the picker catalog itself stays exactly the
+  // 10 documented codes (Python CatalogTest covers that side).
+  // v49: USPSGroundAdvantage is gone from the catalog (eBay's LSAS
+  // checker rejects it on this account — Nov 8 live create, 20403
+  // UNKNOWN_SHIPPING_SERVICE); Ground Advantage is offered as
+  // USPSParcel only, labeled "USPS Ground Advantage", and the
+  // separate "USPS Parcel Post" entry is gone (same code, same
+  // service). The map still labels the old code for reading.
   const labels = sandbox.carrierServiceLabels();
-  const documented = ["USPSGroundAdvantage", "USPSPriority", "USPSParcel",
+  const documented = ["USPSParcel", "USPSPriority",
     "UPSGround", "UPS3rdDay", "UPS2DayAirAM", "UPSNextDay",
     "FedExGround", "FedExHomeDelivery", "FedEx2Day", "FedExExpressSaver"];
-  check("catalog has all 11 attested codes",
+  check("catalog has all 10 attested codes",
     documented.every((c) => c in labels));
   check("catalog labels are plain names, never codes or IDs",
     labels.USPSPriority === "USPS Priority Mail" &&
-    labels.USPSGroundAdvantage === "USPS Ground Advantage" &&
+    labels.USPSParcel === "USPS Ground Advantage" &&
     labels.UPS3rdDay === "UPS 3 Day Select" &&
     labels.FedExHomeDelivery === "FedEx Home Delivery" &&
     labels.FedExExpressSaver === "FedEx Express Saver");
+  check("the rejected Ground Advantage code is not offered",
+    !("USPSGroundAdvantage" in labels));
   check("harvested-only codes have plain labels too",
     labels.UPSGroundSaver === "UPS Ground Saver" &&
     labels.FedExSmartPost === "FedEx Ground Economy");
@@ -138,7 +146,7 @@ const serviceValues = () => $("ship-service").children.map((o) => o.value);
 
   // Carrier services fetch groups by carrier; unclassified extras stay.
   fetchQueue = [{ carriers: {
-    USPS: [{ code: "USPSGroundAdvantage", label: "USPS Ground Advantage" },
+    USPS: [{ code: "USPSParcel", label: "USPS Ground Advantage" },
            { code: "USPSPriority", label: "USPS Priority Mail" }],
     UPS: [{ code: "UPSGround", label: "UPS Ground" }],
     FedEx: [{ code: "FedEx2Day", label: "FedEx 2 Day" }],
@@ -151,8 +159,9 @@ const serviceValues = () => $("ship-service").children.map((o) => o.value);
   $("ship-carrier").value = "USPS";
   sandbox.populateShipService();
   check("USPS services listed with plain labels",
-    serviceValues().includes("USPSGroundAdvantage") &&
+    serviceValues().includes("USPSParcel") &&
     serviceValues().includes("USPSPriority") &&
+    serviceTexts().includes("USPS Ground Advantage") &&
     serviceTexts().includes("USPS Priority Mail"));
   check("other carriers' services are not in the USPS list",
     !serviceValues().includes("UPSGround") &&

@@ -497,3 +497,122 @@ policies" path.
   code image is not a photo thumbnail and is unchanged. A static
   guard test (`tests/test_thumbnail_size.py`) fails the suite if
   any slot gets its own size again.
+
+## v49: Diffui design 4 on all four screens, plus the USPS Ground Advantage fix
+
+- Look-and-layout only (no feature change), built from the four
+  Diffui design-4 images he picked Nov 8. Light theme kept
+  (#f4f4f5 page, white cards, dark text, blue #2a63d8 buttons).
+  Pick photos: header with a back arrow and centered "Pick Photos"
+  title; photos in a 2x2 grid of large uniform square thumbs, each
+  with a round X top-right and a pencil Edit pill bottom-left;
+  "N of 24 photos" count below the grid; Take photo (blue filled)
+  and Choose photos (outlined) side by side, then the big blue
+  "Draft my listing with AI" button full width. The v44 in-app
+  CameraX camera, Google Photos edit, drag-to-reorder (pointer
+  drag keeps working on the grid; taps on X/Edit still tap, not
+  drag), 24 photo cap, and count text are unchanged. The grid is a
+  deliberate exception to the v48 one-shared-size rule: grid cells
+  fill their column and stay square via aspect-ratio, so the grid
+  thumbs are uniform with each other; the listing-page draft strip,
+  the drafts-list rows, and the batch rows still read the shared
+  `--thumb-size: 128px` variable, and `tests/test_thumbnail_size.py`
+  pins the exception explicitly. The "Take another photo" button is
+  gone — Take photo is always visible, so it covers the same tap.
+  The phone status bar and clock in the mockup are not app UI and
+  are not built.
+- Listing page, plus the streamline: header "Listing Assistant"
+  with a back arrow (the "?" help icon in the mockup is dropped —
+  no help screen exists behind it). Photos in a row, each with Edit
+  underneath as a blue text-style button that is still a real
+  button (min-height 26px, the v44 Edit sizing), not a tiny text
+  link. Core fields stay open and in order: Title with 0/80
+  counter, Description, Condition dropdown, Price with Check sold
+  prices, category number with Suggest, then the big blue button
+  reading exactly "List it on eBay now". Below it, collapsed rows
+  with live summary lines and chevrons: Shipping (carrier,
+  service, weight in lb and oz, dimensions, updating on every
+  change), Item specifics (row names, falling back to "(n rows)"),
+  Shop policy numbers ("Return, Payment, Handling" — labels only,
+  never raw policy IDs), Or list manually ("Copy details and
+  download photos"). Nothing vital is removed: the Shipping row
+  opens to the full carrier/service pickers, package fields,
+  usual-policy dropdown, and create-policy form; item specifics
+  keeps dynamic rows plus Add a row; shop policy numbers keeps the
+  policy fields; the manual block keeps Copy title, Copy
+  description, Copy everything, Download photos (.zip), Ask AI
+  again, Start a new item. The ship-from form, scope-reconnect
+  box, eBay status card, "It is live!" note behavior (v43 F2
+  keepPublishOk), Best Offer fields, and Save as my usual settings
+  all stay working. The Shipping row opens itself whenever a
+  shipping error, pick screen, or create form needs to be seen.
+  Currency is $ everywhere (the mockups' £ and ₹ never reach the
+  app). Package inputs now autosave on input (before, they only
+  saved when another field or the publish step saved the draft).
+- Drafts list: centered "My drafts" title; rows separated by
+  divider lines, no card borders; checkbox, 128px thumb, bold
+  title, date, Open (outlined), Post (blue), Delete (grey with a
+  trash icon). Newest-first sort (v45) and the two sections (v46)
+  are kept. The design's quirk is fixed: the bottom section reads
+  exactly "Listed on eBay (n)", starts closed, and listed rows live
+  only in that section with no Post button; the small "Listed on
+  eBay" pill is gone from every row.
+- Batch posting: big bold "Post several drafts" title; rows show a
+  checkbox, thumb, title, and date (price is not shown on the row
+  — it lives on the listing page); unticking a row drops it from
+  the batch and updates the confirm card, re-ticking puts it back.
+  "Category for the whole batch" is a category NUMBER input (the
+  "123456" in the mockup is placeholder text only, never a real
+  value; the field starts empty). The confirmation is a card with
+  a centered "N drafts, 1 category" heading, a big blue "Post all
+  N" button, and Cancel. The v43 batch rules stay: policy pick
+  shows name and type only, never raw IDs; posting is sequential,
+  one failure does not stop the rest; listed drafts are excluded.
+- USPS Ground Advantage fix (folded into v49 so he installs once).
+  The Nov 8 live policy create failed with eBay error 20403
+  UNKNOWN_SHIPPING_SERVICE because the form sent
+  shippingServiceCode USPSGroundAdvantage. eBay's LSAS checker
+  rejects that code on this account. eBay's own code for the same
+  Ground Advantage service is USPSParcel: eBay's reports use
+  USPSParcel for Ground Advantage, and his old policy is literally
+  named "Calculated: USPSParcel". The app now canonicalizes every
+  service code through `_canonical_service_code` (server) and
+  `canonicalServiceCode` (JS): USPSGroundAdvantage maps to
+  USPSParcel, everything else passes through unchanged. Applied in
+  the create body builder (`_create_service_code`, so it covers
+  every path that builds a policy, including a code typed in
+  Other), in the policy-for-service matcher (the requested code and
+  the policy's codes are both canonicalized, so a policy carrying
+  USPSParcel matches a Ground Advantage pick and vice versa), in
+  the harvest (a harvested USPSGroundAdvantage merges into
+  USPSParcel, so the picker never offers the rejected code or shows
+  two Ground Advantage entries), in the pick entry, and in the JS
+  create form (`createServiceCodeFor`), the prefilled create form,
+  and the service restore (a draft saved with the old code restores
+  onto the USPSParcel option). The picker catalog is 10 codes now,
+  not 11: Ground Advantage is offered as USPSParcel only, labeled
+  "USPS Ground Advantage", and the separate "USPS Parcel Post"
+  entry is gone because it was the same code for the same service.
+  USPSParcel is labeled "USPS Ground Advantage" in every label map;
+  USPSGroundAdvantage is kept in the label maps for READING only
+  (an old policy or saved draft may still carry it) and is never
+  sent. FedExSmartPost (FedEx Ground Economy) is deliberately left
+  as-is: whether create accepts it is UNPROVEN. The retry test
+  settles it — the same combination (Ground Advantage plus Ground
+  Economy) either creates, which proves FedExSmartPost is fine, or
+  fails again with UNKNOWN_SHIPPING_SERVICE, which proves it is
+  also bad and it gets dropped or mapped in the next fix. Do not
+  guess it away.
+- Tests: Python 392/392, node 12 suites, fit check passes at
+  320/360/768dp. New `tests/design4.test.js` (grid, collapsed rows
+  with live summaries, back arrows, drafts wording, batch panel,
+  USPS mapping) and `tests/test_usps_ground_advantage.py` (18
+  tests: canonicalizer, create body on all three service slots,
+  matcher both directions, harvest merge, catalog and labels).
+  `tests/test_thumbnail_size.py` pins the grid exception and the
+  batch-row slot; `tests/fit_check.py` check 5 was rewritten for
+  the 128px thumb with the wrapped-row model (the old 56px budget
+  was stale since v48), check 13 adds the batch-row slot, and check
+  14 pins the design-4 structure (headers, grid, collapsed rows,
+  Open outlined, Delete grey, batch confirm card, exact button
+  wordings, no £ or ₹).

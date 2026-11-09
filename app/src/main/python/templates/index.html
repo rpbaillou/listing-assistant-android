@@ -30,21 +30,30 @@
   <!-- v20: drafts live here as a quiet link, not a header button, so the
        header stays a plain title bar and nothing gets cut off. -->
   <p class="drafts-link"><a id="btn-drafts" href="#">My drafts</a></p>
-  <!-- STEP 1: photos -->
+  <!-- STEP 1: photos (v49: Diffui design 4 — header with back arrow
+       and centered title; photos in a 2x2 grid of large uniform
+       square thumbs; Take photo is the blue filled button, Choose
+       photos the outlined one, then the big blue AI button. The
+       phone status bar and clock in the mockup are not app UI and
+       are not built. The v44 in-app camera, Google Photos edit and
+       drag-to-reorder all stay as they were. -->
   <section id="step-photos" class="step">
-    <h2>1. Pick photos</h2>
+    <div class="screen-head">
+      <button class="back" id="btn-back-photos" type="button" aria-label="Back to drafts">&#8249;</button>
+      <h2>Pick Photos</h2>
+      <span class="screen-head-spacer" aria-hidden="true"></span>
+    </div>
     <p class="hint">Choose up to 24 photos of one item — from your photo library, or take new ones with the camera.</p>
+    <div id="thumbs" class="thumbs photo-grid"></div>
+    <p id="photo-count" class="hint">0 of 24 photos</p>
     <div class="photobtns">
-      <label class="filebtn" for="photo-input">Choose photos</label>
-      <button class="filebtn" id="btn-take-photo" type="button">Take photo</button>
+      <button class="primary" id="btn-take-photo" type="button">Take photo</button>
+      <label class="ghost" for="photo-input">Choose photos</label>
     </div>
     <input id="photo-input" type="file" accept="image/*" multiple>
-    <div id="thumbs" class="thumbs"></div>
-    <p id="photo-count" class="hint">0 of 24 photos</p>
-    <button id="btn-take-another" class="filebtn hidden" type="button">Take another photo</button>
     <div id="skip-note" class="hint hidden"></div>
     <div id="analyze-error" class="error hidden"></div>
-    <button id="btn-analyze" class="primary big" type="button" disabled>Identify item with AI</button>
+    <button id="btn-analyze" class="primary big" type="button" disabled>Draft my listing with AI</button>
     <button id="btn-quick-post" class="secondary big" type="button" disabled>Quick post (skip AI)</button>
     <p class="hint">Quick post skips the AI wait: your photos go straight to a blank draft you fill in yourself.</p>
     <div id="spinner" class="spinner hidden">Asking the AI to look at your photos… this takes about 20 seconds.</div>
@@ -52,14 +61,27 @@
 
   <!-- STEP 2: the listing page (v29: everything about the listing lives
        here — the separate publish panel is gone, so no field can be
-       lost between pages; the draft's own save keeps it all). -->
+       lost between pages; the draft's own save keeps it all).
+       v49: Diffui design 4 + the streamline — header with back arrow
+       and "Listing Assistant" (the "?" help icon in the mockup is
+       dropped, no help screen exists behind it); core fields stay
+       open in order (title, description, condition, price, category
+       number, then the List button); Shipping, Item specifics, Shop
+       policy numbers and Or list manually are collapsed rows with
+       live summary lines. NOTHING vital is removed — each row opens
+       to the full section it replaces. -->
   <section id="step-draft" class="step hidden">
-    <h2>2. Your listing</h2>
+    <div class="screen-head">
+      <button class="back" id="btn-back-draft" type="button" aria-label="Back to drafts">&#8249;</button>
+      <h2>Listing Assistant</h2>
+      <span class="screen-head-spacer" aria-hidden="true"></span>
+    </div>
     <p class="hint">Everything about the listing lives here. Fill it in, check it, then post it below.</p>
+    <div id="listing-note" class="note hidden"></div>
     <div id="draft-photos" class="thumbs"></div>
     <div class="photobtns">
-      <label class="filebtn" for="draft-photo-input">Choose photos</label>
-      <button class="filebtn" id="btn-draft-take-photo" type="button">Take photo</button>
+      <button class="primary" id="btn-draft-take-photo" type="button">Take photo</button>
+      <label class="ghost" for="draft-photo-input">Choose photos</label>
     </div>
     <input id="draft-photo-input" type="file" accept="image/*" multiple>
     <p id="draft-photo-count" class="hint"></p>
@@ -68,9 +90,6 @@
 
     <label>Title <span id="title-count" class="count">0/80</span></label>
     <input id="f-title" type="text" maxlength="80">
-
-    <label>Suggested eBay category</label>
-    <input id="f-category" type="text">
 
     <label>Description</label>
     <textarea id="f-description" rows="6"></textarea>
@@ -91,10 +110,6 @@
     <label>Condition details</label>
     <textarea id="f-condition-details" rows="3" placeholder="e.g. small chips on the base, wear on the glaze — be honest, it protects you from returns"></textarea>
 
-    <label>Item specifics</label>
-    <div id="attrs"></div>
-    <button id="btn-add-attr" class="ghost" type="button">+ Add a row</button>
-
     <div id="ai-notes" class="note hidden"></div>
 
     <label>Your price ($)</label>
@@ -114,6 +129,9 @@
     <p class="hint">Tap Suggest to get eBay's category numbers for your title, then tap the right one.</p>
     <div id="required-aspects"></div>
 
+    <label>Suggested eBay category</label>
+    <input id="f-category" type="text">
+
     <label class="checkline"><input id="p-best-offer" type="checkbox"> Let buyers make offers (Best Offer)</label>
     <div id="best-offer-fields" class="hidden">
       <p class="hint">eBay handles the haggling for you. Leave both blank to review every offer yourself.</p>
@@ -123,6 +141,13 @@
       <input id="p-bo-accept" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="e.g. 35.00">
       <p class="hint">Both have to be below your listing price, and the "yes" price has to be above the "no" price.</p>
     </div>
+
+    <!-- v49: the List button sits right after the core fields, before
+         the collapsed rows, as in design 4. -->
+    <div id="publish-error" class="error hidden"></div>
+    <div id="publish-ok" class="ok hidden"></div>
+    <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
+    <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
     <!-- v42: Shipping, like eBay's lister. Two grouped cards (layout
          from the Diffui design 1 look, re-skinned to this app's light
@@ -140,8 +165,18 @@
          label the seller gave it on eBay: it never sets the weight.
          A failed publish with an unusable saved policy opens the
          card-2 dropdown (see openShippingPick in app.js). -->
+    <!-- v49: Shipping is a collapsed row (design 4). The summary
+         shows the live choice (carrier, service, weight, size); the
+         row opens to the full v42 pickers, package fields, usual
+         policy dropdown and create form — nothing is removed. -->
+    <details id="row-shipping" class="collapse-row">
+      <summary>
+        <span class="cr-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#1c1c1e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 3v5h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg></span>
+        <span class="cr-text"><span class="cr-title">Shipping</span><span id="shipping-summary" class="cr-sub">Not set yet.</span></span>
+        <span class="cr-chev" aria-hidden="true">&#8250;</span>
+      </summary>
+      <div class="cr-body">
     <div id="shipping-section">
-      <h3>Shipping</h3>
       <div class="card">
         <label>Carrier</label>
         <select id="ship-carrier">
@@ -275,9 +310,34 @@
         <button id="btn-pc-cancel-2" class="ghost" type="button">Cancel</button>
       </div>
     </div>
+      </div>
+    </details>
 
-    <details>
-      <summary>Shop policy numbers (usually set once)</summary>
+    <!-- v49: Item specifics is a collapsed row (design 4). The summary
+         shows the row names, falling back to "(n rows)"; the row opens
+         to the same dynamic rows plus Add a row. -->
+    <details id="row-attrs" class="collapse-row">
+      <summary>
+        <span class="cr-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#1c1c1e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></span>
+        <span class="cr-text"><span class="cr-title">Item specifics</span><span id="attrs-summary" class="cr-sub">(0 rows)</span></span>
+        <span class="cr-chev" aria-hidden="true">&#8250;</span>
+      </summary>
+      <div class="cr-body">
+        <div id="attrs"></div>
+        <button id="btn-add-attr" class="ghost" type="button">+ Add a row</button>
+      </div>
+    </details>
+
+    <!-- v49: Shop policy numbers is a collapsed row (design 4). The
+         summary is labels only ("Return, Payment, Handling") — raw
+         policy IDs never show, per the October 29 no-ID rule. -->
+    <details id="row-policies" class="collapse-row">
+      <summary>
+        <span class="cr-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#1c1c1e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+        <span class="cr-text"><span class="cr-title">Shop policy numbers</span><span class="cr-sub">Return, Payment, Handling</span></span>
+        <span class="cr-chev" aria-hidden="true">&#8250;</span>
+      </summary>
+      <div class="cr-body">
       <label>Shipping policy number</label>
       <input id="p-fulfillment" type="text" inputmode="numeric">
       <label>Payment policy number</label>
@@ -285,21 +345,16 @@
       <label>Return policy number</label>
       <input id="p-return" type="text" inputmode="numeric">
       <p class="hint">From your .env file. Find yours in Seller Hub under Account, then Business policies: open each policy and copy the number from the page address.</p>
+      </div>
     </details>
 
     <button id="btn-save-preset" class="ghost" type="button">Save as my usual settings</button>
     <p class="hint">Saves the condition, category, policy numbers, and Best Offer settings above as your usual settings. Next time they fill in by themselves; re-saving replaces them.</p>
     <div id="preset-note" class="note hidden"></div>
-    <div id="listing-note" class="note hidden"></div>
 
     <div id="ebay-status" class="card">
       <p class="hint" style="margin:0">Checking eBay connection…</p>
     </div>
-
-    <div id="publish-error" class="error hidden"></div>
-    <div id="publish-ok" class="ok hidden"></div>
-    <button id="btn-publish" class="primary big" type="button">List it on eBay now</button>
-    <div id="publish-spinner" class="spinner hidden">Listing… uploading photos, then creating your eBay listing. About a minute.</div>
 
     <!-- v31: one-time ship-from address form. Shown only when eBay has
          no shop location saved yet. The fields start empty and are
@@ -333,18 +388,30 @@
       <a class="primary btnlink" href="/api/ebay/connect">Connect eBay</a>
     </div>
 
-    <h3>Or list manually, like before</h3>
-    <div class="btnrow wrap">
-      <button id="btn-copy-title" class="secondary" type="button">Copy title</button>
-      <button id="btn-copy-desc" class="secondary" type="button">Copy description</button>
-      <button id="btn-copy-all" class="secondary" type="button">Copy everything</button>
-      <a id="btn-photos-zip" class="secondary btnlink" href="#">Download photos (.zip)</a>
-    </div>
-    <div id="copy-ok" class="ok hidden">Copied. Paste it into eBay.</div>
-    <div class="btnrow">
-      <button id="btn-reanalyze" class="ghost" type="button">Ask AI again</button>
-      <button id="btn-new" class="primary big" type="button">Start a new item</button>
-    </div>
+    <!-- v49: Or list manually is a collapsed row (design 4). The
+         summary is the plain line "Copy details and download photos";
+         the row opens to the same copy buttons, photo zip, Ask AI
+         again and Start a new item. -->
+    <details id="row-manual" class="collapse-row">
+      <summary>
+        <span class="cr-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#1c1c1e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></span>
+        <span class="cr-text"><span class="cr-title">Or list manually</span><span class="cr-sub">Copy details and download photos</span></span>
+        <span class="cr-chev" aria-hidden="true">&#8250;</span>
+      </summary>
+      <div class="cr-body">
+        <div class="btnrow wrap">
+          <button id="btn-copy-title" class="secondary" type="button">Copy title</button>
+          <button id="btn-copy-desc" class="secondary" type="button">Copy description</button>
+          <button id="btn-copy-all" class="secondary" type="button">Copy everything</button>
+          <a id="btn-photos-zip" class="secondary btnlink" href="#">Download photos (.zip)</a>
+        </div>
+        <div id="copy-ok" class="ok hidden">Copied. Paste it into eBay.</div>
+        <div class="btnrow">
+          <button id="btn-reanalyze" class="ghost" type="button">Ask AI again</button>
+          <button id="btn-new" class="primary big" type="button">Start a new item</button>
+        </div>
+      </div>
+    </details>
   </section>
 
   <!-- drafts drawer -->
@@ -358,24 +425,34 @@
     <p class="hint">Tick drafts, then Post selected to list several at once. Or tap Post on one draft to open its listing page.</p>
   </section>
 
-  <!-- v24: batch posting — one confirmation list is the review -->
+  <!-- v24: batch posting — one confirmation list is the review.
+       v49: Diffui design 4 — big bold title; each row shows a
+       checkbox, thumb, title and date, and unticking a row drops it
+       from the batch; the category is a NUMBER input (the "123456"
+       in the mockup is placeholder text only, never a real value);
+       the confirmation is a card with a centered "N drafts,
+       1 category" heading, a big blue "Post all N" button and
+       Cancel. The v43 batch rules stay: policy pick shows name and
+       type only, never raw IDs; posting is sequential, one failure
+       does not stop the rest; listed drafts are excluded. -->
   <section id="batch-panel" class="step hidden">
     <h2>Post several drafts</h2>
     <p class="hint">One category applies to the whole batch. Drafts without a price, or already live, are skipped below.</p>
-    <label>Category number for these listings</label>
+    <div id="batch-review-list"></div>
+    <div id="batch-excluded"></div>
+    <label>Category for the whole batch</label>
     <div class="pricerow">
-      <input id="b-category" type="text" inputmode="numeric" placeholder="e.g. 178893">
+      <input id="b-category" type="text" inputmode="numeric" placeholder="e.g. 123456">
       <button id="btn-batch-suggest" class="secondary" type="button">Suggest</button>
     </div>
     <label>Category keywords (for Suggest)</label>
     <input id="b-keywords" type="text" placeholder="e.g. Royal Doulton figurine">
     <div id="batch-suggestions" class="suggestbox hidden"></div>
-    <div id="batch-review-list"></div>
-    <div id="batch-excluded"></div>
     <div id="batch-note" class="note hidden"></div>
-    <div class="btnrow wrap">
-      <button id="btn-batch-cancel" class="ghost" type="button">← Back to drafts</button>
-      <button id="btn-batch-confirm" class="primary" type="button" disabled>Post these now</button>
+    <div id="batch-confirm" class="card batch-confirm">
+      <h3 id="batch-confirm-heading">0 drafts, 1 category</h3>
+      <button id="btn-batch-confirm" class="primary big" type="button" disabled>Post all</button>
+      <button id="btn-batch-cancel" class="ghost" type="button">Cancel</button>
     </div>
     <div id="batch-progress" class="spinner hidden">Posting… about a minute per item. Leave the app open.</div>
     <div id="batch-results"></div>

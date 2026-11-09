@@ -74,16 +74,15 @@ button:disabled { opacity: 0.45; cursor: default; }
 .btnrow .primary { flex: 1; }
 .btnrow > * { min-width: 0; }
 
-.filebtn {
-  display: block; text-align: center; background: #e8eefc; color: #123a7d;
-  font-weight: 700; border-radius: 10px; padding: 1rem; margin: 0.5rem 0;
-  border: 2px dashed #9db8ee; cursor: pointer;
-}
 #photo-input { display: none; }
 #draft-photo-input { display: none; }
 #camera-input { display: none; }
 .photobtns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.photobtns .filebtn { flex: 1; min-width: 0; }
+/* v49: Take photo is the blue filled button, Choose photos the
+   outlined one (design 4); both stretch across the row. The old
+   dashed .filebtn style is gone with the class. */
+.photobtns > * { flex: 1; min-width: 0; }
+.photobtns label { display: flex; align-items: center; justify-content: center; text-align: center; }
 
 .thumbs { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.7rem 0; }
 /* v48: ONE thumbnail size for every photo slot in the app (step-1
@@ -218,3 +217,74 @@ details summary { font-weight: 700; cursor: pointer; }
 .req-aspect { margin-bottom: 0.6rem; }
 .req-aspect label { display: block; font-weight: 600; margin-bottom: 0.2rem; }
 #required-aspects details { margin-top: 0.8rem; }
+
+/* v49: Diffui design 4 on all four screens (light theme kept:
+   #f4f4f5 page, white cards, dark text, blue #2a63d8 buttons).
+   Look-and-layout only — no behavior changes here. */
+
+/* Screen headers (pick photos, listing page): back arrow left,
+   centered title, a spacer the same width as the arrow on the
+   right so the title truly centers. The arrow is a 44px tap
+   target, dark on white. */
+.screen-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.screen-head h2 { flex: 1; text-align: center; margin: 0; font-size: 1.25rem; }
+.screen-head .back { background: none; border: none; color: #1c1c1e; font-size: 1.8rem; line-height: 1; width: 44px; height: 44px; min-height: 44px; padding: 0; cursor: pointer; flex-shrink: 0; }
+.screen-head-spacer { width: 44px; flex-shrink: 0; }
+
+/* Step-1 photo grid (design 4): two columns of large uniform
+   square thumbs. DELIBERATE EXCEPTION to the v48 one-shared-size
+   rule: grid cells fill their column and stay square via
+   aspect-ratio, so the photos match each other and fill the
+   screen. The listing-page draft strip and the drafts-list rows
+   still read --thumb-size; only this grid is exempt, and
+   tests/test_thumbnail_size.py says so explicitly. */
+.thumbs.photo-grid { display: grid; grid-template-columns: 1fr 1fr; }
+.thumbs.photo-grid .thumb-wrap { width: 100%; aspect-ratio: 1 / 1; }
+.thumbs.photo-grid .thumb-img { width: 100%; height: 100%; }
+.thumbs.photo-grid img { width: 100%; height: 100%; }
+.thumbs.photo-grid .thumb-skip { width: 100%; height: auto; aspect-ratio: 1 / 1; }
+
+/* Listing-page draft strip (design 4): Edit sits UNDER the photo
+   as a blue text-style button, not overlaid on it. It is a real
+   button with min-height 26px, the v44 Edit sizing, never a tiny
+   text link. The frame stays the drag handle; taps on Edit never
+   start a drag. */
+.thumb-edit-below { display: block; width: 100%; min-height: 26px; margin-top: 0.3rem; padding: 0.15rem 0.5rem; background: none; border: none; color: #2a63d8; font-size: 14px; font-weight: 600; cursor: pointer; text-align: center; }
+
+/* Collapsed listing rows (design 4 + streamline): icon, title,
+   live summary line, chevron. The body holds the full section —
+   nothing is removed, it is one tap away. The chevron turns 90
+   degrees when the row is open. Summary lines are #666 on white
+   (5.7:1) and titles #1c1c1e on white (17:1). */
+.collapse-row { border: 1px solid #dde3f0; border-radius: 10px; padding: 0.7rem 1rem; margin: 0.8rem 0; background: #fff; }
+.collapse-row summary { display: flex; align-items: center; gap: 0.7rem; cursor: pointer; list-style: none; min-height: 48px; font-weight: 700; }
+.collapse-row summary::-webkit-details-marker { display: none; }
+.collapse-row .cr-icon { flex-shrink: 0; display: flex; align-items: center; }
+.collapse-row .cr-icon svg { display: block; }
+.collapse-row .cr-text { flex: 1; min-width: 0; }
+.collapse-row .cr-title { display: block; font-size: 1rem; color: #1c1c1e; }
+.collapse-row .cr-sub { display: block; font-weight: 400; font-size: 0.85rem; color: #666; overflow-wrap: break-word; }
+.collapse-row .cr-chev { flex-shrink: 0; font-size: 1.4rem; color: #1c1c1e; transition: transform 0.15s; line-height: 1; }
+.collapse-row[open] .cr-chev { transform: rotate(90deg); }
+.collapse-row .cr-body { margin-top: 0.8rem; }
+
+/* Drafts list (design 4): centered title, rows separated by
+   divider lines with no card borders (the .draft-item border
+   already does that). Open is the outlined button; Delete is grey
+   with a trash icon. Listed rows live only in the bottom section —
+   there is no pill on any row. */
+#drafts-panel > h2 { text-align: center; }
+.draft-actions .secondary { background: #fff; border: 1px solid #2a63d8; color: #2a63d8; }
+.draft-item .del { background: #ececef; color: #1c1c1e; }
+
+/* Batch panel (design 4): big bold title; rows are checkbox +
+   thumb + title + date (the thumb still reads --thumb-size);
+   the confirm card has a centered heading, a big blue Post
+   button and Cancel below it. */
+#batch-panel > h2 { font-size: 1.7rem; font-weight: 800; }
+.batch-confirm h3 { text-align: center; margin: 0 0 0.6rem 0; }
+.batch-confirm .ghost { width: 100%; margin-top: 0.6rem; }
+.batch-row { align-items: center; }
+.batch-row img { width: var(--thumb-size); height: var(--thumb-size); object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.batch-row .bt b { display: block; }
+.batch-row .bt .d-date { color: #666; font-size: 0.85rem; }

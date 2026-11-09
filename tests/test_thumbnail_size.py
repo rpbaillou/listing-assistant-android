@@ -9,6 +9,15 @@ thumbnail slot gets its own size again: every slot must read the
 shared variable, the variable must be defined exactly once at
 128px, and no stale small size (56px / 96px) may remain on a
 thumbnail selector.
+
+v49 exception (deliberate, not drift): the step-1 photo grid
+(design 4) fills its two columns with square cells via width 100%
++ aspect-ratio 1/1, so the grid thumbs are NOT --thumb-size. The
+listing-page draft strip and the drafts-list rows still read the
+shared variable, and the batch rows (new in v49) read it too.
+The grid exception is pinned by test_photo_grid_exception below:
+exactly the .thumbs.photo-grid selectors may use 100% + aspect
+ratio, and nowhere else.
 """
 
 import os
@@ -23,6 +32,9 @@ HTML_PATH = os.path.join(REPO, "app", "src", "main", "python", "templates",
 
 # Every selector that sizes a photo thumbnail. The QR code image
 # (#step-qrcode img) is not a photo thumbnail and is out of scope.
+# The step-1 grid selectors are NOT here: they are the v49
+# exception (see test_photo_grid_exception) and read 100% +
+# aspect-ratio instead of --thumb-size.
 THUMB_RULES = (
     ".thumbs img",
     ".thumbs .thumb-skip",
@@ -30,6 +42,16 @@ THUMB_RULES = (
     ".thumb-wrap img",
     ".thumb-img",
     ".draft-item img",
+    ".batch-row img",
+)
+
+# The only selectors allowed to size a thumbnail without
+# --thumb-size: the v49 step-1 grid, whose cells fill their column.
+GRID_RULES = (
+    ".thumbs.photo-grid .thumb-wrap",
+    ".thumbs.photo-grid .thumb-img",
+    ".thumbs.photo-grid img",
+    ".thumbs.photo-grid .thumb-skip",
 )
 
 
@@ -98,6 +120,46 @@ class ThumbnailSizeTest(unittest.TestCase):
             html = f.read()
         self.assertIn('id="draft-photos" class="thumbs"', html)
         self.assertNotIn('id="draft-photos" class="thumbs small"', html)
+
+    def test_photo_grid_exception(self):
+        # v49: the step-1 grid is the ONE exception to the shared
+        # size. Its cells fill their column (width 100%) and stay
+        # square (aspect-ratio 1/1), so the grid thumbs are uniform
+        # with each other at any phone width. No other thumbnail
+        # selector may use 100% or an aspect ratio.
+        for sel in GRID_RULES:
+            props = self.rules.get(sel, {})
+            self.assertEqual(
+                props.get("width"), "100%",
+                "%s must fill its grid cell: %r" % (sel, props))
+            if sel == ".thumbs.photo-grid .thumb-wrap":
+                self.assertEqual(
+                    props.get("aspect-ratio"), "1 / 1",
+                    "%s must stay square: %r" % (sel, props))
+            elif sel == ".thumbs.photo-grid .thumb-skip":
+                self.assertEqual(
+                    props.get("aspect-ratio"), "1 / 1",
+                    "%s must stay square: %r" % (sel, props))
+            else:
+                self.assertEqual(
+                    props.get("height"), "100%",
+                    "%s must fill its grid cell: %r" % (sel, props))
+        self.assertEqual(
+            self.rules.get(".thumbs.photo-grid", {}).get(
+                "grid-template-columns"), "1fr 1fr",
+            "the step-1 grid must be two equal columns")
+        for sel, props in self.rules.items():
+            if sel in GRID_RULES or sel == ".thumbs.photo-grid":
+                continue
+            self.assertNotIn(
+                props.get("aspect-ratio"), ("1 / 1", "1/1"),
+                "only the step-1 grid may use aspect-ratio: %s" % sel)
+
+    def test_step1_grid_is_a_grid(self):
+        with open(HTML_PATH, encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn('id="thumbs" class="thumbs photo-grid"', html)
+        self.assertIn('id="draft-photos" class="thumbs"', html)
 
 
 if __name__ == "__main__":

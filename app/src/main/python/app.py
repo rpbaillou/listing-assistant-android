@@ -2120,9 +2120,17 @@ def api_ebay_fulfillment_policies():
 #   falling back to a get-by-name read (names are unique).
 
 SERVICE_LABELS = {
-    "USPSGroundAdvantage": "USPS Ground Advantage",
+    # v49: USPSParcel IS the Ground Advantage service on this account
+    # (see _canonical_service_code): eBay's own reports use USPSParcel
+    # for Ground Advantage, and his old policy is literally named
+    # "Calculated: USPSParcel". The label is the service's name.
+    "USPSParcel": "USPS Ground Advantage",
     "USPSPriority": "USPS Priority Mail",
-    "USPSParcel": "USPS Parcel Post",
+    # USPSGroundAdvantage is kept for READING only: an old policy or
+    # a saved draft may still carry it, and it must display as the
+    # same service, never as a raw code. It is never sent (the
+    # canonicalizer maps it to USPSParcel before anything leaves).
+    "USPSGroundAdvantage": "USPS Ground Advantage",
     "UPSGround": "UPS Ground",
     # v43: harvested-only labels (see the note on carrierServiceLabels
     # in static/app.js for the attestation). Not picker codes.
@@ -2146,21 +2154,25 @@ SERVICE_LABELS = {
 # - UPSGround, UPS2DayAirAM, UPSNextDay, FedExGround, FedExExpressSaver:
 #   Bonanza's mirror of eBay's ShippingServiceType enum AND the
 #   ebayapi Ruby gem's mirror of eBay's ShippingServiceCode enum.
-# - USPSParcel: both mirrors above.
+# - USPSParcel: both mirrors above — AND eBay's own reports use it
+#   for Ground Advantage (see _canonical_service_code).
 # - FedExHomeDelivery: the ebayapi enum mirror.
-# - USPSGroundAdvantage: live eBay integrations use it in production
-#   fulfillment policies (USPSGround was retired); one integration
-#   notes eBay's advisor rejects it on SOME accounts anyway, so
-#   USPSParcel sits right after it as the fallback, and a rejection
-#   surfaces as a plain error with the form kept (v41 behavior).
-# Deliberately NOT here: USPS Priority Express (the mirrors disagree
-# on the code, USPSExpress vs USPSExpressMail) and USPS First Class
-# (retired in favor of Ground Advantage). Both stay reachable through
-# the "Other (type the code)" option, and eBay validates a typed code
-# on create. The runtime harvest (below) is still the main source:
-# codes on the account's own policies are proven valid there.
+# v49: USPSGroundAdvantage is NOT in this catalog anymore. It was
+# listed here on the strength of live eBay integrations using it, but
+# the Nov 8 live policy create proved eBay's LSAS checker rejects it
+# on THIS account (20403 UNKNOWN_SHIPPING_SERVICE on a form sending
+# USPSGroundAdvantage + FedExSmartPost). Ground Advantage is offered
+# as USPSParcel only, labeled "USPS Ground Advantage"; the separate
+# "USPS Parcel Post" entry is gone because it was the same code for
+# the same service. Deliberately NOT here: USPS Priority Express (the
+# mirrors disagree on the code, USPSExpress vs USPSExpressMail) and
+# USPS First Class (retired in favor of Ground Advantage). Both stay
+# reachable through the "Other (type the code)" option, and eBay
+# validates a typed code on create. The runtime harvest (below) is
+# still the main source: codes on the account's own policies are
+# proven valid there.
 CARRIER_SERVICES = {
-    "USPS": ["USPSGroundAdvantage", "USPSPriority", "USPSParcel"],
+    "USPS": ["USPSParcel", "USPSPriority"],
     "UPS": ["UPSGround", "UPS3rdDay", "UPS2DayAirAM", "UPSNextDay"],
     "FedEx": ["FedExGround", "FedExHomeDelivery", "FedEx2Day",
               "FedExExpressSaver"],
@@ -2181,6 +2193,29 @@ def _canonical_carrier(value):
     if c == "FEDEX":
         return "FedEx"
     return None
+
+
+def _canonical_service_code(code):
+    """v49: one eBay service code -> the code this account must send.
+
+    USPSGroundAdvantage is rejected by eBay's LSAS checker on this
+    account: the Nov 8 live policy create failed with 20403
+    UNKNOWN_SHIPPING_SERVICE on a form sending USPSGroundAdvantage
+    (second service FedExSmartPost). eBay's own code for the same
+    Ground Advantage service is USPSParcel — eBay's reports use
+    USPSParcel for Ground Advantage, and his old policy is literally
+    named "Calculated: USPSParcel". Every code that enters a policy
+    body, a match, or a picker passes through here, so
+    USPSGroundAdvantage is never sent to eBay again. Anything else
+    passes through unchanged — in particular FedExSmartPost (FedEx
+    Ground Economy) is left as-is: whether create accepts it is
+    UNPROVEN, and the retry test settles it (see the v49 docs
+    section); do not guess it away by mapping or dropping it.
+    """
+    code = str(code or "").strip()
+    if code == "USPSGroundAdvantage":
+        return "USPSParcel"
+    return code
 
 
 DOCUMENTED_DOMESTIC_SERVICES = [
@@ -2221,7 +2256,10 @@ def _policy_first_domestic_service(policy):
             if isinstance(svc, dict):
                 code = str(svc.get("shippingServiceCode", "") or "").strip()
                 if code:
-                    return code
+                    # v49: canonicalized, so the pick entry carries
+                    # the code the picker actually offers (USPSParcel
+                    # for Ground Advantage), never the rejected one.
+                    return _canonical_service_code(code)
     return ""
 
 
@@ -2257,6 +2295,11 @@ def _harvest_shipping_services(policies):
                 if isinstance(svc, dict):
                     code = str(svc.get("shippingServiceCode", "") or "").strip()
                     if code:
+                        # v49: a harvested USPSGroundAdvantage merges
+                        # into USPSParcel, so the picker never offers
+                        # the rejected code (and never shows two
+                        # "Ground Advantage" entries for one service).
+                        code = _canonical_service_code(code)
                         bucket[code] = SERVICE_LABELS.get(code, code)
     for code in DOCUMENTED_DOMESTIC_SERVICES:
         domestic.setdefault(code, SERVICE_LABELS.get(code, code))
@@ -2299,14 +2342,18 @@ def _create_service_code(form, prefix, n):
     """Resolve service n's code: dropdown value, or Other + typed code.
 
     Returns the code string, or None when nothing was picked/typed.
+    v49: the returned code is canonicalized — a form carrying
+    USPSGroundAdvantage (an old saved pick, or typed in Other)
+    sends USPSParcel instead, so the create body never carries the
+    code eBay rejects on this account.
     """
     value = str(form.get(f"{prefix}_service_{n}", "") or "").strip()
     if not value:
         return None
     if value == "__OTHER__":
         typed = str(form.get(f"{prefix}_service_{n}_other", "") or "").strip()
-        return typed or None
-    return value
+        return _canonical_service_code(typed) if typed else None
+    return _canonical_service_code(value)
 
 
 def _build_shipping_option(form, prefix):
@@ -2548,7 +2595,11 @@ def api_ebay_policy_for_service():
     """
     form = request.get_json(force=True) or {}
     carrier = _canonical_carrier(form.get("carrier", ""))
-    service_code = str(form.get("service_code", "") or "").strip()
+    # v49: the requested code is canonicalized, so a pick of Ground
+    # Advantage (or an old saved USPSGroundAdvantage) matches a policy
+    # carrying USPSParcel — and a policy carrying USPSGroundAdvantage
+    # matches too, because its codes are canonicalized below.
+    service_code = _canonical_service_code(form.get("service_code", ""))
     if carrier is None:
         return jsonify({"error": "Pick a carrier first (USPS, UPS, or FedEx)."}), 400
     if not service_code:
@@ -2598,9 +2649,10 @@ def api_ebay_policy_for_service():
                     has_international = True
         if domestic is None or has_international:
             continue
-        codes = [str(s.get("shippingServiceCode", "") or "").strip()
+        codes = [_canonical_service_code(s.get("shippingServiceCode", ""))
                  for s in (domestic.get("shippingServices") or [])
                  if isinstance(s, dict)]
+        codes = [c for c in codes if c]
         if service_code not in codes:
             continue
         cost_type = str(domestic.get("costType", "") or "").strip().upper()

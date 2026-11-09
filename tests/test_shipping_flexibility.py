@@ -91,7 +91,7 @@ class CatalogTest(unittest.TestCase):
     """Every service code is attested, never invented."""
 
     EXPECTED = [
-        "USPSGroundAdvantage", "USPSPriority", "USPSParcel",
+        "USPSParcel", "USPSPriority",
         "UPSGround", "UPS3rdDay", "UPS2DayAirAM", "UPSNextDay",
         "FedExGround", "FedExHomeDelivery", "FedEx2Day",
         "FedExExpressSaver",
@@ -148,9 +148,12 @@ class CatalogTest(unittest.TestCase):
         out = m._harvest_shipping_services(POLICY_LIST["fulfillmentPolicies"])
         usps = [s["code"] for s in out["carriers"]["USPS"]]
         self.assertIn("USPSPriority", usps)
-        # Documented order first: Ground Advantage before Priority.
-        self.assertLess(usps.index("USPSGroundAdvantage"),
+        # Documented order first: Ground Advantage (as USPSParcel)
+        # before Priority.
+        self.assertLess(usps.index("USPSParcel"),
                         usps.index("USPSPriority"))
+        # v49: the rejected code never reaches the picker.
+        self.assertNotIn("USPSGroundAdvantage", usps)
         self.assertIn("UPSGround",
                       [s["code"] for s in out["carriers"]["UPS"]])
         self.assertIn("FedEx2Day",

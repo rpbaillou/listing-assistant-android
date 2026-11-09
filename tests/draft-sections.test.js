@@ -211,8 +211,14 @@ async function main() {
     check("listed rows have NO Post button",
       !body.children[0].innerHTML.includes('class="primary post"') &&
       !body.children[1].innerHTML.includes('class="primary post"'));
-    check("listed rows keep the small listed note",
-      body.children[0].innerHTML.includes("Listed on eBay"));
+    /* v49: the small "Listed on eBay" pill is gone — listed rows
+       live ONLY in this section, so a pill inside it would be a
+       lie, and no listed pill may appear on any row. */
+    check("listed rows carry NO listed pill",
+      !body.children[0].innerHTML.includes("d-listed") &&
+      !body.children[1].innerHTML.includes("d-listed") &&
+      !body.children[0].innerHTML.includes("Listed on eBay") &&
+      !body.children[1].innerHTML.includes("Listed on eBay"));
     // Toggle open, then closed again.
     toggle.click();
     check("tap expands the Listed section",

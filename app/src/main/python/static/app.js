@@ -113,11 +113,12 @@ function renderThumbs() {
     x.textContent = "×";
     x.setAttribute("aria-label", "Remove this photo");
     x.addEventListener("click", () => removePhoto(i));
-    /* v18: Edit opens the crop/rotate editor for this photo. */
+    /* v18: Edit opens the crop/rotate editor for this photo.
+       v49: pencil glyph on the pill, as in design 4. */
     const e = document.createElement("button");
     e.type = "button";
     e.className = "thumb-edit";
-    e.textContent = "Edit";
+    e.textContent = "✎ Edit";
     e.setAttribute("aria-label", "Edit this photo");
     e.addEventListener("click", () => openEditor(i));
     frame.appendChild(img);
@@ -135,11 +136,10 @@ function renderThumbs() {
     ph.textContent = "can't preview";
     box.appendChild(ph);
   }
-  /* v36: visible count + Take another affordance, so multi-snap never
-     looks like it stopped at one. The button below the thumbnails shows
-     only once at least one photo exists. */
+  /* v36: visible count, so multi-snap never looks like it stopped
+     at one. v49: the "Take another photo" button is gone — Take photo
+     is always visible above, so it covers the same tap. */
   $("photo-count").textContent = photoCountTextFor(selectedFiles.length);
-  $("btn-take-another").classList.toggle("hidden", selectedFiles.length === 0);
   updateAnalyzeButton();
 }
 
@@ -593,7 +593,6 @@ function takeStep1Photo() {
   }
 }
 $("btn-take-photo").addEventListener("click", takeStep1Photo);
-$("btn-take-another").addEventListener("click", takeStep1Photo);
 
 /* Called by native code after a camera snap. dataUrl is a natively
    downscaled JPEG (1600px, q85). Appends, so he can snap several angles.
@@ -678,7 +677,11 @@ function loadDraftIntoForm(d) {
 
 /* v36: draft thumbnails on the listing page. Every photo — existing or
    added — gets an Edit button into the same editor step 1 uses, so added
-   photos are never second-class. Count line mirrors the step-1 count. */
+   photos are never second-class. Count line mirrors the step-1 count.
+   v49: Edit sits under the photo as a blue text-style button (design
+   4), not overlaid on it — a real button, min-height 26px like the
+   v44 Edit sizing, so it stays tappable. The frame stays the drag
+   handle; taps on Edit never start a drag. */
 function renderDraftPhotos(d) {
   const box = $("draft-photos");
   box.innerHTML = "";
@@ -690,12 +693,6 @@ function renderDraftPhotos(d) {
     const img = document.createElement("img");
     img.src = "/photos/" + p;
     img.alt = "Listing photo " + (i + 1);
-    const e = document.createElement("button");
-    e.type = "button";
-    e.className = "thumb-edit";
-    e.textContent = "Edit";
-    e.setAttribute("aria-label", "Edit this photo");
-    e.addEventListener("click", () => editDraftPhotoInPixel(i));
     const x = document.createElement("button");
     x.type = "button";
     x.className = "thumb-x";
@@ -704,8 +701,14 @@ function renderDraftPhotos(d) {
     x.addEventListener("click", () => deleteDraftPhoto(i));
     frame.appendChild(img);
     frame.appendChild(x);
-    frame.appendChild(e);
     wrap.appendChild(frame);
+    const e = document.createElement("button");
+    e.type = "button";
+    e.className = "thumb-edit-below";
+    e.textContent = "Edit";
+    e.setAttribute("aria-label", "Edit this photo");
+    e.addEventListener("click", () => editDraftPhotoInPixel(i));
+    wrap.appendChild(e);
     /* v44: drag to reorder — the frame is the drag handle (see
        attachThumbDrag); the v40 ◀ ▶ buttons are gone. */
     attachThumbDrag(frame, wrap, box, i, reorderDraftPhoto);
@@ -812,6 +815,7 @@ function renderAttrs(attrs) {
   box.innerHTML = "";
   Object.entries(attrs).forEach(([k, v]) => box.appendChild(attrRow(k, v)));
   if (Object.keys(attrs).length === 0) box.appendChild(attrRow("", ""));
+  updateAttrsSummary();
 }
 
 function attrRow(k, v) {
@@ -826,14 +830,16 @@ function attrRow(k, v) {
   row.querySelector("button").addEventListener("click", () => {
     row.remove();
     scheduleSave();
+    updateAttrsSummary();
   });
   row.querySelectorAll("input").forEach((i) =>
-    i.addEventListener("input", scheduleSave));
+    i.addEventListener("input", () => { scheduleSave(); updateAttrsSummary(); }));
   return row;
 }
 
 $("btn-add-attr").addEventListener("click", () => {
   $("attrs").appendChild(attrRow("", ""));
+  updateAttrsSummary();
 });
 
 function collectForm() {
@@ -1060,20 +1066,23 @@ function makeDraftRow(d) {
   /* v21: buttons live in one .draft-actions unit so they wrap below the
      text together instead of one clipping off the right edge. The date
      renders as two nowrap spans (dateHtml: date, time) so the row can
-     break cleanly between them, never mid-string. "Listed on eBay"
-     is a separate span so it can wrap to the next line cleanly.
+     break cleanly between them, never mid-string.
      v24: a tick box (batch posting) and a Post button (straight to
      the listing page) join the row. Listed drafts get no Post button — they are
-     already live, and the publish step refuses them anyway. */
+     already live, and the publish step refuses them anyway. v49: no
+     "Listed on eBay" pill on any row — listed rows live ONLY in the
+     bottom "Listed on eBay" section, so a pill inside the Drafts
+     section would be a lie; Delete is a grey button with a trash
+     icon (design 4), Open stays the outlined button. */
   row.innerHTML =
     '<input type="checkbox" class="draft-check" data-id="' + d.id +
     '" aria-label="Select for batch posting">' +
     (d.thumb ? '<img src="/photos/' + d.thumb + '">' : "") +
     '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated) +
-    (d.listed ? ' <span class="d-listed">· Listed on eBay</span>' : "") + "</div>" +
+    "</div>" +
     '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
     (d.listed ? "" : '<button type="button" class="primary post">Post</button>') +
-    '<button type="button" class="del">Delete</button></div>';
+    '<button type="button" class="del">🗑 Delete</button></div>';
   row.querySelector(".secondary").addEventListener("click", async () => {
     const { draft: full } = await api("/api/drafts/" + d.id);
     loadDraftIntoForm(full);
@@ -1113,6 +1122,13 @@ function makeDraftRow(d) {
   });
   return row;
 }
+/* v49: the design-4 back arrows on step 1 and the listing page go
+   back to My drafts, the app's hub. Clicking btn-drafts runs the
+   same load the toolbar button does, and show() flushes any pending
+   draft save first. */
+$("btn-back-photos").addEventListener("click", () => $("btn-drafts").click());
+$("btn-back-draft").addEventListener("click", () => $("btn-drafts").click());
+
 $("btn-drafts").addEventListener("click", async (e) => {
   e.preventDefault();
   const list = $("drafts-list");
@@ -1186,9 +1202,15 @@ $("btn-close-drafts").addEventListener("click", () => show("step-photos"));
    still uses its own entered number for the whole batch). */
 let batchIncluded = [];
 
+/* v49: the confirm card heading and button carry the live count —
+   "N drafts, 1 category" and "Post all N" (design 4). The Post
+   button stays disabled until at least one draft is in the batch
+   and a category number is entered. */
 function updateBatchConfirm() {
-  $("btn-batch-confirm").disabled =
-    batchIncluded.length === 0 || !$("b-category").value.trim();
+  const n = batchIncluded.length;
+  $("batch-confirm-heading").textContent = n + " draft" + (n === 1 ? "" : "s") + ", 1 category";
+  $("btn-batch-confirm").textContent = "Post all" + (n ? " " + n : "");
+  $("btn-batch-confirm").disabled = n === 0 || !$("b-category").value.trim();
 }
 
 function openBatchPanel(fulls) {
@@ -1205,18 +1227,40 @@ function openBatchPanel(fulls) {
   });
   const list = $("batch-review-list");
   list.innerHTML = "";
-  if (batchIncluded.length) {
-    const h = document.createElement("h4");
-    h.textContent = "Ready to post (" + batchIncluded.length + ")";
-    list.appendChild(h);
-    batchIncluded.forEach((d) => {
-      const row = document.createElement("div");
-      row.className = "batch-row";
-      row.innerHTML = '<div class="bt">' + esc(d.title || "(untitled)") + "</div>" +
-        '<div class="bp">$' + esc(String(d.price)) + "</div>";
-      list.appendChild(row);
+  /* v49: each row is a checkbox, a thumb, a title and a date
+     (design 4). Unticking a row drops that draft from the batch and
+     updates the confirm card; ticking it again puts it back. The
+     price is not shown on the row — it lives on the listing page. */
+  batchIncluded.forEach((d) => {
+    const row = document.createElement("div");
+    row.className = "batch-row";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "draft-check";
+    box.checked = true;
+    box.setAttribute("aria-label", "Include in batch");
+    box.addEventListener("change", () => {
+      if (box.checked) {
+        if (!batchIncluded.some((x) => x.id === d.id)) batchIncluded.push(d);
+      } else {
+        batchIncluded = batchIncluded.filter((x) => x.id !== d.id);
+      }
+      updateBatchConfirm();
     });
-  } else {
+    row.appendChild(box);
+    if (d.photos && d.photos[0]) {
+      const img = document.createElement("img");
+      img.src = "/photos/" + d.photos[0];
+      img.alt = "";
+      row.appendChild(img);
+    }
+    const bt = document.createElement("div");
+    bt.className = "bt";
+    bt.innerHTML = "<b>" + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated);
+    row.appendChild(bt);
+    list.appendChild(row);
+  });
+  if (!batchIncluded.length) {
     list.innerHTML = "<p class='hint'>Nothing ready to post. Fix the skipped drafts below first.</p>";
   }
   const exc = $("batch-excluded");
@@ -1234,6 +1278,7 @@ function openBatchPanel(fulls) {
   $("batch-note").classList.add("hidden");
   $("batch-results").innerHTML = "";
   $("batch-progress").classList.add("hidden");
+  $("batch-confirm").classList.remove("hidden");
   $("btn-batch-confirm").classList.remove("hidden");
   $("btn-batch-cancel").classList.remove("hidden");
   $("btn-batch-done").classList.add("hidden");
@@ -1365,6 +1410,7 @@ function showBatchFollowups(signals) {
     /* Keep an exit open: cancel stays visible and enabled so the
        seller can bail to drafts instead of filling the form. */
     $("batch-ship-from-form").classList.remove("hidden");
+    $("batch-confirm").classList.remove("hidden");
     $("btn-batch-cancel").classList.remove("hidden");
     $("btn-batch-cancel").disabled = false;
     return true;
@@ -1372,12 +1418,14 @@ function showBatchFollowups(signals) {
   if (signals.needsPick) {
     renderBatchPolicyPick(signals.policies, signals.pickError);
     $("batch-policy-pick-form").classList.remove("hidden");
+    $("batch-confirm").classList.remove("hidden");
     $("btn-batch-cancel").classList.remove("hidden");
     $("btn-batch-cancel").disabled = false;
     return true;
   }
   if (signals.needsScope) {
     $("batch-scope-box").classList.remove("hidden");
+    $("batch-confirm").classList.remove("hidden");
     $("btn-batch-cancel").classList.remove("hidden");
     $("btn-batch-cancel").disabled = false;
     return true;
@@ -1459,6 +1507,13 @@ $("btn-batch-confirm").addEventListener("click", async () => {
         $("batch-policy-pick-form").classList.contains("hidden") &&
         $("batch-scope-box").classList.contains("hidden")) {
       $("btn-batch-cancel").classList.add("hidden");
+    }
+    /* v49: hide the whole confirm card once both of its buttons are
+       hidden, so it does not sit empty after a run. When a follow-up
+       form is showing, Cancel stays visible, so the card stays. */
+    if ($("btn-batch-confirm").classList.contains("hidden") &&
+        $("btn-batch-cancel").classList.contains("hidden")) {
+      $("batch-confirm").classList.add("hidden");
     }
   }
 });
@@ -1733,6 +1788,8 @@ async function prefillListing(opts) {
   /* A restored category number also restores its required-details
      section (prefilled from the draft's saved specifics). */
   if (pre.category_id) loadCategoryAspects();
+  /* v49: the collapsed-row summaries follow the restored values. */
+  updateListingSummaries();
 }
 
 /* v24: save the current listing-page values as the one usual-settings
@@ -1837,6 +1894,7 @@ $("ship-carrier").addEventListener("change", () => {
   populateShipService();
   $("ship-service-note").classList.add("hidden");
   fetchCarrierServices();
+  updateShippingSummary();
   scheduleSave();
 });
 $("ship-service").addEventListener("change", () => {
@@ -1844,9 +1902,17 @@ $("ship-service").addEventListener("change", () => {
   $("ship-service-other").classList.toggle("hidden", v !== "__OTHER__");
   if (v === "__OTHER__") $("ship-service-other").focus();
   else onShipServicePicked();
+  updateShippingSummary();
 });
 $("ship-service-other").addEventListener("change", () => {
   if ($("ship-service").value === "__OTHER__") onShipServicePicked();
+  updateShippingSummary();
+});
+/* v49: the package boxes drive the Shipping summary live, and they
+   now autosave on input (before, they only saved when another field
+   or the publish step saved the draft). */
+["p-weight-lb", "p-weight-oz", "p-length", "p-width", "p-height"].forEach((id) => {
+  $(id).addEventListener("input", () => { updateShippingSummary(); scheduleSave(); });
 });
 $("p-fulfillment").addEventListener("input", refreshShippingChooser);
 $("required-aspects").addEventListener("input", scheduleSave);
@@ -2262,6 +2328,9 @@ async function fetchShippingPolicies() {
         "The app needs one new permission to read your shipping policies.") +
         "</p><p class='hint'><a class='primary btnlink' href='/api/ebay/connect'>Connect eBay</a></p>";
       errEl.classList.remove("hidden");
+      /* v49: the error lives inside the collapsed Shipping row — open
+         the row so it is actually seen. */
+      openListingRow("row-shipping");
       return;
     }
     shippingPolicies = r.policies || [];
@@ -2271,12 +2340,22 @@ async function fetchShippingPolicies() {
     errEl.innerHTML = "<p style='margin:0'>" + esc(e.message) + "</p>" +
       "<p class='hint'><button id='btn-shipping-retry' class='ghost' type='button'>Try again</button></p>";
     errEl.classList.remove("hidden");
+    openListingRow("row-shipping");
     const retry = $("btn-shipping-retry");
     if (retry) retry.addEventListener("click", fetchShippingPolicies);
   } finally {
     sel.disabled = false;
     shippingFetchInFlight = false;
   }
+}
+
+/* v49: open one collapsed listing row by id. The Shipping row opens
+   itself whenever a shipping error, pick screen or create form needs
+   to be seen — a closed row would hide the very thing the seller
+   has to act on. */
+function openListingRow(id) {
+  const row = $(id);
+  if (row) row.open = true;
 }
 
 function renderShippingDropdown() {
@@ -2334,6 +2413,71 @@ function refreshShippingChooser() {
   if (match && match.service_code) {
     syncShipPickers(match.carrier, match.service_code);
   }
+  updateShippingSummary();
+}
+
+/* v49: live summary lines for the collapsed listing rows (design 4).
+   Shipping shows the current carrier, service, weight in lb and oz,
+   and dimensions, so the choice is visible without opening the row;
+   item specifics shows the row names, falling back to "(n rows)";
+   shop policy numbers and the manual block are fixed labels in the
+   HTML. updateListingSummaries() runs on every change that can move
+   a summary: carrier/service pick, package input, policy pick,
+   item-specifics edit, and listing-page prefill. */
+function shippingSummaryText() {
+  const carrier = ($("ship-carrier").value || "").trim();
+  const code = shipServiceCode();
+  const lb = ($("p-weight-lb").value || "").trim();
+  const oz = ($("p-weight-oz").value || "").trim();
+  const len = ($("p-length").value || "").trim();
+  const wid = ($("p-width").value || "").trim();
+  const hei = ($("p-height").value || "").trim();
+  const parts = [];
+  if (carrier) parts.push(carrier);
+  if (code) parts.push(createServiceLabel(code));
+  const weight = [lb ? lb + " lb" : "", oz ? oz + " oz" : ""].filter(Boolean).join(" ");
+  if (weight) parts.push(weight);
+  const dims = [len, wid, hei].filter(Boolean);
+  if (dims.length) parts.push(dims.join(" × ") + " in");
+  if (parts.length) return parts.join(" · ");
+  const policyId = ($("p-fulfillment").value || "").trim();
+  const match = shippingPolicies.find((p) => p.id === policyId);
+  if (match) {
+    const type = match.cost_type ? shippingTypeLine(match.cost_type)
+      : (match.local_pickup ? "Local pickup only." : "Unknown type.");
+    return (match.name || "Unnamed policy") + " · " + type;
+  }
+  return "Not set yet.";
+}
+
+/* Pure helper, unit-tested: the item-specifics summary from the row
+   names (first three, then an ellipsis) or "(n rows)" when no name
+   is filled in yet. */
+function attrsSummaryText(names, rowCount) {
+  const filled = (names || []).map((n) => String(n || "").trim()).filter(Boolean);
+  if (filled.length) {
+    return filled.slice(0, 3).join(" · ") + (filled.length > 3 ? " …" : "");
+  }
+  return "(" + rowCount + " row" + (rowCount === 1 ? "" : "s") + ")";
+}
+
+function updateShippingSummary() {
+  const el = $("shipping-summary");
+  if (el) el.textContent = shippingSummaryText();
+}
+
+function updateAttrsSummary() {
+  const el = $("attrs-summary");
+  if (!el) return;
+  const names = Array.from(document.querySelectorAll("#attrs .attr-row .ak"))
+    .map((input) => input.value);
+  const rows = document.querySelectorAll("#attrs .attr-row").length;
+  el.textContent = attrsSummaryText(names, rows);
+}
+
+function updateListingSummaries() {
+  updateShippingSummary();
+  updateAttrsSummary();
 }
 
 /* v42: carrier + service picker (like eBay's lister). The carrier
@@ -2362,10 +2506,15 @@ function carrierServiceLabels() {
      Labels are display-only: the code itself is always sent verbatim,
      so a label can never change what eBay receives. These two are
      NOT added to the 11-code picker catalog (DOCUMENTED_DOMESTIC_SERVICES):
-     they are harvested labels only. */
-  return { "USPSGroundAdvantage": "USPS Ground Advantage",
+     they are harvested labels only.
+     v49: the catalog is 10 codes now, not 11. USPSGroundAdvantage
+     is gone (eBay's LSAS checker rejects it on this account — the
+     Nov 8 live create failed with 20403 UNKNOWN_SHIPPING_SERVICE);
+     Ground Advantage is offered as USPSParcel only, labeled
+     "USPS Ground Advantage", and the separate "USPS Parcel Post"
+     entry is gone because it was the same code for the same service. */
+  return { "USPSParcel": "USPS Ground Advantage",
            "USPSPriority": "USPS Priority Mail",
-           "USPSParcel": "USPS Parcel Post",
            "UPSGround": "UPS Ground",
            "UPSGroundSaver": "UPS Ground Saver",
            "UPS3rdDay": "UPS 3 Day Select",
@@ -2376,6 +2525,21 @@ function carrierServiceLabels() {
            "FedEx2Day": "FedEx 2 Day",
            "FedExExpressSaver": "FedEx Express Saver",
            "FedExSmartPost": "FedEx Ground Economy" };
+}
+
+/* v49: one eBay service code -> the code this account must send.
+   Mirrors _canonical_service_code on the server: USPSGroundAdvantage
+   is rejected by eBay's LSAS checker on this account (Nov 8 live
+   create, 20403 UNKNOWN_SHIPPING_SERVICE), and eBay's own code for
+   the same Ground Advantage service is USPSParcel. Used by the
+   create form (createServiceCodeFor), by the prefilled create form,
+   and by restoreShipService so a draft saved with the old code
+   still restores onto the USPSParcel option. FedExSmartPost is
+   left as-is: whether create accepts it is unproven, and the retry
+   test settles it. */
+function canonicalServiceCode(code) {
+  const c = String(code || "").trim();
+  return c === "USPSGroundAdvantage" ? "USPSParcel" : c;
 }
 
 async function fetchCarrierServices() {
@@ -2466,7 +2630,11 @@ function restoreShipService(code) {
   /* Select a service code in the picker: the dropdown value when
      the code is listed, else the Other box with the code typed in.
      When the service list has not loaded yet, park the code and
-     apply it once the fetch lands. */
+     apply it once the fetch lands.
+     v49: the code is canonicalized first, so a draft saved with
+     USPSGroundAdvantage restores onto the USPSParcel option the
+     picker actually offers. */
+  code = canonicalServiceCode(code);
   const sel = $("ship-service");
   const other = $("ship-service-other");
   if (!code) {
@@ -2591,6 +2759,10 @@ async function openCreateFormPrefilled(carrier, code) {
      empty for the seller to fill. Review-before-create still stands. */
   await openCreateForm();
   createFromCarrierPick = true;
+  /* v49: canonicalize first, so a Ground Advantage pick prefills
+     the USPSParcel option (and the name reads "USPS Ground
+     Advantage"), never the rejected code in the Other box. */
+  code = canonicalServiceCode(code);
   const label = createServiceLabel(code);
   if (!$("pc-name").value) $("pc-name").value = "Calculated " + label;
   $("pc-dom-cost-type").value = "CALCULATED";
@@ -2629,6 +2801,9 @@ function openShippingPick(policies, message, problems) {
   }
   msg.textContent = text;
   msg.classList.remove("hidden");
+  /* v49: the pick screen lives inside the collapsed Shipping row —
+     open the row first, or the seller never sees it. */
+  openListingRow("row-shipping");
   $("shipping-section").scrollIntoView();
   $("shipping-select").focus();
 }
@@ -2725,10 +2900,16 @@ let createRetry = false;
 function createServiceLabel(code) {
   /* v43: UPSGroundSaver and FedExSmartPost labeled — see the note on
      carrierServiceLabels() for the attestation. Harvested labels
-     only; not added to the picker catalog. */
-  const labels = { "USPSGroundAdvantage": "USPS Ground Advantage",
+     only; not added to the picker catalog.
+     v49: USPSParcel reads as "USPS Ground Advantage" (it IS that
+     service on this account), and USPSGroundAdvantage is kept here
+     for READING only — an old policy or saved draft may still carry
+     it, and it must display as the same service, never as a raw
+     code. Neither label ever sends a code; the code itself is
+     canonicalized before anything leaves (canonicalServiceCode). */
+  const labels = { "USPSParcel": "USPS Ground Advantage",
+                   "USPSGroundAdvantage": "USPS Ground Advantage",
                    "USPSPriority": "USPS Priority Mail",
-                   "USPSParcel": "USPS Parcel Post",
                    "UPSGround": "UPS Ground",
                    "UPSGroundSaver": "UPS Ground Saver",
                    "UPS3rdDay": "UPS 3 Day Select",
@@ -2854,9 +3035,15 @@ function createServiceResolved(prefix, n, form) {
 }
 
 function createServiceCodeFor(prefix, n, form) {
+  /* v49: the code is canonicalized here too (the server maps it
+     again, so both ends agree): a form carrying USPSGroundAdvantage
+     — picked before v49, or typed in Other — builds a body sending
+     USPSParcel, never the code eBay rejects on this account. */
   const v = form[prefix + "_service_" + n] || "";
-  if (v === "__OTHER__") return form[prefix + "_service_" + n + "_other"] || "";
-  return v;
+  if (v === "__OTHER__") {
+    return canonicalServiceCode(form[prefix + "_service_" + n + "_other"] || "");
+  }
+  return canonicalServiceCode(v);
 }
 
 function createServiceDisplay(prefix, n, form) {
@@ -2962,6 +3149,9 @@ async function openCreateForm() {
   $("policy-create-note").classList.add("hidden");
   $("policy-create-review").classList.add("hidden");
   $("policy-create-form").classList.remove("hidden");
+  /* v49: the create form lives inside the collapsed Shipping row —
+     open the row first, or the form is never seen. */
+  openListingRow("row-shipping");
   $("policy-create-form").scrollIntoView();
   updatePolicyCreateCounts();
   if (!createServicesFetched) {
