@@ -1072,3 +1072,13 @@ remembers the open draft.
   rows), fit_check.py check 20 (Hide button present in the card,
   ghost labeled Hide, Hide wiring, wrapping card header, 40px tap
   target, heading + Hide fit at 320dp).
+- Release catch: the first v55 build went out with
+  build.gradle.kts still at 53/1.52 (last bumped in the v53
+  commit; v54 missed it too, so the 1.53 APK also installs as
+  1.52). The updater compares version.json against the installed
+  manifest version, and the header badge shows the manifest
+  versionName, so an unbumped build would be offered forever and
+  still show the old badge. Fix: bump build.gradle.kts with every
+  release, and fit_check.py check 21 now fails the build when the
+  gradle version and version.json disagree. The apk-v55 tag was
+  re-created at the fixed commit and the release rebuilt.

@@ -11,6 +11,7 @@ Run: python3 tests/fit_check.py (exit 0 = pass). It is a static audit,
 not a substitute for looking at the app on a real phone — but a build
 that fails here is not shipped.
 """
+import json
 import os
 import re
 import sys
@@ -23,6 +24,8 @@ HTML_PATH = os.path.join(REPO, "app", "src", "main", "python", "templates",
 JS_PATH = os.path.join(REPO, "app", "src", "main", "python", "static",
                         "app.js")
 PY_PATH = os.path.join(REPO, "app", "src", "main", "python", "app.py")
+GRADLE_PATH = os.path.join(REPO, "app", "build.gradle.kts")
+VERSION_PATH = os.path.join(REPO, "version.json")
 
 FAILURES = []
 
@@ -660,6 +663,29 @@ def main():
     check("heading + Hide fit on one line at 320dp",
           head_w + hide_w + 8 <= content320,
           "line %.0fpx <= content %.0fpx" % (head_w + hide_w + 8, content320))
+
+    # 21. v55: the APK's own version must match version.json. The
+    # updater compares version.json's versionCode against the
+    # installed app's manifest versionCode, and the header badge
+    # shows the manifest versionName — so a release whose
+    # build.gradle.kts was not bumped installs as the old version
+    # and the updater offers it forever. v54 shipped exactly that
+    # way (manifest 53/1.52, version.json 54/1.53). The gradle
+    # version is the source of truth for the build; version.json
+    # is what the updater reads, so the two must agree or the
+    # build does not ship.
+    with open(VERSION_PATH, encoding="utf-8") as f:
+        ver = json.load(f)
+    with open(GRADLE_PATH, encoding="utf-8") as f:
+        gradle = f.read()
+    check("gradle versionCode matches version.json",
+          re.search(r"versionCode\s*=\s*%d\b" % ver["versionCode"],
+                    gradle) is not None,
+          "version.json says %d" % ver["versionCode"])
+    check("gradle versionName matches version.json",
+          re.search(r'versionName\s*=\s*"%s"' %
+                    re.escape(ver["versionName"]), gradle) is not None,
+          "version.json says %s" % ver["versionName"])
 
     print()
 
