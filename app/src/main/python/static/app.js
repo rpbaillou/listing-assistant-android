@@ -18,6 +18,16 @@ let autoDraftId = null;
 let autoDraftStale = false;
 let autoDraftQueue = Promise.resolve();
 let resumeDraftId = null;
+/* v54: resumeCheck resolves when the launch-time resume restore has
+   finished (or found nothing) — photo intake waits on it, so a photo
+   taken while the restore is still loading reuses the remembered
+   draft instead of starting a second one. Assigned at the bottom,
+   where checkResumeDraft() runs. */
+let resumeCheck = Promise.resolve();
+/* v54: photos picked or taken but not yet confirmed on the server.
+   The step-1 "Saving…" note counts these, so he can see when it is
+   safe to leave the page. */
+let savePendingPhotos = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -53,6 +63,28 @@ async function api(path, opts = {}) {
     throw new Error("Request failed (" + r.status + ")");
   }
   return data;
+}
+
+async function apiWithRetries(path, opts, attempts) {
+  /* v54: one failed save must not split the listing — retry the same
+     request a couple of times before giving up. "Draft not found" is
+     never retried: the draft is gone, and the caller starts fresh.
+     A retry that lands after a lost response could append a photo
+     twice, but that needs a lost response after a successful save on
+     this local server — the page would have died with it, so no
+     retry runs. */
+  const tries = attempts || 3;
+  let lastErr = null;
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await api(path, opts);
+    } catch (e) {
+      lastErr = e;
+      if (String((e && e.message) || "").includes("Draft not found")) throw e;
+      if (i + 1 < tries) await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  throw lastErr;
 }
 
 /* ---------- step 1: photos ---------- */
@@ -563,7 +595,11 @@ let cameraTarget = "step1";
    appends one more (so he can snap several angles in a row). v36: a
    photo is NEVER silently dropped at the cap — when files do not fit,
    the note says so in plain words. */
-async function handlePickedFiles(fileList, replace) {
+async function handlePickedFiles(fileList, replace, preShrunk) {
+  /* v54: wait for the launch-time resume restore before touching the
+     auto draft, so a photo taken while it is still loading reuses
+     the remembered draft instead of starting a second one. */
+  await resumeCheck;
   const room = replace ? maxPhotos : photoRoomFor(selectedFiles.length);
   const all = Array.from(fileList || []);
   const picked = all.slice(0, room);
@@ -572,6 +608,19 @@ async function handlePickedFiles(fileList, replace) {
   skippedCount = 0;
   const addedEntries = [];
   for (let i = 0; i < picked.length; i++) {
+    /* v54: camera photos arrive already shrunk to 2048px/q85 by the
+       native downscale — decoding and re-encoding them here was a
+       second shrink for nothing, and the slowest step in the line.
+       Gallery picks still go through downscaleFile. */
+    if (preShrunk) {
+      const u = URL.createObjectURL(picked[i]);
+      const entry = { blob: picked[i],
+                      name: "photo" + (selectedFiles.length + i + 1) + ".jpg",
+                      url: u };
+      selectedFiles.push(entry);
+      addedEntries.push(entry);
+      continue;
+    }
     const r = await downscaleFile(picked[i], selectedFiles.length + i);
     if (r.skipped) { skippedCount++; continue; }
     const u = URL.createObjectURL(r.blob);
@@ -628,6 +677,21 @@ function showAutoDraftError() {
   showError("Your photos didn't save to the app yet — they are still on this screen and will go with your listing.");
 }
 
+function updateSaveNote() {
+  /* v54: "Saving N photos…" while any picked photo is still waiting
+     on the server, hidden when the line is empty. The count is the
+     photos, not the queue steps — one slow upload still reads 1. */
+  const el = $("save-note");
+  if (!el) return;
+  if (savePendingPhotos > 0) {
+    el.textContent = "Saving " + savePendingPhotos +
+      (savePendingPhotos === 1 ? " photo…" : " photos…");
+    el.classList.remove("hidden");
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
 function recordResumeDraft(draftId) {
   /* Remember the open draft so launch can offer it back. Fire and
      forget: a failed record just means no resume card, never a
@@ -643,12 +707,16 @@ async function syncPickedPhotosToAutoDraft(entries, replace) {
   /* Save picked/taken photos to the auto draft, in queue order.
      Choose photos replaces the set, so the old auto draft is
      deleted with it (no orphan draft lingers); Take photo appends.
-     The first photo creates the draft. On any failure the draft is
-     abandoned (autoDraftId cleared, stale set) and the photos on
-     this screen stay the truth — Analyze/Quick post upload them
-     directly, and the abandoned draft stays visible in My drafts,
-     deletable there. */
+     The first photo creates the draft. v54: a failed save retries
+     the SAME draft (bounded, see apiWithRetries) and keeps its id
+     even when the retries run out, so the next photo retries it
+     instead of starting a second draft and splitting the listing.
+     Only a deleted draft ("Draft not found") clears the id. The
+     photos on this screen stay the truth throughout — Analyze/
+     Quick post upload them directly, and the abandoned draft stays
+     visible in My drafts, deletable there. */
   if (!entries.length && !autoDraftId) return;
+  if (entries.length) { savePendingPhotos += entries.length; updateSaveNote(); }
   return queueAutoDraft(async () => {
     try {
       if (replace && autoDraftId) {
@@ -663,13 +731,21 @@ async function syncPickedPhotosToAutoDraft(entries, replace) {
       }
       const fd = new FormData();
       entries.forEach((e) => fd.append("photos", e.blob, e.name));
-      await api("/api/drafts/" + autoDraftId + "/photos",
-                { method: "POST", body: fd });
+      await apiWithRetries("/api/drafts/" + autoDraftId + "/photos",
+                           { method: "POST", body: fd });
       autoDraftStale = false;
     } catch (e) {
-      autoDraftId = null;
+      /* v54: any failure except a deleted draft keeps the SAME draft
+         id — the next photo retries it instead of starting a second
+         draft. A deleted draft clears the id, because a fresh draft
+         is the right answer then. */
+      if (String((e && e.message) || "").includes("Draft not found")) {
+        autoDraftId = null;
+      }
       autoDraftStale = true;
       showAutoDraftError();
+    } finally {
+      if (entries.length) { savePendingPhotos -= entries.length; updateSaveNote(); }
     }
   });
 }
@@ -839,10 +915,11 @@ async function onCameraPhoto(dataUrl) {
     const blob = await (await fetch(dataUrl)).blob();
     const file = new File([blob], "camera-" + Date.now() + ".jpg", { type: "image/jpeg" });
     if (cameraTarget === "draft") {
-      await uploadDraftPhotos([file]);
+      /* v54: the native camera already shrank this to 2048px/q85. */
+      await uploadDraftPhotos([file], true);
       return;
     }
-    handlePickedFiles([file], false);
+    handlePickedFiles([file], false, true);
   } catch (e) {
     showError("Couldn't read that photo.");
   }
@@ -858,6 +935,8 @@ async function analyzePhotos() {
   $("spinner").classList.remove("hidden");
   $("btn-analyze").disabled = true;
   try {
+    await resumeCheck; /* v54: let the launch restore land first, so
+      Analyze reuses the remembered draft instead of racing it. */
     await autoDraftQueue.catch(() => {});
     let done = false;
     if (autoDraftId && !autoDraftStale) {
@@ -905,6 +984,7 @@ async function quickPostPhotos() {
   hideError();
   $("btn-quick-post").disabled = true;
   try {
+    await resumeCheck; /* v54: same gate as Analyze (see above). */
     await autoDraftQueue.catch(() => {});
     let done = false;
     if (autoDraftId && !autoDraftStale) {
@@ -1052,12 +1132,15 @@ function hideDraftPhotoError() { $("draft-photo-error").classList.add("hidden");
    only — an append never replaces existing photos (reorder via the v40
    move endpoint), and the 24 cap is enforced there with a plain
    message, not a silent drop. */
-async function uploadDraftPhotos(files) {
+async function uploadDraftPhotos(files, preShrunk) {
   if (!draft || !draft.id) return;
   hideDraftPhotoError();
   $("draft-photo-note").classList.add("hidden");
   const downscaled = [];
   for (const f of files) {
+    /* v54: camera photos arrive already shrunk to 2048px/q85 by the
+       native downscale — same skip as the step-1 path. */
+    if (preShrunk) { downscaled.push({ blob: f, name: f.name || "photo.jpg" }); continue; }
     const r = await downscaleFile(f, (draft.photos || []).length + downscaled.length);
     if (!r.skipped) downscaled.push(r);
   }
@@ -1979,8 +2062,11 @@ api("/api/config").then((c) => {
 
 /* v50: return to the draft he had open. Runs after the config fetch
    so the photo cap is already set when a photo-only draft restores
-   its photos into the grid. */
-checkResumeDraft();
+   its photos into the grid. v54: the promise is kept as resumeCheck
+   so photo intake can wait on it — a photo taken while the restore
+   is still loading reuses the remembered draft instead of starting
+   a second one. */
+resumeCheck = checkResumeDraft();
 
 /* v50: the resume Continue flow, as a named function so node tests
    can call it directly. Opens the remembered draft in the listing

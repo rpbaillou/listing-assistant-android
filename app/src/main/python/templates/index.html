@@ -53,6 +53,10 @@
     </div>
     <div id="thumbs" class="thumbs photo-grid"></div>
     <p id="photo-count" class="hint">0 of 24 photos</p>
+    <!-- v54: shows while photos are still saving to the app, so he can
+         see when it is safe to leave the page. Hidden when the line
+         is empty. -->
+    <p id="save-note" class="hint hidden"></p>
     <div class="photobtns">
       <button class="primary" id="btn-take-photo" type="button">Take photo</button>
       <label class="ghost" for="photo-input">Choose photos</label>

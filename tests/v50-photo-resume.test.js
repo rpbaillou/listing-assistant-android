@@ -464,8 +464,10 @@ async function drainAutoDraft() {
   server.failAppend = true;
   await sandbox.handlePickedFiles([fakeFile("f.jpg")], false);
   await drainAutoDraft();
-  check("a failed photo save marks the draft stale and shows plain words",
-    ctx("autoDraftStale") === true && ctx("autoDraftId") === null &&
+  // v54: the failed save marks the draft stale but KEEPS its id, so the
+  // next photo retries the same draft instead of starting a second one.
+  check("a failed photo save marks the draft stale, keeps the same draft, and shows plain words",
+    ctx("autoDraftStale") === true && !!ctx("autoDraftId") &&
     !$("analyze-error").classList.contains("hidden") &&
     $("analyze-error").textContent.includes("didn't save to the app yet"));
   server.failAppend = false;

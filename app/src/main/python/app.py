@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 import zipfile
@@ -395,6 +396,21 @@ def _save_image_file(fs, out_path):
         return False
     try:
         img = Image.open(fs.stream)
+        # v54: bytes already within the 2048px cap need no second
+        # decode/re-encode — camera photos are shrunk natively and
+        # gallery picks by the JS downscale, both at 2048/q85, so
+        # re-shrinking them here was the slowest step in the save
+        # line. Keep them as-is. Anything bigger, non-JPEG, non-RGB
+        # (a CMYK JPEG still needs its color convert), or unreadable
+        # falls through to the full normalize path below. The upload
+        # stream is seekable (Werkzeug spools uploads to a temp
+        # file), so the copy re-reads from the start.
+        if img.format == "JPEG" and img.mode == "RGB" \
+                and img.size[0] <= 2048 and img.size[1] <= 2048:
+            fs.stream.seek(0)
+            with open(out_path, "wb") as out:
+                shutil.copyfileobj(fs.stream, out)
+            return True
         img = img.convert("RGB")
         img.thumbnail((2048, 2048))
         img.save(out_path, "JPEG", quality=85)
@@ -3886,7 +3902,17 @@ def api_draft_move_photo(draft_id, index):
 
 @app.route("/photos/<path:rel>")
 def serve_photo(rel):
-    return send_from_directory(PHOTOS_DIR, rel)
+    resp = send_from_directory(PHOTOS_DIR, rel)
+    # v54: a replaced photo must show its new bytes, never a cached
+    # copy. The old 12h cache meant an edited thumbnail kept showing
+    # the pre-edit picture on the draft page and after a
+    # restart/restore, even though the edited bytes had landed.
+    # no-cache forces a revalidation on every load, so the current
+    # file is always what shows (an unchanged photo still answers
+    # 304, so this costs nothing on a normal view).
+    resp.cache_control.no_cache = True
+    resp.cache_control.max_age = 0
+    return resp
 
 
 if __name__ == "__main__":

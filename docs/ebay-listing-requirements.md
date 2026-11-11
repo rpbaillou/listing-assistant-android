@@ -965,3 +965,84 @@ remembers the open draft.
   List hidden; non-death messages do not re-fetch; failed status
   check never throws), fit_check.py check 18 (Connect button in a
   wrapping row, no "in this browser" left).
+
+## v54: round X buttons, breathing room, edited thumbnails, the save line drains, one listing never splits
+
+- Live v1.52 bugs (Nov 11, Barbie listing): he took 8 photos, the
+  camera count said 8, only 2 were saved when he tapped Done; the
+  rest trickled in later, and a restart lost the ones still waiting.
+  The set then split into two drafts (a draft of 3 and a new
+  listing of the rest). Editing the 2 saved photos did not change
+  their thumbnails. The X buttons on the photo grid rendered as
+  tall ovals, and the buttons crowded the neighboring photos.
+- X buttons oval: the global `button` rule in style.css forces
+  min-height 48px on every button. `.thumb-x` sets 26x26px but no
+  min-height, so it rendered 26 wide by 48 tall — an oval with a
+  50% radius. Fix: `min-height: 0` on `.thumb-x`, the same escape
+  `#btn-resume-dismiss` already uses. Covers the step-1 strip and
+  the draft strip (same class).
+- Grid crowding: `.thumbs.photo-grid` inherited gap 0.5rem (8px)
+  from `.thumbs`, while the X sticks out 8px (top/right -8px) and
+  the Edit pill sticks out 8px (bottom/left -8px) — the buttons ate
+  the whole gap and touched the next photo. Fix: gap 1.25rem
+  (20px) on `.thumbs.photo-grid`, which clears both 8px overhangs
+  with room to spare. The 2-column square grid and the
+  drag-to-reorder indicators are unchanged.
+- Edited thumbnails stale: a photo edit replaces the same file path
+  (api_draft_replace_photo overwrites folder/N.jpg),
+  renderDraftPhotos sets img.src="/photos/"+p with no cache
+  buster, and serve_photo answered with Flask's default 12h cache
+  — so the draft page and the restart/restore fetch kept showing
+  the pre-edit picture even though the edited bytes had landed.
+  Fix: serve_photo sends `Cache-Control: no-cache, max-age=0`, so
+  every load revalidates and the current file is always what shows
+  (an unchanged photo still answers 304). The step-1 strip is
+  untouched: it uses blob object URLs, already fresh per edit.
+- Save line drains: the auto-draft upload queue lives only in the
+  page, so photos still waiting in it die when the page goes away
+  (Done, restart). Each upload was slow twice over: the JS
+  downscaleFile re-decoded and re-encoded camera photos the native
+  camera had already shrunk to 2048px/q85, and the server
+  _save_image_file PIL-decoded and re-saved every upload. Fix:
+  the camera path skips the JS downscale (onCameraPhoto passes
+  preShrunk through handlePickedFiles and uploadDraftPhotos;
+  gallery picks still shrink), and _save_image_file keeps an RGB
+  JPEG already within the 2048px cap byte for byte (anything
+  bigger, non-JPEG, or non-RGB still takes the full normalize
+  path). A visible "Saving N photos…" note counts the photos
+  picked but not yet confirmed on the server, and hides when the
+  line is empty — so he can see when it is safe to leave. The
+  24-photo cap, the 2048px cap, and first-photo-is-main order are
+  unchanged.
+- Never split: two proven mechanisms made a second auto draft.
+  (a) Any auto-draft sync failure nulled autoDraftId, so the next
+  photo created a brand-new auto draft. Fix: the append retries
+  the same draft (apiWithRetries, 3 attempts), and a failure that
+  keeps failing keeps the id and marks the draft stale — the next
+  photo retries it. Only a deleted draft ("Draft not found")
+  clears the id, because a fresh draft is the right answer then.
+  (b) After a restart, photo intake was not gated on the resume
+  restore finishing (checkResumeDraft runs async on load), so a
+  photo taken before the restore completed also started a new
+  draft. Fix: the load-time restore promise is kept as resumeCheck
+  and handlePickedFiles, analyzePhotos, and quickPostPhotos await
+  it first, so intake reuses the remembered draft. Known edge,
+  unchanged from v50: if the draft is deleted in My drafts
+  mid-session, the photos taken before the deletion are on screen
+  but not in the fresh draft — Analyze's stale fallback is the way
+  back for those.
+- Tests: tests/test_photo_cache_bust.py (no-cache header with ETag;
+  a replaced photo serves its new bytes, not the cached old ones),
+  tests/test_save_image_fastpath.py (small RGB JPEG kept byte
+  identical; big JPEG still resized; PNG still converts; CMYK and
+  grayscale JPEGs still fall through to RGB), tests/v54-photos.test.js
+  (8 rapid camera photos all land with the Saving note tracking
+  them, camera path uses 0 canvases while a gallery pick uses 1,
+  restart after the drain restores everything with no second draft,
+  failed appends retry the same draft, a deleted draft starts
+  exactly one fresh draft, a photo during a slow restore lands in
+  the resume draft), fit_check.py check 19 (X round, grid gap
+  clears both overhangs, drag indicators survive, Saving note
+  present and hidden, no-cache on /photos/, resume gate and retry
+  wiring). The v50 stale-save test was updated to the v54 behavior
+  (a failed save keeps the draft id).

@@ -22,6 +22,7 @@ HTML_PATH = os.path.join(REPO, "app", "src", "main", "python", "templates",
                           "index.html")
 JS_PATH = os.path.join(REPO, "app", "src", "main", "python", "static",
                         "app.js")
+PY_PATH = os.path.join(REPO, "app", "src", "main", "python", "app.py")
 
 FAILURES = []
 
@@ -84,6 +85,8 @@ def main():
         html = f.read()
     with open(JS_PATH, encoding="utf-8") as f:
         js = f.read()
+    with open(PY_PATH, encoding="utf-8") as f:
+        py = f.read()
     rules = parse_rules(css)
 
     # 1. Viewport meta (without it, phones render a desktop-width page).
@@ -553,6 +556,68 @@ def main():
     check("no 'in this browser' left in the UI",
           "in this browser" not in js,
           "%d occurrences" % js.count("in this browser"))
+
+    # 19. v54 photo fixes: round X buttons, breathing room in the grid,
+    # edited thumbnails that show the edit, a visible Saving note, and
+    # one listing that never splits into two drafts.
+    # The X is 26x26 with a 50% radius, but the global button rule
+    # forces min-height 48px — without its own min-height 0 the X
+    # renders 26 wide by 48 tall, an oval. The escape must be on the
+    # rule itself (the global rule wins on specificity otherwise).
+    x = rules.get(".thumb-x", {})
+    check("X button escapes the global 48px min-height, stays round",
+          x.get("min-height") == "0" and x.get("width") == "26px" and
+          x.get("height") == "26px" and x.get("border-radius") == "50%",
+          str(x))
+    # The grid gap must clear BOTH overhangs: the X sticks out 8px
+    # (top/right -8px) and the Edit pill sticks out 8px (bottom/left
+    # -8px), so the gap has to beat 16px. 1.25rem is 20px at a 16px
+    # root. The 2-column square grid and the drag indicators must
+    # survive the gap change. (px() takes no sign, so negatives are
+    # parsed here.)
+    def neg_px(value):
+        if value is None:
+            return None
+        m = re.match(r"^-?([\d.]+)(px|rem)$", value)
+        if not m:
+            return None
+        v = float(m.group(1))
+        return v * 16 if m.group(2) == "rem" else v
+    gap = px(rules.get(".thumbs.photo-grid", {}).get("gap"))
+    overhang = (abs(neg_px(rules.get(".thumb-x", {}).get("right")) or 0) +
+                abs(neg_px(rules.get(".thumb-edit", {}).get("left")) or 0))
+    check("photo grid gap clears both button overhangs",
+          gap is not None and gap > overhang,
+          "gap %.0fpx > overhang %.0fpx" % (gap or -1, overhang))
+    check("photo grid stays 2 columns, square cells",
+          rules.get(".thumbs.photo-grid", {}).get("grid-template-columns") == "1fr 1fr" and
+          rules.get(".thumbs.photo-grid .thumb-wrap", {}).get("aspect-ratio") == "1 / 1",
+          str(rules.get(".thumbs.photo-grid", {})))
+    check("drag indicators survive the gap change",
+          "box-shadow" in rules.get(".thumb-wrap.drop-before", {}) and
+          "box-shadow" in rules.get(".thumb-wrap.drop-after", {}))
+    # The Saving note exists in the page and starts hidden.
+    check("Saving note exists and starts hidden",
+          'id="save-note" class="hint hidden"' in html)
+    # An edited photo revalidates: /photos/ answers no-cache, so the
+    # draft page and the restore fetch always see the current file.
+    serve = py[py.find("def serve_photo"):]
+    serve = serve[:serve.find("\nif __name__")]
+    check("edited photos revalidate (no-cache on /photos/)",
+          "cache_control.no_cache = True" in serve and
+          "cache_control.max_age = 0" in serve)
+    # One listing never splits: intake waits on the launch restore,
+    # appends retry the same draft, and a failed save keeps its id.
+    check("photo intake waits on the launch restore",
+          "resumeCheck = checkResumeDraft();" in js and
+          js.count("await resumeCheck;") >= 3,
+          "%d resumeCheck awaits" % js.count("await resumeCheck;"))
+    check("appends retry the same draft on failure",
+          "async function apiWithRetries(" in js and
+          "apiWithRetries(\"/api/drafts/\" + autoDraftId + \"/photos\"" in js)
+    check("a failed save keeps the same draft id",
+          "keeps the SAME draft" in js and
+          '"Draft not found"' in js)
 
     print()
 
