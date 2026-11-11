@@ -1381,6 +1381,14 @@ $("btn-solds").addEventListener("click", async () => {
   loadSimilarItems();
 });
 
+/* v55: Hide folds the price-check results away. It only hides —
+   Check sold prices re-opens the card with a fresh check, exactly
+   as before, and picking a price still works either way. No
+   auto-hide: the card only closes when he taps Hide. */
+$("btn-solds-hide").addEventListener("click", () => {
+  $("sold-results").classList.add("hidden");
+});
+
 $("btn-solds-open").addEventListener("click", () => {
   const q = encodeURIComponent($("f-title").value.trim() || "vintage item");
   window.open(

@@ -619,6 +619,48 @@ def main():
           "keeps the SAME draft" in js and
           '"Draft not found"' in js)
 
+    # 20. v55 Hide button on the price-check results card: the card
+    # had no way to close once opened, so it sat as a big wall over
+    # the category fields. A ghost Hide button sits in the card
+    # header next to the heading; tapping it adds hidden to the
+    # card, and Check sold prices re-opens it with a fresh check.
+    # The header is a wrapping flex row (heading + button fit at
+    # 320dp on one line, and wrap rather than clip if they ever
+    # cannot), and the ghost button reuses the verified ghost
+    # contrast pair (#2a63d8 on white, check 8).
+    sold = html.find('id="sold-results"')
+    hide = html.find('id="btn-solds-hide"')
+    sold_open = html.find('id="btn-solds-open"')
+    check("Hide button exists in the results card",
+          0 < sold < hide < sold_open,
+          "card at %d, Hide at %d, sold-open at %d" % (sold, hide, sold_open))
+    check("Hide button is the ghost button, labeled Hide",
+          'id="btn-solds-hide" class="ghost" type="button">Hide<' in html)
+    check("Hide wiring adds hidden to the card",
+          '"btn-solds-hide"' in js and
+          '$("sold-results").classList.add("hidden")' in js)
+    check("card header is a wrapping flex row",
+          rules.get(".card-head", {}).get("display") == "flex" and
+          rules.get(".card-head", {}).get("flex-wrap") == "wrap",
+          str(rules.get(".card-head", {})))
+    check("card heading takes the free space, never clips",
+          rules.get(".card-head h3", {}).get("flex") == "1 1 auto" and
+          rules.get(".card-head h3", {}).get("min-width") == "0",
+          str(rules.get(".card-head h3", {})))
+    check("Hide button is a 40px ghost tap target",
+          rules.get("button.ghost", {}).get("min-height") == "40px",
+          str(rules.get("button.ghost", {})))
+    # Heading + Hide on one line at 320dp: "Price check" (11 chars,
+    # h3 ~1.17em bold, ~0.52em/char) + the ghost button ("Hide",
+    # 4 chars at 1rem, ~0.55em/char, plus 0.9rem padding each side
+    # and a 2px border) + the 0.5rem header gap. The row wraps
+    # anyway, so this is a fit check, not a clipping risk.
+    head_w = 11 * 18.7 * 0.52
+    hide_w = 4 * 16 * 0.55 + 2 * 14.4 + 2
+    check("heading + Hide fit on one line at 320dp",
+          head_w + hide_w + 8 <= content320,
+          "line %.0fpx <= content %.0fpx" % (head_w + hide_w + 8, content320))
+
     print()
 
 

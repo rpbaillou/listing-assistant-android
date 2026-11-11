@@ -169,6 +169,12 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .card { background: #f8f9fc; border: 1px solid #dde3f0; border-radius: 10px; padding: 1rem; margin: 0.8rem 0; }
 .card h3 { margin: 0 0 0.4rem 0; }
+/* v55: the Price check card header holds the heading and a Hide
+   button on one row (it wraps on a narrow phone instead of
+   clipping); the heading takes the free space so the button sits
+   at the right end. */
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+.card-head h3 { flex: 1 1 auto; min-width: 0; margin: 0; }
 .card dl { margin: 0.5rem 0; }
 .card dt { font-weight: 700; }
 .card dd { margin: 0 0 0.5rem 0; }

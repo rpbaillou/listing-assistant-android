@@ -15,6 +15,8 @@
  * confirms it; a failed or empty image search shows a plain note
  * and leaves the sold half working; a second check clears stale
  * rows while the new lookup runs.
+ * v55: Hide folds the results card away (twice is harmless); Check
+ * sold prices re-opens it with a fresh check.
  * Run: node tests/sold-image.test.js (exit 0 = pass). */
 const fs = require("fs");
 const path = require("path");
@@ -343,6 +345,29 @@ async function openPriceCheck(ctx, $, resolveFetch, tick, similar) {
   $("btn-solds-open").click();
   check("sold half still opens after the image half fails",
     opened.length === before + 1, opened.length);
+
+  /* ---------- 7. v55: Hide folds the results away; Check re-opens them ---------- */
+  check("results card is open before Hide",
+    !$("sold-results").classList.contains("hidden"));
+  $("btn-solds-hide").click();
+  check("Hide folds the results card away",
+    $("sold-results").classList.contains("hidden"));
+  $("btn-solds-hide").click();
+  check("Hide twice is harmless, card stays hidden",
+    $("sold-results").classList.contains("hidden"));
+  $("btn-solds").click();
+  resolveFetch("/api/drafts/d1", { draft: { ...DRAFT, price: "24.50" } });
+  await tick(); await tick();
+  check("Check sold prices re-opens the card",
+    !$("sold-results").classList.contains("hidden"));
+  check("re-open clears stale rows while the new lookup runs",
+    $("similar-list").children.length === 0,
+    $("similar-list").children.length);
+  resolveFetch("/similar", MATCHES);
+  await tick(); await tick();
+  check("re-open renders the fresh rows",
+    $("similar-list").children.length === 2,
+    $("similar-list").children.length);
 
   check("no unhandled rejections", unhandled.length === 0,
     unhandled.map(String).join(" | "));

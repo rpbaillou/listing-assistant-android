@@ -1046,3 +1046,29 @@ remembers the open draft.
   present and hidden, no-cache on /photos/, resume gate and retry
   wiring). The v50 stale-save test was updated to the v54 behavior
   (a failed save keeps the draft id).
+
+## v55: Hide button on the price-check results card
+
+- Live v1.53 report (Nov 11): after viewing the price check, the
+  results card stays open as a big wall over the category fields,
+  with no way to hide it.
+- Cause: the v51 `#sold-results` card had no close control at all.
+  "Check sold prices on eBay" removes `hidden` and runs the check,
+  but nothing ever added `hidden` back — the sold half and the
+  similar-items half both stayed on screen until the listing page
+  was left.
+- Fix: a ghost "Hide" button in the card header next to the
+  "Price check" heading (`.card-head`, a wrapping flex row, so
+  heading + button fit at 320dp and wrap rather than clip).
+  Tapping it adds `hidden` to `#sold-results` and nothing else.
+  Check sold prices re-opens the card with a fresh check, exactly
+  as before (same handler: save, unhide, clear the similar list,
+  re-fetch). No auto-hide: the card only closes on a Hide tap.
+  "Use this price" is untouched on both paths; the confirmation
+  note lives inside the card, so hiding hides it too, and the
+  price field itself still shows the picked price.
+- Tests: tests/sold-image.test.js section 7 (Hide folds the card
+  away, Hide twice is harmless, Check re-opens it with fresh
+  rows), fit_check.py check 20 (Hide button present in the card,
+  ghost labeled Hide, Hide wiring, wrapping card header, 40px tap
+  target, heading + Hide fit at 320dp).
