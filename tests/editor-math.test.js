@@ -77,5 +77,111 @@ check("clamp enforces min size",
 check("clamp min size at far edge stays in bounds",
   eq(clampCropRect({ x: 990, y: 790, w: 10, h: 5 }, 1000, 800, 50), { x: 950, y: 750, w: 50, h: 50 }));
 
+/* v56: full-editor pure helpers. */
+const { defaultAdjustments, adjustmentFilter, autoEnhanceValues,
+        aspectCropRect, rotatedFrameSize, straightenFrame,
+        clampCropToFrame, sharpenImageData } = sandbox;
+function ctxExpr(expr) { return vm.runInContext(expr, sandbox); }
+
+check("defaultAdjustments are all zero",
+  eq(defaultAdjustments(), { brightness: 0, contrast: 0, saturation: 0, warmth: 0, sharpness: 0 }));
+check("filter preset vivid lifts saturation and contrast",
+  eq(ctxExpr("FILTER_PRESETS.vivid"), { brightness: 0, contrast: 10, saturation: 25, warmth: 0, sharpness: 0 }));
+check("filter preset warm warms, cool cools, mono kills saturation",
+  ctxExpr("FILTER_PRESETS.warm").warmth === 25 &&
+  ctxExpr("FILTER_PRESETS.cool").warmth === -25 &&
+  ctxExpr("FILTER_PRESETS.mono").saturation === -100 &&
+  eq(ctxExpr("FILTER_PRESETS.original"), { brightness: 0, contrast: 0, saturation: 0, warmth: 0, sharpness: 0 }));
+
+check("adjustmentFilter is neutral at zero",
+  adjustmentFilter(defaultAdjustments()) === "brightness(1.000) contrast(1.000) saturate(1.000)");
+check("adjustmentFilter scales brightness and contrast, clamps saturate at 0",
+  adjustmentFilter({ brightness: 50, contrast: -20, saturation: -100, warmth: 0, sharpness: 0 }) ===
+    "brightness(1.500) contrast(0.800) saturate(0.000)");
+
+check("auto enhance brightens a dark photo and adds contrast to a flat one",
+  eq(autoEnhanceValues(60, 20), { brightness: 29, contrast: 15, saturation: 12 }));
+check("auto enhance darkens a bright photo and calms a contrasty one",
+  eq(autoEnhanceValues(180, 90), { brightness: -30, contrast: -9, saturation: 12 }));
+check("auto enhance leaves a balanced photo alone except saturation",
+  eq(autoEnhanceValues(118, 64), { brightness: 0, contrast: 0, saturation: 12 }));
+
+check("aspectCropRect null ratio is the full frame",
+  eq(aspectCropRect(1000, 800, null), { x: 0, y: 0, w: 1000, h: 800 }));
+check("aspectCropRect square centers in a wide frame",
+  eq(aspectCropRect(1000, 800, 1), { x: 100, y: 0, w: 800, h: 800 }));
+check("aspectCropRect 4:3 fits a 1000x800 frame",
+  eq(aspectCropRect(1000, 800, 4 / 3), { x: 0, y: 25, w: 1000, h: 750 }));
+check("aspectCropRect 16:9 fills a 1600x900 frame",
+  eq(aspectCropRect(1600, 900, 16 / 9), { x: 0, y: 0, w: 1600, h: 900 }));
+
+check("rotatedFrameSize 0/90 without straighten matches rotatedDims",
+  eq(rotatedFrameSize(100, 200, 0, 0), { w: 100, h: 200 }) &&
+  eq(rotatedFrameSize(100, 200, 90, 0), { w: 200, h: 100 }));
+check("rotatedFrameSize square at 45 degrees grows to the diagonal box",
+  eq(rotatedFrameSize(100, 100, 0, 45), { w: 141, h: 141 }));
+check("rotatedFrameSize straighten 15 widens a 200x100 frame",
+  eq(rotatedFrameSize(200, 100, 0, 15), { w: 219, h: 148 }));
+
+check("straightenFrame at 0 degrees is the full frame",
+  eq(straightenFrame(200, 100, 0, 0), { x: 0, y: 0, w: 200, h: 100 }) &&
+  eq(straightenFrame(100, 200, 90, 0), { x: 0, y: 0, w: 200, h: 100 }));
+/* The straightened frame must sit inside the rotated image: its four
+   corners must clear the rotated edges. For rot-frame dims w x h and
+   angle t, the centered half-extents (x0, y0) must satisfy
+   y0 <= (h cos t - w sin t)/2 + x0 tan t and
+   x0 <= (w cos t - h sin t)/2 + y0 tan t. */
+function straightenInside(w, h, rot, deg) {
+  const f = straightenFrame(w, h, rot, deg);
+  const box = rotatedFrameSize(w, h, rot, deg);
+  const x0 = f.w / 2, y0 = f.h / 2;
+  const dims = ctxExpr("rotatedDims(" + w + "," + h + "," + rot + ")");
+  const t = Math.abs(deg) * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  const okA = y0 <= (dims.h * c - dims.w * s) / 2 + x0 * Math.tan(t) + 1;
+  const okB = x0 <= (dims.w * c - dims.h * s) / 2 + y0 * Math.tan(t) + 1;
+  return f.x >= 0 && f.y >= 0 && f.x + f.w <= box.w + 1 && f.y + f.h <= box.h + 1 &&
+    f.w >= 1 && f.h >= 1 && okA && okB;
+}
+check("straightenFrame stays inside the rotated image at 5/10/15 degrees",
+  straightenInside(2048, 1536, 0, 5) && straightenInside(2048, 1536, 0, 10) &&
+  straightenInside(2048, 1536, 0, 15) && straightenInside(1536, 2048, 90, 15) &&
+  straightenInside(2048, 512, 0, 15) && straightenInside(800, 800, 0, 15));
+
+check("clampCropToFrame leaves an inside rect alone",
+  eq(clampCropToFrame({ x: 60, y: 60, w: 100, h: 80 }, { x: 52, y: 52, w: 400, h: 300 }, 50),
+     { x: 60, y: 60, w: 100, h: 80 }));
+check("clampCropToFrame pulls an overhanging rect back into the frame",
+  eq(clampCropToFrame({ x: 10, y: 10, w: 100, h: 80 }, { x: 52, y: 52, w: 400, h: 300 }, 50),
+     { x: 52, y: 52, w: 100, h: 80 }));
+
+function fakeImageData(w, h, fill) {
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const v = typeof fill === "function" ? fill(i) : fill;
+    data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; data[i * 4 + 3] = 255;
+  }
+  return { width: w, height: h, data: data };
+}
+check("sharpen leaves a flat image untouched",
+  (() => {
+    const img = fakeImageData(4, 4, 128);
+    sharpenImageData(img, 100);
+    return Array.from(img.data).every((v, i) => v === (i % 4 === 3 ? 255 : 128));
+  })());
+check("sharpen lifts a bright spot and darkens the pixels beside it",
+  (() => {
+    const img = fakeImageData(3, 3, (i) => (i === 4 ? 200 : 100));
+    sharpenImageData(img, 100);
+    return img.data[4 * 4] === 255 && img.data[1 * 4] === 50 && img.data[7 * 4] === 50;
+  })());
+check("sharpen amount 0 is a no-op and alpha is never touched",
+  (() => {
+    const img = fakeImageData(3, 3, (i) => (i === 4 ? 200 : 100));
+    img.data[3] = 77;
+    sharpenImageData(img, 0);
+    return img.data[4 * 4] === 200 && img.data[3] === 77;
+  })());
+
 if (failures > 0) { console.log(failures + " FAILURES"); process.exit(1); }
 console.log("all editor-math tests pass");

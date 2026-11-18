@@ -687,7 +687,76 @@ def main():
                     re.escape(ver["versionName"]), gradle) is not None,
           "version.json says %s" % ver["versionName"])
 
+    # 22. v56 full in-app photo editor: Auto enhance, five adjustment
+    # sliders, five filter chips, four crop presets, rotate, straighten,
+    # flip, Reset, Apply/Cancel — one shared editor on both screens
+    # (step 1 and the draft page), in pure web code. The draft Edit
+    # button must open it, never the old Pixel handoff.
+    editor_ids = ["edit-brightness", "edit-contrast", "edit-saturation",
+                  "edit-warmth", "edit-sharpness", "edit-straighten",
+                  "edit-brightness-val", "edit-contrast-val",
+                  "edit-saturation-val", "edit-warmth-val",
+                  "edit-sharpness-val", "edit-straighten-val",
+                  "btn-edit-auto", "btn-edit-reset", "btn-edit-flip",
+                  "btn-edit-apply", "btn-edit-cancel",
+                  "btn-edit-rotl", "btn-edit-rotr"]
+    check("editor controls all exist in the page",
+          all('id="%s"' % i in html for i in editor_ids),
+          "missing: %s" % [i for i in editor_ids if 'id="%s"' % i not in html])
+    check("five filter chips, one per preset",
+          html.count('class="edit-filter') == 5 and
+          all('data-filter="%s"' % f in html
+              for f in ("original", "vivid", "warm", "cool", "mono")),
+          "chips: %d" % html.count('class="edit-filter'))
+    check("four crop presets, three with an aspect ratio",
+          html.count('class="edit-crop-preset') == 4 and
+          all('data-ratio="%s"' % r in html
+              for r in ("1", "1.3333", "1.7778")),
+          "presets: %d" % html.count('class="edit-crop-preset'))
+    check("Apply is the primary save button, labeled Apply",
+          'id="btn-edit-apply" class="primary" type="button">Apply<' in html)
+    check("draft Edit opens the in-app editor, never the handoff",
+          "function openDraftEditor(" in js and
+          "openDraftEditor(i)" in js and
+          "editDraftPhotoInPixel" not in js and
+          "window.Android.editDraftPhoto" not in js)
+    check("all six sliders are bound to live input",
+          all('bindEditorSlider("edit-%s"' % s in js
+              for s in ("brightness", "contrast", "saturation",
+                       "warmth", "sharpness", "straighten")))
+    check("filter presets and auto enhance are wired",
+          "FILTER_PRESETS" in js and
+          '"btn-edit-auto"' in js and "autoEnhanceValues" in js)
+    check("Reset restores defaults, Cancel closes without saving",
+          '"btn-edit-reset"' in js and "defaultAdjustments()" in js and
+          '"btn-edit-cancel"' in js)
+
+    # 23. v56 editor fit: the box scrolls instead of clipping on a
+    # phone, sliders are full-width with a 44px touch height, and the
+    # active filter chip reuses the verified primary contrast pair.
+    check("editor box scrolls inside the overlay",
+          rules.get(".editor-box", {}).get("max-height") is not None and
+          rules.get(".editor-box", {}).get("overflow-y") == "auto",
+          str(rules.get(".editor-box", {})))
+    check("range inputs are full-width, 44px touch height",
+          rules.get('.edit-slider input[type="range"]', {}).get("width") == "100%" and
+          rules.get('.edit-slider input[type="range"]', {}).get("min-height") == "44px",
+          str(rules.get('.edit-slider input[type="range"]', {})))
+    check("range inputs use the brand-blue accent",
+          rules.get('.edit-slider input[type="range"]', {}).get("accent-color") == "#2a63d8",
+          str(rules.get('.edit-slider input[type="range"]', {})))
+    check("active filter chip is white on brand blue",
+          rules.get('.edit-filter[aria-pressed="true"]', {}).get("background") == "#2a63d8" and
+          rules.get('.edit-filter[aria-pressed="true"]', {}).get("color") == "#fff" and
+          contrast("#fff", "#2a63d8") >= 4.5,
+          "contrast %.1f:1" % contrast("#fff", "#2a63d8"))
+    check("slider labels spread label and value apart",
+          rules.get(".edit-slider label", {}).get("display") == "flex" and
+          rules.get(".edit-slider label", {}).get("justify-content") == "space-between",
+          str(rules.get(".edit-slider label", {})))
+
     print()
+    return 1 if FAILURES else 0
 
 
 if __name__ == "__main__":

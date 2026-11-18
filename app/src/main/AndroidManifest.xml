@@ -17,22 +17,14 @@
     <!-- Android 11+ package visibility: without this, resolveActivity() /
          queryIntentActivities() for other apps return null/empty, so the
          in-app camera could never find a camera app ("No camera app found.")
-         even though the phone has one. v39: the same trap hid photo
-         editors from Edit ("No photo editor found on this phone.") on
-         both the v36 private-provider URI and the v37 MediaStore URI,
-         because ACTION_EDIT was never declared here. -->
+         even though the phone has one. v56: the ACTION_EDIT entry and the
+         Google Photos package query are gone with the editor handoff —
+         photo editing is in-app web code now, so no outside editor is
+         ever resolved. -->
     <queries>
         <intent>
             <action android:name="android.media.action.IMAGE_CAPTURE" />
         </intent>
-        <intent>
-            <action android:name="android.intent.action.EDIT" />
-            <data android:mimeType="image/*" />
-        </intent>
-        <!-- v44: Edit pins to Google Photos when it can handle the edit.
-             The explicit package query keeps Photos visible under
-             Android 11+ package-visibility rules. -->
-        <package android:name="com.google.android.apps.photos" />
     </queries>
 
     <!-- INTERNET is for the Gemini and eBay cloud APIs. The app's own server

@@ -145,11 +145,22 @@ button:disabled { opacity: 0.45; cursor: default; }
 .editor-box {
   background: #fff; border-radius: 12px; padding: 1rem;
   max-width: 96vw; box-sizing: border-box;
+  /* v56: the full editor is taller than the old crop-only one — the
+     box scrolls inside the overlay instead of clipping off-screen. */
+  max-height: calc(100vh - 2rem); overflow-y: auto;
 }
 #editor-canvas {
   display: block; max-width: 100%; height: auto;
   touch-action: none; background: #222; border-radius: 8px;
 }
+/* v56: full-editor controls. Range inputs are full-width with a 44px
+   touch height and the brand-blue accent; the active filter chip
+   reuses the verified primary pair (white on #2a63d8). */
+.edit-slider { margin: 0.5rem 0; }
+.edit-slider label { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 0.1rem; }
+.edit-slider input[type="range"] { width: 100%; min-height: 44px; accent-color: #2a63d8; }
+.edit-filter[aria-pressed="true"] { background: #2a63d8; color: #fff; border-color: #2a63d8; }
+.edit-group-label { align-self: center; font-weight: 600; }
 
 .attr-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .attr-row input { min-width: 0; }

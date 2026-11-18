@@ -335,14 +335,125 @@ function clampCropRect(rect, bw, bh, minSize) {
   return { x: x, y: y, w: w, h: h };
 }
 
-let editIndex = -1;
-let editImg = null;      /* full-res source image (<=2048px) */
+/* v56: the full editor's pure helpers. The editor is pure HTML/JS/
+   canvas web code, shared by step 1 and the draft page, with no native
+   Android editor code — so the same editor can later run in an iOS
+   WebView or a browser version without being rewritten. Adjustments
+   are never baked into the source image until Apply: the preview and
+   the save run the same render path, so what he sees is what saves. */
+function defaultAdjustments() {
+  return { brightness: 0, contrast: 0, saturation: 0, warmth: 0, sharpness: 0 };
+}
+/* One-tap filter presets are just slider values: applying one sets
+   the sliders, so a later manual slider move leaves the preset
+   behind (the active chip clears). Warmth is not in the filter
+   string — it is a tint overlay in renderEditedFrame, because no
+   filter function can make a photo cooler. Mono is saturation -100. */
+const FILTER_PRESETS = {
+  original: { brightness: 0, contrast: 0, saturation: 0, warmth: 0, sharpness: 0 },
+  vivid: { brightness: 0, contrast: 10, saturation: 25, warmth: 0, sharpness: 0 },
+  warm: { brightness: 0, contrast: 0, saturation: 8, warmth: 25, sharpness: 0 },
+  cool: { brightness: 0, contrast: 0, saturation: 5, warmth: -25, sharpness: 0 },
+  mono: { brightness: 0, contrast: 0, saturation: -100, warmth: 0, sharpness: 0 },
+};
+function adjustmentFilter(adj) {
+  return "brightness(" + (1 + adj.brightness / 100).toFixed(3) +
+    ") contrast(" + (1 + adj.contrast / 100).toFixed(3) +
+    ") saturate(" + Math.max(0, 1 + adj.saturation / 100).toFixed(3) + ")";
+}
+function autoEnhanceValues(mean, stddev) {
+  /* mean/stddev of luminance, 0..255, from a small sample of the
+     photo. A dark photo (low mean) gets brightness; a flat photo
+     (low spread) gets contrast. Capped, so a moody photo is never
+     blasted into a bright flat one. Saturation is a fixed gentle lift. */
+  const brightness = Math.max(-30, Math.min(30, Math.round((118 - mean) * 0.5)));
+  const contrast = Math.max(-20, Math.min(40, Math.round((64 - stddev) * 0.35)));
+  return { brightness: brightness, contrast: contrast, saturation: 12 };
+}
+function aspectCropRect(frameW, frameH, ratio) {
+  /* Centered crop rect with the given w/h ratio inside a frame of
+     frameW x frameH; null ratio means the full frame. */
+  if (!ratio) return { x: 0, y: 0, w: frameW, h: frameH };
+  let w = frameW, h = Math.round(frameW / ratio);
+  if (h > frameH) { h = frameH; w = Math.round(frameH * ratio); }
+  return { x: Math.round((frameW - w) / 2), y: Math.round((frameH - h) / 2), w: w, h: h };
+}
+function rotatedFrameSize(w, h, rot, straighten) {
+  /* Bounding box of the image after the 90-degree rotation, then the
+     fine straighten rotation. */
+  const dims = rotatedDims(w, h, rot);
+  const t = Math.abs(straighten) * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  return { w: Math.round(dims.w * c + dims.h * s),
+           h: Math.round(dims.w * s + dims.h * c) };
+}
+function straightenFrame(w, h, rot, straighten) {
+  /* The visible frame: the safe axis-aligned rect inside the rotated
+     image, in bounding-box coordinates. Straightening leaves empty
+     triangles at the corners; insetting every side by
+     ceil(max edge * sin|angle|) keeps the crop out of them. At 0
+     degrees the inset is 0, so this is the full frame. The inset is
+     conservative (it over-crops a little at big angles) and the crop
+     can still be dragged inside it afterwards. */
+  const box = rotatedFrameSize(w, h, rot, straighten);
+  const dims = rotatedDims(w, h, rot);
+  const t = Math.abs(straighten) * Math.PI / 180;
+  const s = Math.ceil(Math.max(dims.w, dims.h) * Math.sin(t));
+  return { x: s, y: s,
+           w: Math.max(1, box.w - 2 * s), h: Math.max(1, box.h - 2 * s) };
+}
+function clampCropToFrame(rect, frame, minSize) {
+  /* clampCropRect works from a (0,0) origin; shift into frame-local
+     coordinates, clamp, shift back. */
+  const local = clampCropRect(
+    { x: rect.x - frame.x, y: rect.y - frame.y, w: rect.w, h: rect.h },
+    frame.w, frame.h, minSize);
+  return { x: local.x + frame.x, y: local.y + frame.y, w: local.w, h: local.h };
+}
+function sharpenImageData(img, amount) {
+  /* 3x3 unsharp pass, in place on {width, height, data}. amount
+     0..100 maps to strength 0..0.5: each pixel is pushed away from
+     the average of its four neighbours, which lifts edges without
+     touching flat areas much. Edges reuse the nearest pixel, so no
+     dark halo appears at the border. Alpha is never touched. */
+  const w = img.width, h = img.height, src = img.data;
+  if (!w || !h || !src || amount <= 0) return;
+  const k = (amount / 100) * 0.5;
+  const copy = new Uint8ClampedArray(src);
+  const idx = (x, y) => (y * w + x) * 4;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = idx(x, y);
+      for (let c = 0; c < 3; c++) {
+        const center = copy[i + c];
+        const left = copy[idx(Math.max(0, x - 1), y) + c];
+        const right = copy[idx(Math.min(w - 1, x + 1), y) + c];
+        const up = copy[idx(x, Math.max(0, y - 1)) + c];
+        const down = copy[idx(x, Math.min(h - 1, y + 1)) + c];
+        src[i + c] = center + k * (4 * center - left - right - up - down);
+      }
+    }
+  }
+}
+
+let editIndex = -1;      /* slot: selectedFiles (step 1) or draft.photos (draft) */
+let editImg = null;      /* pristine source image (<=2048px); adjustments are
+                            never baked into it until Apply, so Reset and
+                            Cancel cost nothing */
 let editImgUrl = null;   /* object URL for editImg, revoked on close */
 let editRot = 0;         /* 0/90/180/270, clockwise */
-let editCrop = null;     /* {x,y,w,h} in ROTATED image coordinates */
-let editScale = 1;       /* display px per rotated-image px */
+let editFlip = false;    /* v56: mirror left-right */
+let editStraighten = 0;  /* v56: fine rotate, degrees, -15..15 */
+let editAdj = defaultAdjustments(); /* v56: brightness/contrast/saturation/warmth/sharpness */
+let editFilter = "original";        /* v56: last filter preset applied */
+let editCrop = null;     /* {x,y,w,h} in FRAME coordinates (bounding box of
+                            the rotated image); clamped to the visible
+                            frame, so straightening can never drag the
+                            crop into the empty corners */
+let editScale = 1;       /* display px per frame px */
 let editDrag = null;     /* {mode, startX, startY, crop} in canvas px */
-const EDIT_MIN_CROP = 50; /* min crop edge, rotated-image px */
+let editSource = null;   /* v56: {kind:"step1"} or {kind:"draft", rel} */
+const EDIT_MIN_CROP = 50; /* min crop edge, frame px */
 
 function editorDisplaySize(rw, rh) {
   const maxEdge = Math.min(900, Math.max(280, window.innerWidth - 64));
@@ -351,31 +462,80 @@ function editorDisplaySize(rw, rh) {
            h: Math.max(1, Math.round(rh * scale)), scale: scale };
 }
 
+function editVisibleFrame() {
+  if (!editImg) return { x: 0, y: 0, w: 1, h: 1 };
+  return straightenFrame(editImg.naturalWidth, editImg.naturalHeight, editRot, editStraighten);
+}
+
+function renderEditedFrame(scale) {
+  /* One render path for preview and Apply: the source image, rotated
+     (90s + straighten), flipped, adjusted, warmed/cooled, sharpened,
+     drawn at `scale` px per frame px. Returns the canvas plus the
+     visible frame in canvas coords and the scale actually used. The
+     output scale is capped so the saved photo never exceeds the
+     2048px long-edge cap, even though a straightened frame is wider
+     than the source. Same path both times, so what he sees is what
+     saves. Warmth is a tint overlay (no filter function can make a
+     photo cooler); sharpness is a 3x3 unsharp pass on the pixels. */
+  const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
+  const box = rotatedFrameSize(srcW, srcH, editRot, editStraighten);
+  const outScale = Math.min(scale, 2048 / Math.max(box.w, box.h));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(box.w * outScale));
+  canvas.height = Math.max(1, Math.round(box.h * outScale));
+  const ctx = canvas.getContext("2d");
+  const vis = editVisibleFrame();
+  const frame = { x: vis.x * outScale, y: vis.y * outScale,
+                  w: vis.w * outScale, h: vis.h * outScale };
+  if (!ctx) return { canvas: canvas, frame: frame, scale: outScale };
+  ctx.filter = adjustmentFilter(editAdj);
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate((editRot + editStraighten) * Math.PI / 180);
+  if (editFlip) ctx.scale(-1, 1);
+  ctx.drawImage(editImg, -srcW * outScale / 2, -srcH * outScale / 2,
+                 srcW * outScale, srcH * outScale);
+  ctx.restore();
+  ctx.filter = "none";
+  if (editAdj.warmth !== 0) {
+    ctx.globalCompositeOperation = "overlay";
+    ctx.fillStyle = editAdj.warmth > 0
+      ? "rgba(255,128,0," + (editAdj.warmth / 100 * 0.18).toFixed(3) + ")"
+      : "rgba(0,90,255," + (-editAdj.warmth / 100 * 0.18).toFixed(3) + ")";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.globalCompositeOperation = "source-over";
+  }
+  if (editAdj.sharpness > 0) {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    sharpenImageData(img, editAdj.sharpness);
+    ctx.putImageData(img, 0, 0);
+  }
+  return { canvas: canvas, frame: frame, scale: outScale };
+}
+
 function drawEditor() {
   if (!editImg) return;
   const canvas = $("editor-canvas");
   const ctx = canvas.getContext("2d");
-  const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
-  const dims = rotatedDims(srcW, srcH, editRot);
-  const disp = editorDisplaySize(dims.w, dims.h);
-  editScale = disp.scale;
-  canvas.width = disp.w;
-  canvas.height = disp.h;
+  if (!ctx) return;
+  const box = rotatedFrameSize(editImg.naturalWidth, editImg.naturalHeight, editRot, editStraighten);
+  const disp = editorDisplaySize(box.w, box.h);
+  const rendered = renderEditedFrame(disp.scale);
+  editScale = rendered.scale;
+  canvas.width = rendered.canvas.width;
+  canvas.height = rendered.canvas.height;
   ctx.save();
-  ctx.clearRect(0, 0, disp.w, disp.h);
-  ctx.translate(disp.w / 2, disp.h / 2);
-  ctx.rotate(editRot * Math.PI / 180);
-  ctx.drawImage(editImg, -srcW * disp.scale / 2, -srcH * disp.scale / 2,
-                 srcW * disp.scale, srcH * disp.scale);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(rendered.canvas, 0, 0);
   ctx.restore();
   /* Dim everything outside the crop box, then outline it + handles. */
-  const s = disp.scale, c = editCrop;
+  const s = editScale, c = editCrop;
   const dx = c.x * s, dy = c.y * s, dw = c.w * s, dh = c.h * s;
   ctx.fillStyle = "rgba(0,0,0,0.55)";
-  ctx.fillRect(0, 0, disp.w, dy);
-  ctx.fillRect(0, dy + dh, disp.w, disp.h - dy - dh);
+  ctx.fillRect(0, 0, canvas.width, dy);
+  ctx.fillRect(0, dy + dh, canvas.width, canvas.height - dy - dh);
   ctx.fillRect(0, dy, dx, dh);
-  ctx.fillRect(dx + dw, dy, disp.w - dx - dw, dh);
+  ctx.fillRect(dx + dw, dy, canvas.width - dx - dw, dh);
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = 2;
   ctx.strokeRect(dx, dy, dw, dh);
@@ -429,7 +589,6 @@ $("editor-canvas").addEventListener("pointermove", (e) => {
   const p = editorCanvasPos(e);
   const dx = (p.x - editDrag.startX) / editScale;
   const dy = (p.y - editDrag.startY) / editScale;
-  const dims = rotatedDims(editImg.naturalWidth, editImg.naturalHeight, editRot);
   const s0 = editDrag.crop, MIN = EDIT_MIN_CROP;
   let next;
   if (editDrag.mode === "move") {
@@ -453,7 +612,9 @@ $("editor-canvas").addEventListener("pointermove", (e) => {
       next.w = Math.max(MIN, s0.w + dx); next.h = Math.max(MIN, s0.h + dy);
     }
   }
-  editCrop = clampCropRect(next, dims.w, dims.h, MIN);
+  /* v56: the crop stays inside the visible frame, so straightening
+     can never drag it into the empty corners. */
+  editCrop = clampCropToFrame(next, editVisibleFrame(), MIN);
   drawEditor();
 });
 
@@ -463,35 +624,24 @@ $("editor-canvas").addEventListener("pointermove", (e) => {
 function rotateEditor(delta) {
   if (!editImg) return;
   editRot = (((editRot + delta) % 360) + 360) % 360;
-  /* Rotating resets the crop to the full rotated frame: simpler and
+  /* Rotating resets the crop to the full visible frame: simpler and
      predictable than remapping a rect across a dimension swap. */
-  const dims = rotatedDims(editImg.naturalWidth, editImg.naturalHeight, editRot);
-  editCrop = { x: 0, y: 0, w: dims.w, h: dims.h };
+  editCrop = editVisibleFrame();
   drawEditor();
 }
 $("btn-edit-rotl").addEventListener("click", () => rotateEditor(-90));
 $("btn-edit-rotr").addEventListener("click", () => rotateEditor(90));
 
-/* v36: hand a listing photo to the phone's own photo editor (Nov 3
-   decision: his Pixel camera app editor, NOT a limited in-app editor).
-   The app opens the system edit screen for that photo; when the editor
-   returns, the edited photo replaces the original in the same slot
-   (see reloadDraftPhotosOnly, called by the app after a good save).
-   The photo is never edited in place here — the original stays until
-   the edited version comes back. */
-function editDraftPhotoInPixel(i) {
-  const p = (draft && draft.photos) ? draft.photos[i] : null;
-  if (!p || !draft.id) return;
-  if (window.Android && typeof window.Android.editDraftPhoto === "function") {
-    window.Android.editDraftPhoto(draft.id, p, i);
-  } else {
-    showDraftPhotoError("Photo editing needs the app — please open this page in the Listing Assistant app.");
-  }
-}
+/* v56: the Pixel/Google Photos handoff is gone. Draft Edit opens the
+   same in-app editor step 1 uses (openDraftEditor, below) — the
+   handoff was fragile: Android could kill the app while the outside
+   editor was open, and on relaunch the app opened step 1 fresh with
+   no record of the draft he was in. There is no Android.editDraftPhoto
+   bridge any more, and no MediaStore working copy. */
 
-/* v36: re-read the draft's photos after the phone's editor returns a
-   good edit (called by the app, not by any button). Only the thumbnails
-   refresh — typed fields are never touched, so unsaved edits survive. */
+/* v36: re-read the draft's photos after an in-app edit saves (called
+   by the editor, not by any button). Only the thumbnails refresh —
+   typed fields are never touched, so unsaved edits survive. */
 async function reloadDraftPhotosOnly() {
   if (!draft || !draft.id) return;
   try {
@@ -503,27 +653,61 @@ async function reloadDraftPhotosOnly() {
   }
 }
 
-function openEditor(i) {
-  const entry = selectedFiles[i];
-  if (!entry) return;
-  editIndex = i;
+/* v56: one shared editor for both screens. Step 1 opens it from the
+   photo grid (openEditor); the draft page opens it from a listing
+   photo (openDraftEditor), fetching that photo's bytes first — no
+   outside editor, no handoff, no lost place. The source image is the
+   pristine photo; every control only changes state until Apply. */
+function openEditorFor(blob, source) {
+  editSource = source;
+  editIndex = source.index;
   editRot = 0;
+  editFlip = false;
+  editStraighten = 0;
+  editAdj = defaultAdjustments();
+  editFilter = "original";
   editDrag = null;
-  const url = URL.createObjectURL(entry.blob);
+  const url = URL.createObjectURL(blob);
   const img = new Image();
   img.onload = () => {
     editImg = img;
     editImgUrl = url;
-    editCrop = { x: 0, y: 0, w: img.naturalWidth, h: img.naturalHeight };
+    editCrop = editVisibleFrame();
+    syncEditorControls();
     $("editor").classList.remove("hidden");
     document.body.style.overflow = "hidden";
     drawEditor();
   };
   img.onerror = () => {
     URL.revokeObjectURL(url);
-    showError("Couldn't open that photo for editing.");
+    if (source.kind === "draft") {
+      showDraftPhotoError("Couldn't open that photo for editing. Try again.");
+    } else {
+      showError("Couldn't open that photo for editing.");
+    }
+    editSource = null;
   };
   img.src = url;
+}
+
+function openEditor(i) {
+  const entry = selectedFiles[i];
+  if (!entry) return;
+  openEditorFor(entry.blob, { kind: "step1", index: i });
+}
+
+async function openDraftEditor(i) {
+  const p = (draft && draft.photos) ? draft.photos[i] : null;
+  if (!p || !draft.id) return;
+  hideDraftPhotoError();
+  try {
+    const res = await fetch("/photos/" + p);
+    if (!res.ok) throw new Error("fetch failed");
+    const blob = await res.blob();
+    openEditorFor(blob, { kind: "draft", index: i, rel: p });
+  } catch (e) {
+    showDraftPhotoError("Couldn't open that photo for editing. Try again.");
+  }
 }
 
 function closeEditor() {
@@ -534,48 +718,173 @@ function closeEditor() {
   editImgUrl = null;
   editIndex = -1;
   editDrag = null;
+  editSource = null;
 }
 $("btn-edit-cancel").addEventListener("click", closeEditor);
 
-$("btn-edit-save").addEventListener("click", async () => {
-  if (!editImg || editIndex < 0) return;
-  const btn = $("btn-edit-save");
+/* v56: Apply renders the full-size frame through the same path the
+   preview uses, cuts the crop rect out of it, and saves it back into
+   the same slot — the step-1 grid and the auto draft, or the draft
+   photo's replace endpoint plus a thumbnail refresh. Cancel (above)
+   discards everything: the source image was never touched. */
+$("btn-edit-apply").addEventListener("click", async () => {
+  if (!editImg || !editSource) return;
+  const btn = $("btn-edit-apply");
   btn.disabled = true;
   try {
-    /* Step 1: rotate the full-res source onto an offscreen canvas.
-       Step 2: cut the crop rect out of it. Two steps keeps the math
-       simple and correct across dimension swaps. */
-    const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
-    const dims = rotatedDims(srcW, srcH, editRot);
-    const rc = document.createElement("canvas");
-    rc.width = dims.w; rc.height = dims.h;
-    const rctx = rc.getContext("2d");
-    rctx.save();
-    rctx.translate(dims.w / 2, dims.h / 2);
-    rctx.rotate(editRot * Math.PI / 180);
-    rctx.drawImage(editImg, -srcW / 2, -srcH / 2, srcW, srcH);
-    rctx.restore();
-    const cx = Math.round(editCrop.x), cy = Math.round(editCrop.y);
-    const cw = Math.max(1, Math.round(editCrop.w)), ch = Math.max(1, Math.round(editCrop.h));
+    const rendered = renderEditedFrame(1);
+    const c = editCrop, rs = rendered.scale;
     const oc = document.createElement("canvas");
-    oc.width = cw; oc.height = ch;
-    oc.getContext("2d").drawImage(rc, cx, cy, cw, ch, 0, 0, cw, ch);
+    oc.width = Math.max(1, Math.round(c.w * rs));
+    oc.height = Math.max(1, Math.round(c.h * rs));
+    oc.getContext("2d").drawImage(rendered.canvas,
+      Math.round(c.x * rs), Math.round(c.y * rs),
+      Math.round(c.w * rs), Math.round(c.h * rs),
+      0, 0, oc.width, oc.height);
     const blob = await new Promise((res) => oc.toBlob(res, "image/jpeg", 0.85));
     if (!blob) throw new Error("save failed");
-    const entry = selectedFiles[editIndex];
-    if (entry.url) URL.revokeObjectURL(entry.url);
-    entry.blob = blob;
-    entry.url = URL.createObjectURL(blob);
-    renderThumbs();
-    /* v50: the edited photo replaces the saved one in the auto draft. */
-    replaceAutoDraftPhoto(editIndex, blob);
-    closeEditor();
-    hideError();
+    if (editSource.kind === "step1") {
+      const entry = selectedFiles[editSource.index];
+      if (entry.url) URL.revokeObjectURL(entry.url);
+      entry.blob = blob;
+      entry.url = URL.createObjectURL(blob);
+      renderThumbs();
+      /* v50: the edited photo replaces the saved one in the auto draft. */
+      replaceAutoDraftPhoto(editSource.index, blob);
+      closeEditor();
+      hideError();
+    } else {
+      const fd = new FormData();
+      fd.append("photo", blob, "edited.jpg");
+      await api("/api/drafts/" + draft.id + "/photos/" + editSource.index + "/replace",
+                { method: "POST", body: fd });
+      await reloadDraftPhotosOnly();
+      closeEditor();
+      hideDraftPhotoError();
+    }
   } catch (e) {
-    showError("Couldn't save that edit. Try again.");
+    if (editSource && editSource.kind === "draft") {
+      showDraftPhotoError("Couldn't save that edit. Try again.");
+    } else {
+      showError("Couldn't save that edit. Try again.");
+    }
   } finally {
     btn.disabled = false;
   }
+});
+
+/* v56: editor controls. Sliders adjust live (redrawn on the next
+   animation frame, so dragging stays smooth); a manual slider move
+   clears the active filter chip, since the values no longer match
+   any preset. */
+let editDrawQueued = false;
+function scheduleEditorDraw() {
+  if (editDrawQueued || !editImg) return;
+  editDrawQueued = true;
+  const raf = (typeof requestAnimationFrame === "function")
+    ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
+  raf(() => { editDrawQueued = false; drawEditor(); });
+}
+function syncEditorControls() {
+  const setVal = (id, v) => { const el = $(id); if (el) el.value = String(v); };
+  const setText = (id, v) => { const el = $(id); if (el) el.textContent = String(v); };
+  setVal("edit-brightness", editAdj.brightness);
+  setVal("edit-contrast", editAdj.contrast);
+  setVal("edit-saturation", editAdj.saturation);
+  setVal("edit-warmth", editAdj.warmth);
+  setVal("edit-sharpness", editAdj.sharpness);
+  setVal("edit-straighten", editStraighten);
+  setText("edit-brightness-val", editAdj.brightness);
+  setText("edit-contrast-val", editAdj.contrast);
+  setText("edit-saturation-val", editAdj.saturation);
+  setText("edit-warmth-val", editAdj.warmth);
+  setText("edit-sharpness-val", editAdj.sharpness);
+  setText("edit-straighten-val", editStraighten);
+  document.querySelectorAll(".edit-filter").forEach((b) => {
+    b.setAttribute("aria-pressed",
+      b.dataset.filter === editFilter ? "true" : "false");
+  });
+}
+function bindEditorSlider(id, apply) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("input", () => {
+    apply(Number(el.value) || 0);
+    syncEditorControls();
+    scheduleEditorDraw();
+  });
+}
+bindEditorSlider("edit-brightness", (v) => { editAdj.brightness = v; editFilter = ""; });
+bindEditorSlider("edit-contrast", (v) => { editAdj.contrast = v; editFilter = ""; });
+bindEditorSlider("edit-saturation", (v) => { editAdj.saturation = v; editFilter = ""; });
+bindEditorSlider("edit-warmth", (v) => { editAdj.warmth = v; editFilter = ""; });
+bindEditorSlider("edit-sharpness", (v) => { editAdj.sharpness = v; editFilter = ""; });
+bindEditorSlider("edit-straighten", (v) => {
+  editStraighten = v;
+  /* Straightening shrinks the safe frame; keep the crop inside it. */
+  if (editCrop) editCrop = clampCropToFrame(editCrop, editVisibleFrame(), EDIT_MIN_CROP);
+});
+document.querySelectorAll(".edit-filter").forEach((b) => {
+  b.addEventListener("click", () => {
+    const preset = FILTER_PRESETS[b.dataset.filter] || FILTER_PRESETS.original;
+    editAdj = Object.assign(defaultAdjustments(), preset);
+    editFilter = b.dataset.filter || "original";
+    syncEditorControls();
+    scheduleEditorDraw();
+  });
+});
+document.querySelectorAll(".edit-crop-preset").forEach((b) => {
+  b.addEventListener("click", () => {
+    if (!editImg) return;
+    const frame = editVisibleFrame();
+    const ratio = b.dataset.ratio ? Number(b.dataset.ratio) : null;
+    const rect = aspectCropRect(frame.w, frame.h, ratio);
+    editCrop = { x: rect.x + frame.x, y: rect.y + frame.y, w: rect.w, h: rect.h };
+    drawEditor();
+  });
+});
+$("btn-edit-flip").addEventListener("click", () => {
+  if (!editImg) return;
+  editFlip = !editFlip;
+  drawEditor();
+});
+$("btn-edit-auto").addEventListener("click", () => {
+  if (!editImg) return;
+  let vals = { brightness: 8, contrast: 12, saturation: 12 };
+  try {
+    /* Sample a small copy of the photo and let the histogram decide:
+       dark photos get brightness, flat photos get contrast. */
+    const probe = document.createElement("canvas");
+    const pw = 160;
+    const ph = Math.max(1, Math.round(160 * editImg.naturalHeight / editImg.naturalWidth));
+    probe.width = pw; probe.height = ph;
+    const pctx = probe.getContext("2d");
+    pctx.drawImage(editImg, 0, 0, pw, ph);
+    const data = pctx.getImageData(0, 0, pw, ph).data;
+    let sum = 0, sumSq = 0, n = 0;
+    for (let i = 0; i < data.length; i += 16) {
+      const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      sum += lum; sumSq += lum * lum; n++;
+    }
+    const mean = sum / n;
+    const stddev = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
+    vals = autoEnhanceValues(mean, stddev);
+  } catch (e) { /* probe failed: fall back to the fixed values above */ }
+  editAdj.brightness = vals.brightness;
+  editAdj.contrast = vals.contrast;
+  editAdj.saturation = vals.saturation;
+  editFilter = "";
+  syncEditorControls();
+  scheduleEditorDraw();
+});
+$("btn-edit-reset").addEventListener("click", () => {
+  if (!editImg) return;
+  editRot = 0; editFlip = false; editStraighten = 0;
+  editAdj = defaultAdjustments();
+  editFilter = "original";
+  editCrop = editVisibleFrame();
+  syncEditorControls();
+  drawEditor();
 });
 
 /* v36: shared photo-count helpers (pure, unit-tested). roomFor is how
@@ -1074,7 +1383,7 @@ function renderDraftPhotos(d) {
     e.className = "thumb-edit-below";
     e.textContent = "Edit";
     e.setAttribute("aria-label", "Edit this photo");
-    e.addEventListener("click", () => editDraftPhotoInPixel(i));
+    e.addEventListener("click", () => openDraftEditor(i));
     wrap.appendChild(e);
     /* v44: drag to reorder — the frame is the drag handle (see
        attachThumbDrag); the v40 ◀ ▶ buttons are gone. */

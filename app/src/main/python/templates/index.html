@@ -533,19 +533,65 @@
   </section>
 </main>
 
-<!-- v18: photo editor (crop + rotate) -->
+<!-- v18: photo editor (crop + rotate). v56: full editor — Auto enhance,
+     brightness/contrast/saturation/warmth/sharpness sliders, filters,
+     crop presets, rotate, straighten, flip, Reset, Apply/Cancel — on
+     both screens, in pure web code (see app.js). -->
 <div id="editor" class="editor hidden">
   <div class="editor-box">
     <h3>Edit photo</h3>
-    <p class="hint">Drag a corner to crop. Drag inside the box to move it. Rotate first, then crop.</p>
+    <p class="hint">Drag a corner to crop. Drag inside the box to move it. Sliders adjust the photo live. Apply saves it back into the same slot.</p>
     <canvas id="editor-canvas"></canvas>
+    <div class="btnrow wrap">
+      <button class="edit-filter secondary" data-filter="original" type="button" aria-pressed="true">Original</button>
+      <button class="edit-filter secondary" data-filter="vivid" type="button" aria-pressed="false">Vivid</button>
+      <button class="edit-filter secondary" data-filter="warm" type="button" aria-pressed="false">Warm</button>
+      <button class="edit-filter secondary" data-filter="cool" type="button" aria-pressed="false">Cool</button>
+      <button class="edit-filter secondary" data-filter="mono" type="button" aria-pressed="false">Mono</button>
+    </div>
+    <div class="btnrow wrap">
+      <button id="btn-edit-auto" class="secondary" type="button">Auto enhance</button>
+      <button id="btn-edit-reset" class="ghost" type="button">Reset</button>
+    </div>
+    <div class="edit-slider">
+      <label for="edit-brightness">Brightness <span id="edit-brightness-val">0</span></label>
+      <input id="edit-brightness" type="range" min="-100" max="100" step="1" value="0">
+    </div>
+    <div class="edit-slider">
+      <label for="edit-contrast">Contrast <span id="edit-contrast-val">0</span></label>
+      <input id="edit-contrast" type="range" min="-100" max="100" step="1" value="0">
+    </div>
+    <div class="edit-slider">
+      <label for="edit-saturation">Saturation <span id="edit-saturation-val">0</span></label>
+      <input id="edit-saturation" type="range" min="-100" max="100" step="1" value="0">
+    </div>
+    <div class="edit-slider">
+      <label for="edit-warmth">Warmth <span id="edit-warmth-val">0</span></label>
+      <input id="edit-warmth" type="range" min="-100" max="100" step="1" value="0">
+    </div>
+    <div class="edit-slider">
+      <label for="edit-sharpness">Sharpness <span id="edit-sharpness-val">0</span></label>
+      <input id="edit-sharpness" type="range" min="0" max="100" step="1" value="0">
+    </div>
+    <div class="edit-slider">
+      <label for="edit-straighten">Straighten <span id="edit-straighten-val">0</span></label>
+      <input id="edit-straighten" type="range" min="-15" max="15" step="1" value="0">
+    </div>
+    <div class="btnrow wrap">
+      <span class="edit-group-label">Crop:</span>
+      <button class="edit-crop-preset secondary" type="button">Original</button>
+      <button class="edit-crop-preset secondary" data-ratio="1" type="button">Square</button>
+      <button class="edit-crop-preset secondary" data-ratio="1.3333" type="button">4:3</button>
+      <button class="edit-crop-preset secondary" data-ratio="1.7778" type="button">16:9</button>
+    </div>
     <div class="btnrow wrap">
       <button id="btn-edit-rotl" class="secondary" type="button">↺ Rotate left</button>
       <button id="btn-edit-rotr" class="secondary" type="button">↻ Rotate right</button>
+      <button id="btn-edit-flip" class="secondary" type="button">Flip</button>
     </div>
     <div class="btnrow">
       <button id="btn-edit-cancel" class="ghost" type="button">Cancel</button>
-      <button id="btn-edit-save" class="primary" type="button">Save</button>
+      <button id="btn-edit-apply" class="primary" type="button">Apply</button>
     </div>
   </div>
 </div>

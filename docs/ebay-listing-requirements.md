@@ -1082,3 +1082,56 @@ remembers the open draft.
   release, and fit_check.py check 21 now fails the build when the
   gradle version and version.json disagree. The apk-v55 tag was
   re-created at the fixed commit and the release rebuilt.
+
+## v56: full in-app photo editor on both screens, Pixel handoff gone
+
+- Live ask (Nov 18): he needs more editing ability — enhance, brightness,
+  contrast, and things of that nature — because the eBay app itself will
+  not let him edit photos on these listings (it says something about an
+  inventory process), so our editor is the only editor he has. Both
+  screens, and keep future iPhone use in mind.
+- History: Nov 3 he picked the Pixel/Google Photos editor because the
+  in-app editor only did rotate. Nov 8 proved the handoff fragile:
+  Android can kill the app while the outside editor is open, and on
+  relaunch the app opens step 1 fresh with no record of the draft he
+  was in (only way back is the My drafts link). The handoff is deleted,
+  not fixed: no ACTION_EDIT, no MediaStore working copy, no
+  Android.editDraftPhoto bridge, no PhotosEditor.kt, no ACTION_EDIT or
+  Google Photos entry in the manifest <queries> (camera IMAGE_CAPTURE
+  stays).
+- Fix: one shared editor in pure HTML/JS/canvas web code, used by step 1
+  (openEditor) and the draft page (openDraftEditor, which fetches the
+  photo's bytes first). No native Android editor code, no new Android
+  permissions, no new native dependency. Portability constraint: the
+  same editor code can later run in an iOS WebView or a browser version
+  without being rewritten — that is why it is web code, not Kotlin.
+- Abilities: Auto enhance (one tap, histogram-based: dark photos get
+  brightness, flat photos get contrast, capped so a moody photo is never
+  blasted); sliders for Brightness, Contrast, Saturation, Warmth,
+  Sharpness, all live; one-tap filters Original, Vivid, Warm, Cool,
+  Mono (presets are slider values, so a manual slider move clears the
+  active chip); crop freeform plus presets Original, Square, 4:3, 16:9;
+  rotate 90, straighten (-15..15 degrees, crop auto-insets out of the
+  empty corners), flip horizontal; Reset restores the photo as opened;
+  Apply saves back into the same slot, Cancel discards everything.
+  Adjustments are never baked into the source image until Apply, and
+  the preview and the save run the same render path, so what he sees is
+  what saves. Apply writes at the 2048px long-edge cap, JPEG q85,
+  through the existing replace endpoints (step 1: replaceAutoDraftPhoto;
+  draft: /api/drafts/<id>/photos/<i>/replace plus a thumbnail refresh,
+  which shows at once under the v54 no-cache rule).
+- Tests: tests/editor-math.test.js (filter strings, auto-enhance values,
+  crop math, straightened-frame geometry, sharpen kernel),
+  tests/photo-editor.test.js (29 checks: every adjustment reaches the
+  render, crop/rotate/straighten/flip, Reset/Cancel/Apply on step 1,
+  draft Edit opens the in-app editor and its Apply saves + refreshes),
+  tests/multi-photo.test.js (draft Edit section rewritten to the in-app
+  editor), tests/test_mediastore_edit.py and
+  tests/test_manifest_queries_edit.py rewritten as no-handoff contracts,
+  fit_check.py checks 22 (controls present and wired on both screens)
+  and 23 (editor box scrolls, 44px sliders, active-chip contrast).
+  fit_check.py main() now returns 1 when any check fails (it previously
+  fell off the end and always exited 0, so a red gate could not stop a
+  release).
+- Release note: build.gradle.kts must be bumped to 56/1.55 in the code
+  commit (check 21 guards it; v55 caught the unbumped-gradle defect).

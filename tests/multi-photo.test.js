@@ -114,6 +114,18 @@ const sandbox = {
   /* Browser semantics: window.createImageBitmap IS the global, and
      decodeFile calls the bare name after checking window's. */
   createImageBitmap: async () => ({ width: 120, height: 90, close() {} }),
+  /* v56: the in-app editor loads photos through `new Image()`. */
+  Image: class {
+    constructor() {
+      this.naturalWidth = 800; this.naturalHeight = 600;
+      this.onload = null; this.onerror = null; this._src = "";
+    }
+    set src(v) {
+      this._src = v;
+      setTimeout(() => { if (this.onload) this.onload(); }, 0);
+    }
+    get src() { return this._src; }
+  },
   fetch: async (url, opts = {}) => {
     fetchCalls.push({ url, opts });
     const u = String(url);
@@ -249,25 +261,19 @@ const fakeFile = (name) => new File(["x"], name, { type: "image/jpeg" });
   check("draft camera snap uploads to the draft endpoint",
     fetchCalls.some((c) => String(c.url) === "/api/drafts/d9/photos"));
 
-  // Pixel-editor handoff (Nov 3 decision): draft Edit hands the photo to
-  // the phone's editor via the bridge — never the in-app editor — with a
-  // plain fallback when the bridge is absent, and a photos-only refresh
-  // the app calls after a good edit returns.
+  // v56: the Pixel-editor handoff is gone. Draft Edit opens the same
+  // in-app editor step 1 uses: it fetches the photo's bytes and opens
+  // the editor in place — no bridge call, no outside app, no lost
+  // place. reloadDraftPhotosOnly still refreshes thumbnails after a save.
   ctx("draft = { id: 'd9', photos: ['d9/1.jpg', 'd9/2.jpg'] };");
   const editCalls = [];
   sandbox.window.Android = { editDraftPhoto: (id, rel, i) => { editCalls.push([id, rel, i]); } };
-  sandbox.editDraftPhotoInPixel(1);
-  check("draft Edit calls the phone-editor bridge with id, photo, and slot",
-    editCalls.length === 1 && editCalls[0][0] === "d9" &&
-    editCalls[0][1] === "d9/2.jpg" && editCalls[0][2] === 1);
-  $("editor").classList.add("hidden");
-  sandbox.editDraftPhotoInPixel(1);
-  check("draft Edit never opens the in-app editor", hidden("editor"));
+  ctx("openDraftEditor(1);");
+  await new Promise((r) => setTimeout(r, 20));
+  check("draft Edit opens the in-app editor, never the editor bridge",
+    !$("editor").classList.contains("hidden") &&
+    ctx("editSource.kind") === "draft" && editCalls.length === 0);
   delete sandbox.window.Android;
-  sandbox.editDraftPhotoInPixel(0);
-  check("draft Edit without the bridge shows a plain error, never silent",
-    !$("draft-photo-error").classList.contains("hidden") &&
-    $("draft-photo-error").textContent.includes("needs the app"));
   fetchQueue.push({ draft: { id: "d9", photos: ["d9/1.jpg", "d9/2.jpg", "d9/3.jpg"] } });
   await sandbox.reloadDraftPhotosOnly();
   check("photos-only refresh re-renders thumbnails from the draft fetch",
