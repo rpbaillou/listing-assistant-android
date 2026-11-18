@@ -8,6 +8,7 @@ v1 had no eBay connection (developer's account was suspended). v2 adds it.
 Copy buttons and the photos zip remain as a manual fallback.
 """
 import base64
+import hashlib
 import html
 import io
 import json
@@ -2156,6 +2157,11 @@ def _do_publish(d, f, ship_from=None):
     d["ebay_listing_id"] = listing_id
     d["ebay_listing_url"] = listing_url
     d["ebay_sku"] = sku
+    # v57: record the live photo list + a hash of each local file, so a
+    # later photos-only update can reuse the unchanged URLs and upload
+    # only what actually changed.
+    d["ebay_image_urls"] = list(image_urls)
+    d["ebay_photo_hashes"] = _draft_photo_hashes(photos)
     _save_draft(d)
     # v50: a listed draft is finished — it is never the resume target.
     _clear_resume_if(d["id"])
@@ -3898,6 +3904,308 @@ def api_draft_move_photo(draft_id, index):
             return jsonify({"error": "Move left or right."}), 400
     _save_draft(d)
     return jsonify({"draft": d})
+
+
+def _photo_file_hash(full):
+    h = hashlib.sha256()
+    with open(full, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _draft_photo_hashes(photos):
+    """v57: sha256 of each draft photo's bytes, in order (None when the
+    file is gone). The revise flow matches hashes to the stored eBay
+    URLs, so an unchanged photo keeps its URL and only changed or new
+    photos are uploaded."""
+    out = []
+    for rel in photos or []:
+        full = _safe_photo_path(rel)
+        if full is None or not os.path.isfile(full):
+            out.append(None)
+        else:
+            out.append(_photo_file_hash(full))
+    return out
+
+
+def _log_ebay_failure(context, exc):
+    """v57: never discard an eBay failure — status + errorId + message
+    go to the log (no tokens, no photo bytes) so the next failure names
+    its code instead of arriving as a bare sentence."""
+    app.logger.warning("ebay failure [%s]: status=%s error_id=%s message=%s",
+                       context, getattr(exc, "status", None),
+                       getattr(exc, "error_id", ""), str(exc)[:300])
+
+
+def _revise_photo_plan(d, token):
+    """v57: compare a listed draft's local photos with the live
+    listing's photos and plan a photos-only update. GET only — nothing
+    is sent to eBay by this function. Returns the live item body, the
+    new photo list (None where a photo still needs uploading), the
+    upload indexes, the removed count, the reordered flag, and the plain
+    change lines the confirm screen shows. Raises RuntimeError with a
+    plain message on any failure.
+
+    The stored record (ebay_image_urls + ebay_photo_hashes, written at
+    publish and after each successful update) is trusted only when it
+    still lines up with what eBay shows now, same URLs in the same
+    order. Anything else means the photos changed somewhere other than
+    this app — or this is a draft published before v57 kept the record —
+    so every photo is uploaded once and the confirm screen says so
+    plainly instead of guessing which ones changed."""
+    sku = (d.get("ebay_sku") or ("la" + d["id"])).strip()
+    try:
+        item = _ebay_call("GET",
+                          f"/sell/inventory/v1/inventory_item/{sku}", token)
+    except _EbayApiError as exc:
+        if getattr(exc, "status", None) == 404:
+            raise RuntimeError(
+                "eBay no longer has this item. It may have been ended, "
+                "sold, or removed on eBay's side. Check Seller Hub.")
+        raise
+    if not isinstance(item, dict):
+        raise RuntimeError(
+            "eBay returned something unexpected for this item. Try again.")
+    product = item.get("product") or {}
+    live_urls = [str(u) for u in (product.get("imageUrls") or [])
+                 if str(u).strip()]
+    photos = d.get("photos") or []
+    if not photos:
+        raise RuntimeError("This listing has no photos to update.")
+    missing = []
+    current_hashes = []
+    for i, rel in enumerate(photos):
+        full = _safe_photo_path(rel)
+        if full is None or not os.path.isfile(full):
+            missing.append(i + 1)
+            current_hashes.append(None)
+        else:
+            current_hashes.append(_photo_file_hash(full))
+    if missing:
+        raise RuntimeError(
+            "Photo " + ", ".join("#%d" % n for n in missing) +
+            " is missing from this phone, so the live listing cannot be "
+            "rebuilt from it. Re-add the photo, then try again.")
+    stored_urls = [str(u) for u in (d.get("ebay_image_urls") or [])
+                   if str(u).strip()]
+    stored_hashes = d.get("ebay_photo_hashes") or []
+    trusted = (len(stored_urls) == len(stored_hashes) == len(live_urls)
+               and stored_urls == live_urls
+               and all(isinstance(h, str) and h for h in stored_hashes))
+    uploads = []
+    new_urls = []
+    reused = 0
+    used_stored = set()
+    if trusted:
+        for i, h in enumerate(current_hashes):
+            match = None
+            for j, sh in enumerate(stored_hashes):
+                if j not in used_stored and sh == h:
+                    match = j
+                    break
+            if match is None:
+                uploads.append(i)
+                new_urls.append(None)
+            else:
+                used_stored.add(match)
+                new_urls.append(stored_urls[match])
+                reused += 1
+        removed = len(live_urls) - reused
+        surviving_old = [stored_hashes[j] for j in sorted(used_stored)]
+        surviving_new = [current_hashes[i] for i in range(len(current_hashes))
+                         if new_urls[i] is not None]
+        reordered = surviving_old != surviving_new
+    else:
+        uploads = list(range(len(photos)))
+        new_urls = [None] * len(photos)
+        reused = 0
+        reordered = False
+    # A replaced photo is not a removed one: every upload stands in
+    # for one live photo, so only the live photos left over after the
+    # reuses and the replacements count as removed.
+    removed = max(0, len(live_urls) - reused - len(uploads))
+    changes = []
+    if not trusted:
+        if stored_urls or stored_hashes:
+            changes.append(
+                "eBay's photos for this listing changed somewhere other "
+                "than this app, so all %d photos will be uploaded fresh."
+                % len(photos))
+        else:
+            changes.append(
+                "The app has no record of which photos eBay already has "
+                "for this listing, so all %d photos will be uploaded."
+                % len(photos))
+    else:
+        for i in uploads:
+            if i < len(stored_hashes):
+                changes.append("Photo %d was edited and will be uploaded."
+                               % (i + 1))
+            else:
+                changes.append("Photo %d is new and will be uploaded."
+                               % (i + 1))
+        if removed:
+            changes.append("%d photo%s on the live listing will be "
+                           "removed." % (removed, "s" if removed != 1 else ""))
+        if reordered:
+            changes.append("The photo order changed. Photo 1 stays the "
+                           "main photo.")
+    if not changes:
+        changes.append("No photo changes. The live listing already shows "
+                       "these photos.")
+    return {
+        "item": item, "sku": sku, "live_urls": live_urls,
+        "uploads": uploads, "new_urls": new_urls,
+        "current_hashes": current_hashes,
+        "removed": removed, "reordered": reordered,
+        "trusted": trusted, "changes": changes,
+        "unchanged": (not uploads and removed == 0 and not reordered
+                      and new_urls == live_urls),
+    }
+
+
+def _revise_eligible(d):
+    """v57: only a draft this app published can be updated on eBay.
+    Returns (error, status), or None when the draft is eligible."""
+    if d is None:
+        return "Draft not found.", 404
+    if not d.get("ebay_listing_id") or not d.get("ebay_offer_id"):
+        return ("This draft was not published by the app, so there is no "
+                "live listing to update."), 409
+    if not d.get("photos"):
+        return "This listing has no photos to update.", 400
+    return None
+
+
+def _revise_token_or_response():
+    """v57: fresh user token for the revise calls, following the
+    publish pattern — a scope shortfall carries its flag, a dead
+    sign-in is a plain 502. Returns (token, response); exactly one is
+    set."""
+    try:
+        return _ebay_access_token(), None
+    except _NeedsScopeReconnect as exc:
+        return None, (jsonify({"needs_scope_reconnect": True,
+                               "error": str(exc)}), 200)
+    except RuntimeError as exc:
+        return None, (jsonify({"error": str(exc)}), 502)
+
+
+@app.route("/api/drafts/<draft_id>/revise-photos", methods=["GET"])
+def api_revise_photos_preview(draft_id):
+    """v57: preview a photos-only update for a listed draft. GET only —
+    nothing is sent to eBay beyond reading the live item. The plan says
+    exactly what the confirm screen will show."""
+    d = _load_draft(draft_id)
+    err = _revise_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        plan = _revise_photo_plan(d, token)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-photos preview", exc)
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({
+        "listing_id": d["ebay_listing_id"],
+        "listing_url": d.get("ebay_listing_url", ""),
+        "title": d.get("title", ""),
+        "photo_count": len(d.get("photos") or []),
+        "live_count": len(plan["live_urls"]),
+        "uploads": plan["uploads"],
+        "removed": plan["removed"],
+        "reordered": plan["reordered"],
+        "unchanged": plan["unchanged"],
+        "changes": plan["changes"],
+    })
+
+
+@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])
+def api_revise_photos_execute(draft_id):
+    """v57: run the photos-only update after the confirm screen. The
+    plan is recomputed fresh here — the client sends only its agreement,
+    never the plan — so a stale preview cannot send a stale update.
+    Uploads only the changed/new photos, PUTs the item back exactly as
+    eBay returned it with only the photo list swapped, then reads the
+    item back to prove the new photos took."""
+    d = _load_draft(draft_id)
+    err = _revise_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirmed"):
+        return jsonify({"error": "Confirm the photo update first."}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        plan = _revise_photo_plan(d, token)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-photos plan", exc)
+        return jsonify({"error": str(exc)}), 502
+    if plan["unchanged"]:
+        return jsonify({"ok": True, "unchanged": True,
+                        "message": "The live listing already shows these "
+                                   "photos.",
+                        "listing_id": d["ebay_listing_id"],
+                        "listing_url": d.get("ebay_listing_url", "")})
+    new_urls = list(plan["new_urls"])
+    try:
+        for i in plan["uploads"]:
+            full = _safe_photo_path(d["photos"][i])
+            new_urls[i] = _ebay_upload_picture(full, token)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-photos upload", exc)
+        return jsonify({"error": str(exc)}), 502
+    # PUT the item back exactly as eBay returned it, with only the
+    # photo list swapped — title, price, policies, quantity and
+    # everything else ride along untouched. No new offer, no re-publish.
+    put_body = json.loads(json.dumps(plan["item"]))
+    product = put_body.get("product") or {}
+    product["imageUrls"] = new_urls
+    put_body["product"] = product
+    try:
+        _ebay_call("PUT",
+                   f"/sell/inventory/v1/inventory_item/{plan['sku']}",
+                   token, put_body)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-photos put", exc)
+        return jsonify({"error": str(exc)}), 502
+    try:
+        after = _ebay_call(
+            "GET", f"/sell/inventory/v1/inventory_item/{plan['sku']}", token)
+        after_urls = [str(u) for u in
+                      ((after.get("product") or {}).get("imageUrls") or [])]
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-photos verify", exc)
+        return jsonify({"error": "The update was sent but eBay could not "
+                                 "confirm it. Check Seller Hub before "
+                                 "trying again: " + str(exc)}), 502
+    if after_urls != new_urls:
+        app.logger.warning(
+            "revise-photos verify mismatch draft=%s sku=%s expected=%s "
+            "got=%s", d["id"], plan["sku"], new_urls, after_urls)
+        return jsonify({"error": "eBay did not show the new photos. Check "
+                                 "the listing in Seller Hub before trying "
+                                 "again."}), 502
+    d["ebay_image_urls"] = list(new_urls)
+    d["ebay_photo_hashes"] = list(plan["current_hashes"])
+    _save_draft(d)
+    return jsonify({"ok": True,
+                    "listing_id": d["ebay_listing_id"],
+                    "listing_url": d.get("ebay_listing_url", ""),
+                    "uploaded": len(plan["uploads"]),
+                    "removed": plan["removed"],
+                    "message": "The live listing now shows the new photos."})
 
 
 @app.route("/photos/<path:rel>")

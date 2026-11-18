@@ -755,6 +755,59 @@ def main():
           rules.get(".edit-slider label", {}).get("justify-content") == "space-between",
           str(rules.get(".edit-slider label", {})))
 
+    # 24. v57 photos-only live-listing update: the Listed section rows
+    # get an Update photos button (unlisted rows keep Post), the
+    # listing page shows the Update button only for listed drafts and
+    # hides List there, the confirm card lists the changes with a
+    # Confirm + Cancel pair, and the server side is photos-only: the
+    # execute endpoint recomputes the plan, requires confirmed:true,
+    # PUTs the item back with only imageUrls swapped, reads it back to
+    # verify, and never creates an offer or re-publishes.
+    check("listed rows get an Update photos button, unlisted keep Post",
+          'class="secondary update-photos">Update photos<' in js and
+          "(d.listed" in js and "Update photos" not in html,
+          "row button missing from app.js")
+    check("update button + confirm card exist in the page",
+          all('id="%s"' % i in html for i in (
+              "btn-update-photos", "revise-confirm", "revise-changes",
+              "btn-revise-confirm", "btn-revise-cancel", "revise-ok",
+              "revise-error", "revise-spinner")),
+          "missing revise ids")
+    check("update button starts hidden; List stays the default",
+          'id="btn-update-photos" class="primary big hidden"' in html and
+          'id="btn-publish" class="primary big"' in html)
+    check("confirm card names the photos-only scope",
+          "Only the photos change. Title, price, and shipping stay as they are." in html)
+    check("status card shows Update only for listed drafts",
+          'btn-update-photos").classList.remove("hidden")' in js and
+          js.count('btn-update-photos").classList.add("hidden")') >= 3)
+    check("revise endpoints exist (preview GET + execute POST)",
+          '@app.route("/api/drafts/<draft_id>/revise-photos", methods=["GET"])' in py and
+          '@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])' in py)
+    check("execute requires confirmed:true before any eBay call",
+          'if not body.get("confirmed"):' in py and
+          'Confirm the photo update first.' in py)
+    check("execute PUTs the item back with only imageUrls swapped",
+          'product["imageUrls"] = new_urls' in py and
+          'put_body = json.loads(json.dumps(plan["item"]))' in py)
+    check("execute verifies by reading the item back and comparing",
+          'after_urls != new_urls' in py and
+          "did not show the new photos" in py)
+    check("execute never creates an offer or re-publishes",
+          "/offer" not in py.split(
+              "def api_revise_photos_execute")[1].split(
+              "@app.route")[0] and
+          "/publish" not in py.split(
+              "def api_revise_photos_execute")[1].split(
+              "@app.route")[0] and
+          "_do_publish" not in py.split(
+              "def api_revise_photos_execute")[1].split(
+              "@app.route")[0],
+          "revise execute touches offers or publish")
+    check("publish records the live photo list + hashes for later revise",
+          'd["ebay_image_urls"] = list(image_urls)' in py and
+          'd["ebay_photo_hashes"] = _draft_photo_hashes(photos)' in py)
+
     print()
     return 1 if FAILURES else 0
 

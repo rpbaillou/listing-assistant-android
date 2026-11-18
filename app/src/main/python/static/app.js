@@ -1870,7 +1870,9 @@ function makeDraftRow(d) {
      break cleanly between them, never mid-string.
      v24: a tick box (batch posting) and a Post button (straight to
      the listing page) join the row. Listed drafts get no Post button — they are
-     already live, and the publish step refuses them anyway. v49: no
+     already live, and the publish step refuses them anyway. v57: listed
+     drafts get an Update photos button instead — it opens the draft on
+     the listing page, where the Update live listing button lives. v49: no
      "Listed on eBay" pill on any row — listed rows live ONLY in the
      bottom "Listed on eBay" section, so a pill inside the Drafts
      section would be a lie; Delete is a grey button with a trash
@@ -1882,7 +1884,9 @@ function makeDraftRow(d) {
     '<div class="t"><b>' + esc(d.title || "(untitled)") + "</b>" + dateHtml(d.updated) +
     "</div>" +
     '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
-    (d.listed ? "" : '<button type="button" class="primary post">Post</button>') +
+    (d.listed
+      ? '<button type="button" class="secondary update-photos">Update photos</button>'
+      : '<button type="button" class="primary post">Post</button>') +
     '<button type="button" class="del">🗑 Delete</button></div>';
   row.querySelector(".secondary").addEventListener("click", async () => {
     const { draft: full } = await api("/api/drafts/" + d.id);
@@ -1913,6 +1917,18 @@ function makeDraftRow(d) {
       } else {
         note.classList.add("hidden");
       }
+      show("step-draft");
+    });
+  }
+  const updBtn = row.querySelector(".update-photos");
+  if (updBtn) {
+    updBtn.addEventListener("click", async () => {
+      /* v57: a listed draft opens on the listing page, where the photo
+         grid, the v56 editor and the Update live listing button live —
+         the same destination as Open, named for the job. */
+      const { draft: full } = await api("/api/drafts/" + d.id);
+      loadDraftIntoForm(full);
+      await prefillListing();
       show("step-draft");
     });
   }
@@ -2499,6 +2515,7 @@ async function refreshEbayStatus() {
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0'>Could not check eBay status.</p>";
     $("btn-publish").classList.remove("hidden");
+    $("btn-update-photos").classList.add("hidden");
     return null;
   }
   ebayStatus = st;
@@ -2507,6 +2524,7 @@ async function refreshEbayStatus() {
       "<p class='hint'>Add your eBay App ID and Cert ID to the .env file " +
       "(setup guide: Connect eBay), then restart the app. The manual copy buttons below still work.</p>";
     $("btn-publish").classList.add("hidden");
+    $("btn-update-photos").classList.add("hidden");
     return st;
   }
   if (!st.connected) {
@@ -2545,6 +2563,7 @@ async function refreshEbayStatus() {
       });
     }
     $("btn-publish").classList.add("hidden");
+    $("btn-update-photos").classList.add("hidden");
     return st;
   }
   const alreadyLive = !!(draft && draft.ebay_listing_id);
@@ -2553,6 +2572,9 @@ async function refreshEbayStatus() {
       "<p class='hint'><a href='" + draft.ebay_listing_url + "' target='_blank'>View your listing</a>" +
       " · item " + esc(draft.ebay_listing_id) + "</p>";
     $("btn-publish").classList.add("hidden");
+    /* v57: a listed draft gets the photos-only update button instead
+       of List — List never updates a live listing. */
+    $("btn-update-photos").classList.remove("hidden");
   } else {
     let statusHtml = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
       "<p class='hint runame-line'>Sign-in name in use: " + esc((st.runame || "").trim()) + "</p>";
@@ -2564,6 +2586,7 @@ async function refreshEbayStatus() {
     }
     box.innerHTML = statusHtml;
     $("btn-publish").classList.remove("hidden");
+    $("btn-update-photos").classList.add("hidden");
   }
   return st;
 }
@@ -2583,6 +2606,11 @@ async function prefillListing(opts) {
   $("publish-error").classList.add("hidden");
   if (!opts || !opts.keepPublishOk) $("publish-ok").classList.add("hidden");
   $("listing-note").classList.add("hidden");
+  /* v57: a fresh draft open clears any stale revise note or confirm
+     card from an earlier visit. */
+  $("revise-error").classList.add("hidden");
+  $("revise-ok").classList.add("hidden");
+  $("revise-confirm").classList.add("hidden");
   /* v53: the status card is rendered by refreshEbayStatus (above), so
      a token-death failure anywhere can re-run it and flip the card to
      not-connected. Only a connected card goes on to prefill the
@@ -3058,6 +3086,108 @@ $("btn-publish").addEventListener("click", async () => {
   } finally {
     $("publish-spinner").classList.add("hidden");
     $("btn-publish").disabled = false;
+  }
+});
+
+function hideReviseMsg() {
+  $("revise-error").classList.add("hidden");
+  $("revise-ok").classList.add("hidden");
+  $("revise-confirm").classList.add("hidden");
+}
+
+/* v57: photos-only update for a listed draft. The listing page is
+   where the photos are edited (v56 editor, add, delete, drag
+   reorder); this button asks eBay what the live listing shows now,
+   shows exactly what will change on the confirm card, and only sends
+   the update after the seller taps Update live listing on that card.
+   Nothing goes to eBay before that tap. */
+$("btn-update-photos").addEventListener("click", async () => {
+  hideReviseMsg();
+  if (!draft) return;
+  /* v29 precedent: save the draft first so what updates is exactly
+     what is on disk. */
+  await saveDraft();
+  const btn = $("btn-update-photos");
+  btn.disabled = true;
+  try {
+    const plan = await api("/api/drafts/" + draft.id + "/revise-photos");
+    if (plan.needs_scope_reconnect) {
+      const el = $("revise-error");
+      el.textContent = plan.error || "The app needs one new permission to read your shipping policies.";
+      el.classList.remove("hidden");
+      $("scope-reconnect-box").classList.remove("hidden");
+      await refreshStatusIfTokenDied(plan.error || "The app needs one new permission to read your shipping policies.");
+      return;
+    }
+    if (plan.unchanged) {
+      const ok = $("revise-ok");
+      ok.textContent = "The live listing already shows these photos.";
+      ok.classList.remove("hidden");
+      return;
+    }
+    const list = $("revise-changes");
+    list.innerHTML = "";
+    (plan.changes || []).forEach((c) => {
+      const li = document.createElement("li");
+      li.textContent = c;
+      list.appendChild(li);
+    });
+    $("revise-confirm").classList.remove("hidden");
+  } catch (e) {
+    const el = $("revise-error");
+    el.textContent = e.message;
+    el.classList.remove("hidden");
+    if (isScopeReconnectText(e.message)) {
+      $("scope-reconnect-box").classList.remove("hidden");
+    }
+    /* v53: a token-death message here means the sign-in died after
+       the status card rendered — flip the card to not-connected. */
+    await refreshStatusIfTokenDied(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("btn-revise-cancel").addEventListener("click", () => {
+  $("revise-confirm").classList.add("hidden");
+});
+
+$("btn-revise-confirm").addEventListener("click", async () => {
+  if (!draft) return;
+  $("revise-confirm").classList.add("hidden");
+  $("revise-error").classList.add("hidden");
+  $("revise-spinner").classList.remove("hidden");
+  const btn = $("btn-revise-confirm");
+  btn.disabled = true;
+  try {
+    const r = await api("/api/drafts/" + draft.id + "/revise-photos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirmed: true }),
+    });
+    if (r.needs_scope_reconnect) {
+      const el = $("revise-error");
+      el.textContent = r.error || "The app needs one new permission to read your shipping policies.";
+      el.classList.remove("hidden");
+      $("scope-reconnect-box").classList.remove("hidden");
+      await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
+      return;
+    }
+    const ok = $("revise-ok");
+    ok.innerHTML = "The live listing now shows the new photos." +
+      (r.listing_url ? " <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" : "");
+    ok.classList.remove("hidden");
+  } catch (e) {
+    const el = $("revise-error");
+    el.textContent = e.message;
+    el.classList.remove("hidden");
+    if (isScopeReconnectText(e.message)) {
+      $("scope-reconnect-box").classList.remove("hidden");
+    }
+    await refreshStatusIfTokenDied(e.message);
+  } finally {
+    $("revise-spinner").classList.add("hidden");
+    btn.disabled = false;
   }
 });
 

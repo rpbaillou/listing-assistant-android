@@ -1135,3 +1135,68 @@ remembers the open draft.
   release).
 - Release note: build.gradle.kts must be bumped to 56/1.55 in the code
   commit (check 21 guards it; v55 caught the unbumped-gradle defect).
+
+## v57: photos-only update for a listing that is already live
+
+- Live ask (Nov 18): the v56 editor only works on drafts. Once a
+  listing is live, the app had no way to send a photo change to it:
+  List only ever creates a brand-new listing, never updates one, and
+  List on an app-published draft is blocked with 409. There was no
+  revise path in the app at all. The eBay app will not edit photos on
+  these listings either (it says something about an inventory
+  process), so the only path besides eBay's website is this one.
+- Fix: a photos-only revise, entered from the "Listed on eBay"
+  section of My drafts. Each listed draft gets an Update photos
+  button; it opens the draft on the listing page, where the photo
+  grid, the v56 editor, add, delete and drag reorder all work as
+  before. For listed drafts the listing page shows an Update live
+  listing photos button instead of List. Only drafts this app
+  published are eligible (ebay_listing_id + ebay_offer_id); anything
+  else gets a plain refusal and no eBay call.
+- Mechanics (reuses the publish pieces, nothing new invented):
+  preview GETs the inventory item (sku "la" + draft id, or the stored
+  ebay_sku) and uses its current imageUrls as the base. Publish and
+  each successful update record ebay_image_urls + ebay_photo_hashes
+  (sha256 of each local file, in order) on the draft; the plan matches
+  hashes to stored URLs, so unchanged photos keep their existing
+  eBay-hosted URLs and only changed/new photos are uploaded, via the
+  existing Media API helper. A reorder moves the URLs with the photos
+  and uploads nothing; a delete drops its URL. When the stored record
+  does not line up with what eBay shows (photos changed somewhere
+  other than this app, or a draft published before v57 kept no
+  record), every photo is uploaded once and the confirm screen says
+  so plainly instead of guessing.
+- Review before submit: the Update button only fetches the preview.
+  The confirm card lists exactly what will change (which photos
+  upload, how many are removed, whether the order changed) and says
+  only the photos change. Nothing goes to eBay until he taps Update
+  live listing on that card. The execute endpoint recomputes the plan
+  fresh — the client sends only confirmed:true, never the plan — so a
+  stale preview cannot send a stale update. An unchanged plan sends
+  nothing and says the live listing already shows these photos.
+- Execute: uploads the changed/new photos, PUTs the inventory item
+  back exactly as eBay returned it with only imageUrls swapped (no
+  new offer, no re-publish, title/price/policies/quantity untouched),
+  then GETs the item back and compares imageUrls in order. Only a
+  verified match updates the draft's stored photo record. A listing
+  with bids, a gone item, or any eBay error surfaces eBay's message
+  plainly and stops; failures are logged with status + errorId +
+  message (never a token or photo bytes). No silent retries beyond
+  the Media helper's own one 5xx retry.
+- Tests: tests/test_revise_photos.py (20 checks: eligibility 404/409/
+  400, unchanged/edited/added/removed/reordered/legacy/external-change
+  plans, missing local file named, confirmed required with zero eBay
+  calls, execute uploads only the changed photo and PUTs the full item
+  with only imageUrls swapped, unchanged sends nothing, PUT error and
+  verify mismatch surface plainly and keep the old draft record,
+  scope-reconnect flag), tests/revise-photos.test.js (22 checks:
+  row buttons, status-card button visibility, confirm card, Cancel
+  sends nothing, Confirm posts confirmed:true only, unchanged and
+  failure paths), fit_check.py check 24 (entry point, confirm card,
+  photos-only server shape, publish records the photo state).
+  The Media API is production-only (not supported in Sandbox), so the
+  revise flow cannot be proven end to end in CI: the eBay calls in
+  tests are mocked, and live proof needs his one-listing trial after
+  install. Do not claim live verification that was not done.
+- Release note: build.gradle.kts must be bumped to 57/1.56 in the code
+  commit (check 21 guards it; v55 caught the unbumped-gradle defect).
