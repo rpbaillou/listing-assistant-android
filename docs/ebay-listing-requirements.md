@@ -1200,3 +1200,75 @@ remembers the open draft.
   install. Do not claim live verification that was not done.
 - Release note: build.gradle.kts must be bumped to 57/1.56 in the code
   commit (check 21 guards it; v55 caught the unbumped-gradle defect).
+
+## v58: editor tilt, crop box, and Auto enhance
+
+- Live ask (Nov 18): two editor problems on the v56 editor, plus a
+  third from the same day. (1) A photo showed up tilted about 14
+  degrees in Edit, though the original was straight, and Edit had
+  worked fine before v56. (2) The crop box would not grow back once
+  shrunk. (3) Auto enhance blew out the brightness on white-box
+  photos.
+- Cause, proven by his live test: tapping Reset in the editor
+  straightened the photo. Reset zeroes rotation, flip, straighten,
+  adjustments, filter, and crop, and only straighten can remove a
+  14-degree tilt (rotate is 90-degree steps, flip mirrors, the
+  sliders do not rotate), so the tilt at open was a nonzero
+  Straighten value stuck on from a previous edit session. The small
+  crop box was the same cause: straightening shrinks the safe frame
+  and the straighten handler only clamped the crop into it, never
+  growing it back. The leak, reproduced in a node harness before
+  the fix: closeEditor reset neither the state nor the sliders, so
+  after Cancel both editStraighten and the straighten slider still
+  read 14; openEditorFor reset the state but the slider DOM still
+  read 14 until the image loaded, and any input event in that
+  window (a WebView form-state restore, a stray touch) read the
+  stale 14 back into state — after which the image-load sync
+  faithfully preserved the corrupted value. A second in-session
+  cause was also possible: the editor panel scrolls, and a scroll
+  gesture starting on the straighten slider dragged the slider
+  instead of scrolling.
+- Fix 1, tilt: the editor always opens with straighten (and every
+  adjustment) at zero, on both screens. openEditorFor resets the
+  state and calls syncEditorControls() synchronously, before the
+  Image is created, so the sliders read zero the moment the editor
+  opens. closeEditor now resets the state and syncs the controls
+  too, so nothing survives Cancel. The image-load sync before
+  drawEditor is kept. The render reads the edit state only, never
+  the slider elements. The sliders also get touch-action: pan-y, so
+  a vertical scroll gesture passes through to the panel instead of
+  dragging a slider.
+- Fix 2, crop box: the corner squares are 44px (were 28px) and the
+  hit tolerance is 44px, so a fingertip landing near a corner grabs
+  it instead of moving the whole box (inside the box) or doing
+  nothing (outside it). Straightening now keeps the crop's relative
+  place in the visible frame (new pure helper remapCropToFrame), so
+  straightening to 14 and back to 0 grows the crop back to the full
+  frame, and a deliberately small crop keeps its relative size and
+  place. The Crop: Original preset still restores the full-frame
+  crop in one tap without wiping the sliders, and a corner drag at
+  straighten 0 can grow the crop back to the full frame.
+- Fix 3, Auto enhance: autoEnhanceValues now caps brightness at 0
+  when the mean is at or above the 118 target, so it never
+  brightens an already-bright photo — lifting the whites on white
+  packaging erases the faint print. When the histogram probe fails,
+  the Auto button leaves the photo alone instead of applying the
+  old blind +8 brightness / +12 contrast fallback.
+- Tests: tests/photo-editor.test.js (12 new checks: straighten 14
+  tilts the render, Cancel leaves no Straighten behind, a fresh
+  open zeroes the sliders before the photo loads, a stray input
+  while opening cannot re-tilt the photo, a fresh open renders
+  untilted with a full-frame crop, straighten 10 insets the crop
+  and back to 0 grows it back, corner drags shrink and regrow the
+  crop, a near-corner tap grabs the corner, Auto enhance never
+  brightens an already-bright photo, the bright white-box filter
+  keeps the whites and the faint print, a failed probe applies no
+  boost), tests/editor-math.test.js (5 new checks: auto-enhance
+  cap at and above the target mean, dark photos still brighten,
+  remapCropToFrame full-frame both ways and a small centered crop),
+  fit_check.py check 25 (open sync before the Image, close clears
+  the leftovers, render reads state only, 44px handles and
+  tolerance, remap on the straighten handler, auto-enhance cap,
+  no blind fallback, slider pan-y).
+- Release note: build.gradle.kts must be bumped to 58/1.57 in the code
+  commit (check 21 guards it; v55 caught the unbumped-gradle defect).

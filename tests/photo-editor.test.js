@@ -336,6 +336,22 @@ function hasCall(pred) {
 function hasFilter(str) {
   return hasCall((c) => c[0] === "filter" && String(c[1]).includes(str));
 }
+function lastRotate() {
+  /* v58: the most recent rotate angle any render drew, or null if no
+     render ran yet. Render canvases are created in order, so the
+     newest context holds the newest render. */
+  for (let i = ALL_CTX.length - 1; i >= 0; i--) {
+    const calls = ALL_CTX[i].calls;
+    for (let j = calls.length - 1; j >= 0; j--) {
+      if (calls[j][0] === "rotate") return calls[j][1];
+    }
+  }
+  return null;
+}
+function cropEq(a, b) {
+  /* v58: drags do float math, so compare crop rects within a hair. */
+  return a && b && ["x", "y", "w", "h"].every((k) => Math.abs(a[k] - b[k]) < 0.01);
+}
 
 const DRAFT = { id: "d9", photos: ["d9/1.jpg", "d9/2.jpg"] };
 const fakeBlob = new Blob(["photo-bytes"], { type: "image/jpeg" });
@@ -401,6 +417,37 @@ const cropPreset = (ratio) =>
   check("Auto enhance sets values from the photo itself",
     ctx("editAdj.brightness") === 29 && ctx("editAdj.contrast") === 22 &&
     ctx("editAdj.saturation") === 12);
+  /* v58: Auto enhance never brightens an already-bright photo — a
+     bright white box with faint print must keep its whites and the
+     print readable. */
+  const brightVals = ctx("autoEnhanceValues(189, 71)");
+  check("Auto enhance never brightens an already-bright photo",
+    brightVals.brightness === -30 && brightVals.brightness <= 0);
+  const brightFilter = ctx("adjustmentFilter(autoEnhanceValues(189, 71))");
+  const bf = Number(brightFilter.match(/brightness\(([\d.]+)\)/)[1]);
+  const cf = Number(brightFilter.match(/contrast\(([\d.]+)\)/)[1]);
+  const whiteAfter = 127.5 + (255 * bf - 127.5) * cf;
+  const faintAfter = 127.5 + (200 * bf - 127.5) * cf;
+  check("Auto enhance on a bright white box keeps the whites and the faint print",
+    bf <= 1 && whiteAfter < 255 && whiteAfter - faintAfter > 20);
+  /* v58: a failed probe leaves the photo alone, never a blind boost. */
+  $("btn-edit-reset").click();
+  const realCreate = sandbox.document.createElement;
+  sandbox.document.createElement = (tag) => {
+    if (tag === "canvas") {
+      const c = realCreate(tag);
+      c.getContext = () => null;
+      return c;
+    }
+    return realCreate(tag);
+  };
+  $("btn-edit-auto").click();
+  sandbox.document.createElement = realCreate;
+  check("a failed Auto enhance probe applies no boost",
+    ctx("editAdj.brightness") === 0 && ctx("editAdj.contrast") === 0 &&
+    ctx("editAdj.saturation") === 0 &&
+    $("edit-brightness").value === "0");
+  await tick(); await tick();
 
   /* ---------- 3. Crop, rotate, straighten, flip ---------- */
   cropPreset("1").click();
@@ -444,6 +491,63 @@ const cropPreset = (ratio) =>
   check("reopening after Cancel starts clean",
     ctx("editAdj.brightness") === 0 &&
     !$("editor").classList.contains("hidden"));
+
+  /* ---------- 4b. v58: Straighten must never leak into a fresh open,
+     and the crop must grow back ---------- */
+  await slide("edit-straighten", 14);
+  check("straighten 14 tilts the render",
+    ctx("editStraighten") === 14 &&
+    lastRotate() === 14 * Math.PI / 180);
+  $("btn-edit-cancel").click();
+  check("Cancel leaves no Straighten behind",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0");
+  /* Worst case: a stale value is forced back onto the slider, the way
+     a WebView form-state restore would, then a fresh open. */
+  $("edit-straighten").value = "14";
+  ctx("openEditor(0);");
+  check("fresh open zeroes the sliders before the photo loads",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0");
+  fire($("edit-straighten"), "input");
+  check("a stray input while opening cannot re-tilt the photo",
+    ctx("editStraighten") === 0);
+  await tick(); await tick();
+  check("fresh open renders untilted with a full-frame crop",
+    lastRotate() === 0 &&
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 0, y: 0, w: 800, h: 600 }));
+  /* Straighten out and back grows the crop back. */
+  await slide("edit-straighten", 10);
+  check("straighten 10 insets the crop",
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 139, y: 139, w: 614, h: 452 }));
+  await slide("edit-straighten", 0);
+  check("straighten back to 0 grows the crop back to the full frame",
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 0, y: 0, w: 800, h: 600 }));
+  /* Corner drag grows a shrunken crop back to the full frame. The
+     canvas shows 336x252 for the 800x600 photo, so client coords
+     scale by 3.36 into canvas coords. */
+  const drag = async (fromX, fromY, toX, toY) => {
+    fire($("editor-canvas"), "pointerdown",
+      { clientX: fromX, clientY: fromY, preventDefault() {} });
+    fire($("editor-canvas"), "pointermove",
+      { clientX: toX, clientY: toY, preventDefault() {} });
+    fire($("editor-canvas"), "pointerup", {});
+    await tick();
+  };
+  await drag(9, 9, 30, 30);
+  check("dragging the top-left corner in shrinks the crop",
+    cropEq(ctx("editCrop"), { x: 168, y: 126, w: 632, h: 474 }));
+  await drag(21, 21, 0, 0);
+  check("dragging the corner back out grows the crop to the full frame",
+    cropEq(ctx("editCrop"), { x: 0, y: 0, w: 800, h: 600 }));
+  /* A tap 30px inside the bottom-right corner grabs the corner,
+     not a move of the whole box. */
+  fire($("editor-canvas"), "pointerdown",
+    { clientX: 91, clientY: 91, preventDefault() {} });
+  check("a near-corner tap grabs the corner instead of moving the box",
+    ctx("editDrag && editDrag.mode") === "se");
+  fire($("editor-canvas"), "pointerup", {});
 
   /* ---------- 5. Apply saves into the same step-1 slot ---------- */
   ctx("autoDraftId = 'a1';");

@@ -808,6 +808,57 @@ def main():
           'd["ebay_image_urls"] = list(image_urls)' in py and
           'd["ebay_photo_hashes"] = _draft_photo_hashes(photos)' in py)
 
+    # 25. v58 editor fixes. (a) Straighten leaked into a fresh open
+    # from the previous session: tapping Reset straightened the
+    # photo, which proved the tilt was a stuck Straighten value, not
+    # the photo and not the camera. The stale value survived Cancel
+    # in the state and on the sliders, and any input event in the
+    # window before the photo loaded read it back in. The open path
+    # now zeroes the sliders synchronously before the image loads,
+    # closing clears the leftover state, and the render reads state
+    # only. (b) Crop corners are finger-sized (44px drawn and hit)
+    # and the crop keeps its relative place in the frame, so undoing
+    # straighten grows it back. (c) Auto enhance never brightens an
+    # already-bright photo, and a failed probe leaves the photo
+    # alone instead of a blind boost. Sliders also let a vertical
+    # scroll pass through, so scrolling to them cannot drag
+    # Straighten by accident.
+    oi = js.find("function openEditorFor(blob, source) {")
+    check("editor opens with the sliders zeroed before the photo loads",
+          oi >= 0 and
+          js.find("syncEditorControls();", oi) != -1 and
+          js.find("syncEditorControls();", oi) <
+          js.find("const url = URL.createObjectURL(blob);", oi),
+          "sync must run before the Image is created")
+    cbody = js.split("function closeEditor() {")[1].split(
+        '$("btn-edit-cancel")')[0]
+    check("closing the editor clears the leftover adjustments",
+          "editStraighten = 0;" in cbody and
+          "syncEditorControls();" in cbody,
+          "closeEditor must reset state and sliders")
+    check("the render reads rotation from state, never the sliders",
+          "ctx.rotate((editRot + editStraighten) * Math.PI / 180);" in js and
+          '$("edit-straighten").value' not in js,
+          "rotation must come from editStraighten state")
+    check("crop corners are finger-sized in the drawing and the hit test",
+          "const hs = 22;" in js and
+          "const tol = 44 * canvas.width / r.width;" in js,
+          "handles and tolerance must be 44px")
+    check("straightening keeps the crop's relative place so it grows back",
+          "function remapCropToFrame(" in js and
+          "remapCropToFrame(editCrop, before, editVisibleFrame(), EDIT_MIN_CROP)" in js,
+          "straighten handler must remap, not only clamp")
+    check("Auto enhance never brightens an already-bright photo",
+          "if (mean >= 118) brightness = Math.min(brightness, 0);" in js,
+          "bright photos must never gain brightness")
+    check("a failed Auto enhance probe leaves the photo alone",
+          "brightness: 8, contrast: 12" not in js and
+          "if (!vals) return;" in js,
+          "no blind boost when the probe fails")
+    check("editor sliders let a vertical scroll pass through",
+          rules.get('.edit-slider input[type="range"]', {}).get("touch-action") == "pan-y",
+          str(rules.get('.edit-slider input[type="range"]', {})))
+
     print()
     return 1 if FAILURES else 0
 

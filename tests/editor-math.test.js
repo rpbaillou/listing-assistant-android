@@ -80,7 +80,7 @@ check("clamp min size at far edge stays in bounds",
 /* v56: full-editor pure helpers. */
 const { defaultAdjustments, adjustmentFilter, autoEnhanceValues,
         aspectCropRect, rotatedFrameSize, straightenFrame,
-        clampCropToFrame, sharpenImageData } = sandbox;
+        clampCropToFrame, remapCropToFrame, sharpenImageData } = sandbox;
 function ctxExpr(expr) { return vm.runInContext(expr, sandbox); }
 
 check("defaultAdjustments are all zero",
@@ -105,6 +105,14 @@ check("auto enhance darkens a bright photo and calms a contrasty one",
   eq(autoEnhanceValues(180, 90), { brightness: -30, contrast: -9, saturation: 12 }));
 check("auto enhance leaves a balanced photo alone except saturation",
   eq(autoEnhanceValues(118, 64), { brightness: 0, contrast: 0, saturation: 12 }));
+/* v58: Auto enhance never brightens a photo that is already bright —
+   lifting the whites on white packaging erases the faint print. */
+check("auto enhance never gives a positive brightness at or above the target mean",
+  autoEnhanceValues(118, 64).brightness === 0 &&
+  autoEnhanceValues(189, 71).brightness === -30 &&
+  autoEnhanceValues(255, 0).brightness === -30);
+check("auto enhance still brightens a genuinely dark photo",
+  autoEnhanceValues(60, 20).brightness === 29);
 
 check("aspectCropRect null ratio is the full frame",
   eq(aspectCropRect(1000, 800, null), { x: 0, y: 0, w: 1000, h: 800 }));
@@ -154,6 +162,23 @@ check("clampCropToFrame leaves an inside rect alone",
 check("clampCropToFrame pulls an overhanging rect back into the frame",
   eq(clampCropToFrame({ x: 10, y: 10, w: 100, h: 80 }, { x: 52, y: 52, w: 400, h: 300 }, 50),
      { x: 52, y: 52, w: 100, h: 80 }));
+/* v58: the crop keeps its relative place when the visible frame
+   changes size, so undoing straighten grows it back. */
+check("remapCropToFrame keeps a full-frame crop full-frame when the frame grows",
+  eq(remapCropToFrame({ x: 139, y: 139, w: 614, h: 452 },
+                       { x: 139, y: 139, w: 614, h: 452 },
+                       { x: 0, y: 0, w: 800, h: 600 }, 50),
+     { x: 0, y: 0, w: 800, h: 600 }));
+check("remapCropToFrame keeps a full-frame crop full-frame when the frame shrinks",
+  eq(remapCropToFrame({ x: 0, y: 0, w: 800, h: 600 },
+                       { x: 0, y: 0, w: 800, h: 600 },
+                       { x: 139, y: 139, w: 614, h: 452 }, 50),
+     { x: 139, y: 139, w: 614, h: 452 }));
+check("remapCropToFrame keeps a small centered crop centered and relative",
+  eq(remapCropToFrame({ x: 200, y: 150, w: 400, h: 300 },
+                       { x: 0, y: 0, w: 800, h: 600 },
+                       { x: 139, y: 139, w: 614, h: 452 }, 50),
+     { x: 292.5, y: 252, w: 307, h: 226 }));
 
 function fakeImageData(w, h, fill) {
   const data = new Uint8ClampedArray(w * h * 4);

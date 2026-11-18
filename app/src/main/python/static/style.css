@@ -158,7 +158,11 @@ button:disabled { opacity: 0.45; cursor: default; }
    reuses the verified primary pair (white on #2a63d8). */
 .edit-slider { margin: 0.5rem 0; }
 .edit-slider label { display: flex; justify-content: space-between; font-weight: 600; margin-bottom: 0.1rem; }
-.edit-slider input[type="range"] { width: 100%; min-height: 44px; accent-color: #2a63d8; }
+/* v58: pan-y lets a vertical scroll gesture pass through to the
+   panel instead of dragging the slider — scrolling down to the
+   sliders used to move Straighten by accident and tilt the photo,
+   while a sideways drag still adjusts the value as before. */
+.edit-slider input[type="range"] { width: 100%; min-height: 44px; accent-color: #2a63d8; touch-action: pan-y; }
 .edit-filter[aria-pressed="true"] { background: #2a63d8; color: #fff; border-color: #2a63d8; }
 .edit-group-label { align-self: center; font-weight: 600; }
 

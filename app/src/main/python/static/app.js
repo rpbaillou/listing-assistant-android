@@ -365,8 +365,11 @@ function autoEnhanceValues(mean, stddev) {
   /* mean/stddev of luminance, 0..255, from a small sample of the
      photo. A dark photo (low mean) gets brightness; a flat photo
      (low spread) gets contrast. Capped, so a moody photo is never
-     blasted into a bright flat one. Saturation is a fixed gentle lift. */
-  const brightness = Math.max(-30, Math.min(30, Math.round((118 - mean) * 0.5)));
+     blasted into a bright flat one. Saturation is a fixed gentle lift.
+     v58: never brighten a photo that is already bright — lifting the
+     whites on white packaging erases the faint print. */
+  let brightness = Math.max(-30, Math.min(30, Math.round((118 - mean) * 0.5)));
+  if (mean >= 118) brightness = Math.min(brightness, 0);
   const contrast = Math.max(-20, Math.min(40, Math.round((64 - stddev) * 0.35)));
   return { brightness: brightness, contrast: contrast, saturation: 12 };
 }
@@ -409,6 +412,23 @@ function clampCropToFrame(rect, frame, minSize) {
     { x: rect.x - frame.x, y: rect.y - frame.y, w: rect.w, h: rect.h },
     frame.w, frame.h, minSize);
   return { x: local.x + frame.x, y: local.y + frame.y, w: local.w, h: local.h };
+}
+function remapCropToFrame(rect, before, after, minSize) {
+  /* v58: keep a crop's relative place inside the visible frame when
+     the frame changes size — straightening shrinks it, undoing
+     straighten grows it. A full-frame crop stays full-frame, so
+     straightening to 14 and back to 0 grows the crop back instead
+     of leaving it shrunken (the old handler only ever clamped it
+     smaller). A deliberately small crop keeps its relative size and
+     place. Pure, unit-tested in tests/editor-math.test.js. */
+  const fx = before.w > 0 ? (rect.x - before.x) / before.w : 0;
+  const fy = before.h > 0 ? (rect.y - before.y) / before.h : 0;
+  const fw = before.w > 0 ? rect.w / before.w : 1;
+  const fh = before.h > 0 ? rect.h / before.h : 1;
+  return clampCropToFrame(
+    { x: after.x + fx * after.w, y: after.y + fy * after.h,
+      w: fw * after.w, h: fh * after.h },
+    after, minSize);
 }
 function sharpenImageData(img, amount) {
   /* 3x3 unsharp pass, in place on {width, height, data}. amount
@@ -476,7 +496,9 @@ function renderEditedFrame(scale) {
      2048px long-edge cap, even though a straightened frame is wider
      than the source. Same path both times, so what he sees is what
      saves. Warmth is a tint overlay (no filter function can make a
-     photo cooler); sharpness is a 3x3 unsharp pass on the pixels. */
+     photo cooler); sharpness is a 3x3 unsharp pass on the pixels.
+     v58: the render reads the edit state only, never the slider
+     elements — a stale slider value can never tilt the render. */
   const srcW = editImg.naturalWidth, srcH = editImg.naturalHeight;
   const box = rotatedFrameSize(srcW, srcH, editRot, editStraighten);
   const outScale = Math.min(scale, 2048 / Math.max(box.w, box.h));
@@ -539,7 +561,10 @@ function drawEditor() {
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = 2;
   ctx.strokeRect(dx, dy, dw, dh);
-  const hs = 14;
+  /* v58: 44px corner squares, finger-sized — the old 28px handles
+     were easy to miss, and a near miss inside the box moved the
+     whole box instead of resizing it. */
+  const hs = 22;
   ctx.fillStyle = "#fff";
   ctx.strokeStyle = "#2f6fed";
   [[dx, dy], [dx + dw, dy], [dx, dy + dh], [dx + dw, dy + dh]].forEach(([hx, hy]) => {
@@ -560,7 +585,8 @@ function editorCanvasPos(e) {
 function editorHitTest(px, py) {
   const canvas = $("editor-canvas");
   const r = canvas.getBoundingClientRect();
-  const tol = 28 * canvas.width / r.width; /* ~28px touch target */
+  const tol = 44 * canvas.width / r.width; /* v58: 44px touch target, so a
+    fingertip landing near a corner grabs it instead of moving the box */
   const s = editScale, c = editCrop;
   const corners = { nw: [c.x * s, c.y * s], ne: [(c.x + c.w) * s, c.y * s],
                     sw: [c.x * s, (c.y + c.h) * s], se: [(c.x + c.w) * s, (c.y + c.h) * s] };
@@ -667,6 +693,14 @@ function openEditorFor(blob, source) {
   editAdj = defaultAdjustments();
   editFilter = "original";
   editDrag = null;
+  /* v58: reset the sliders on screen now, before the image loads —
+     the controls must read zero the moment the editor opens, not
+     only once the photo arrives. The previous session's slider
+     values used to survive until img.onload, and any input event in
+     that window read the stale Straighten back into state and tilted
+     the photo (proven by the Reset test: Reset straightened it).
+     The render reads state only, never the sliders. */
+  syncEditorControls();
   const url = URL.createObjectURL(blob);
   const img = new Image();
   img.onload = () => {
@@ -719,6 +753,15 @@ function closeEditor() {
   editIndex = -1;
   editDrag = null;
   editSource = null;
+  /* v58: leave nothing behind for the next open. A Straighten (or
+     any adjustment) left over from this session used to survive
+     Cancel — in the state and on the sliders — and leak back into
+     the next edit, tilting a photo that was never crooked. */
+  editRot = 0; editFlip = false; editStraighten = 0;
+  editAdj = defaultAdjustments();
+  editFilter = "original";
+  editCrop = null;
+  syncEditorControls();
 }
 $("btn-edit-cancel").addEventListener("click", closeEditor);
 
@@ -820,9 +863,13 @@ bindEditorSlider("edit-saturation", (v) => { editAdj.saturation = v; editFilter 
 bindEditorSlider("edit-warmth", (v) => { editAdj.warmth = v; editFilter = ""; });
 bindEditorSlider("edit-sharpness", (v) => { editAdj.sharpness = v; editFilter = ""; });
 bindEditorSlider("edit-straighten", (v) => {
+  /* v58: the crop keeps its relative place in the visible frame as
+     the frame grows or shrinks with straightening, so undoing
+     straighten grows the crop back instead of only ever clamping
+     it smaller. */
+  const before = editVisibleFrame();
   editStraighten = v;
-  /* Straightening shrinks the safe frame; keep the crop inside it. */
-  if (editCrop) editCrop = clampCropToFrame(editCrop, editVisibleFrame(), EDIT_MIN_CROP);
+  if (editCrop) editCrop = remapCropToFrame(editCrop, before, editVisibleFrame(), EDIT_MIN_CROP);
 });
 document.querySelectorAll(".edit-filter").forEach((b) => {
   b.addEventListener("click", () => {
@@ -850,7 +897,10 @@ $("btn-edit-flip").addEventListener("click", () => {
 });
 $("btn-edit-auto").addEventListener("click", () => {
   if (!editImg) return;
-  let vals = { brightness: 8, contrast: 12, saturation: 12 };
+  /* v58: when the probe fails, leave the photo alone — the old blind
+     +8/+12 fallback brightened photos it had never measured, which
+     is how a bright white box got blown out. */
+  let vals = null;
   try {
     /* Sample a small copy of the photo and let the histogram decide:
        dark photos get brightness, flat photos get contrast. */
@@ -869,7 +919,8 @@ $("btn-edit-auto").addEventListener("click", () => {
     const mean = sum / n;
     const stddev = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
     vals = autoEnhanceValues(mean, stddev);
-  } catch (e) { /* probe failed: fall back to the fixed values above */ }
+  } catch (e) { /* probe failed: no measurement, no change */ }
+  if (!vals) return;
   editAdj.brightness = vals.brightness;
   editAdj.contrast = vals.contrast;
   editAdj.saturation = vals.saturation;
