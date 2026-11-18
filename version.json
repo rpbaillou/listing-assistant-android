@@ -1,1 +1,6 @@
-{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v56/ebay-listing-assistant-apk-v56.apk","notes":"The photo editor is now built into the app, on both the pick-photos screen and the listing page. Auto enhance, brightness, contrast, saturation, warmth, sharpness, filters, crop, rotate, straighten, and flip, all in one place. No more handing photos to another app to edit.","versionCode":56,"versionName":"1.55"}
+{
+  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v57/ebay-listing-assistant-apk-v57.apk",
+  "notes": "You can now update the photos on a listing that is already live. Open it from Listed on eBay, edit the photos, and tap Update live listing. Only the photos change.",
+  "versionCode": 57,
+  "versionName": "1.56"
+}
