@@ -16,6 +16,10 @@ let maxPhotos = 10; /* v8: overwritten by /api/config (eBay allows 24 free) */
    numbering. */
 let autoDraftId = null;
 let autoDraftStale = false;
+/* v61: the draft the photos on step 1 belong to. Analyze / Quick
+   post set it to the draft they built from those photos; opening a
+   draft from My drafts does not (its photos are not on step 1). */
+let step1DraftId = null;
 let autoDraftQueue = Promise.resolve();
 let resumeDraftId = null;
 /* v54: resumeCheck resolves when the launch-time resume restore has
@@ -1223,6 +1227,33 @@ function recordResumeDraft(draftId) {
   }).catch(() => {});
 }
 
+/* v61: true when the photos on step 1 belong to this draft — either
+   Analyze / Quick post built it from them (step1DraftId) or the
+   photos were restored into the grid from its auto draft
+   (autoDraftId). A different draft listed from My drafts while
+   step 1 holds another set must NOT clear that set. */
+function step1BelongsToDraft(draftId) {
+  return !!draftId && (draftId === step1DraftId || draftId === autoDraftId);
+}
+
+/* v61: the listing went live, so the photos on step 1 are done —
+   clear them the same way New does, so going back to start opens
+   an empty grid ready for the next set. The listing page keeps
+   working: draft stays set (the page, prefill, and the revise
+   flow all read it), and the "It is live!" note is untouched.
+   No navigation: he stays on the listing page with the success
+   note, and step 1 is empty when he goes back to it himself. */
+function resetStep1AfterPublish() {
+  clearPreviews(); /* revokes preview URLs, empties the grid, disables Analyze + Quick post */
+  autoDraftId = null;
+  autoDraftStale = false;
+  step1DraftId = null;
+  resumeDraftId = null;
+  $("resume-card").classList.add("hidden");
+  recordResumeDraft(null);
+  $("photo-input").value = "";
+}
+
 async function syncPickedPhotosToAutoDraft(entries, replace) {
   /* Save picked/taken photos to the auto draft, in queue order.
      Choose photos replaces the set, so the old auto draft is
@@ -1465,6 +1496,7 @@ async function analyzePhotos() {
                                        { method: "POST" });
         autoDraftId = null;
         loadDraftIntoForm(d);
+        step1DraftId = d.id; /* v61: these photos are this draft's */
         await prefillListing();
         show("step-draft");
         done = true;
@@ -1478,6 +1510,7 @@ async function analyzePhotos() {
       const { draft: d } = await api("/api/analyze", { method: "POST", body: fd });
       await discardAutoDraft();
       loadDraftIntoForm(d);
+      step1DraftId = d.id; /* v61: these photos are this draft's */
       await prefillListing();
       show("step-draft");
     }
@@ -1512,6 +1545,7 @@ async function quickPostPhotos() {
         const { draft: d } = await api("/api/drafts/" + autoDraftId);
         autoDraftId = null;
         loadDraftIntoForm(d);
+        step1DraftId = d.id; /* v61: these photos are this draft's */
         await prefillListing();
         show("step-draft");
         done = true;
@@ -1525,6 +1559,7 @@ async function quickPostPhotos() {
       const { draft: d } = await api("/api/quick-post", { method: "POST", body: fd });
       await discardAutoDraft();
       loadDraftIntoForm(d);
+      step1DraftId = d.id; /* v61: these photos are this draft's */
       await prefillListing();
       show("step-draft");
     }
@@ -2061,6 +2096,7 @@ $("btn-new").addEventListener("click", () => {
      open draft to return to. */
   autoDraftId = null;
   autoDraftStale = false;
+  step1DraftId = null; /* v61: New abandons the step-1 set too */
   recordResumeDraft(null);
   $("photo-input").value = "";
   clearPreviews();
@@ -2438,6 +2474,14 @@ async function runBatch(shipFrom, fulfillmentOverride) {
     }
     box.appendChild(row);
   });
+  /* v61: if this run just published the draft the step-1 photos
+     belong to, clear them the same way a single publish does, so
+     going back to start opens an empty grid. A run that only
+     published other drafts leaves the step-1 set alone, and a
+     draft that hit a wall (not ok) never triggers the reset. */
+  if ((results || []).some((r) => r.ok && step1BelongsToDraft(r.draft_id))) {
+    resetStep1AfterPublish();
+  }
   return signals;
 }
 
@@ -3539,6 +3583,13 @@ async function postPublish(body) {
      fresh success note visible — prefillListing hides it by default,
      which is only right when opening a draft. */
   prefillListing({ keepPublishOk: true });
+  /* v61: the listing went live — if the photos on step 1 are this
+     draft's photos, clear them so going back to start opens an
+     empty grid ready for the next set. A different draft listed
+     while step 1 holds another set leaves that set alone. The
+     listing page itself is untouched: draft stays set and the
+     "It is live!" note stays visible. */
+  if (step1BelongsToDraft(draft.id)) resetStep1AfterPublish();
   return "listed";
 }
 

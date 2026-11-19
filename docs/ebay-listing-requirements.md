@@ -1439,3 +1439,58 @@ remembers the open draft.
   defect). Release order is the v59 order (tag first, wait for CI
   to publish the asset, only then commit version.json), so the
   updater never 404s on an asset that does not exist yet.
+
+## v61: the photos clear after a listing goes live
+- The report (Nov 18, twice): he took pictures, made a draft, and
+  listed it on eBay, then went back to start and the old pictures
+  were still there — he had to delete them to start a new set.
+- Cause: postPublish on success only set the listing id and URL on
+  the draft, showed the "It is live!" note, and re-prefilled the
+  listing page. It never cleared selectedFiles, never reset the
+  auto draft id, never cleared the resume record. Only the New
+  button did that reset, so the step-1 grid kept the old set — and
+  a photo taken next could append to the just-listed draft.
+- Fix: after a CONFIRMED publish (postPublish returns "listed"),
+  the step-1 working set is cleared the same way New clears it:
+  previews cleared (preview URLs revoked, grid emptied, Analyze
+  and Quick post disabled), auto draft id and step-1 draft id
+  nulled, resume record cleared (and the resume card hidden),
+  photo input cleared. New photos after that start a brand-new
+  draft; they never append to the listed one.
+- Guarded, not blind: the reset only runs when the photos on step
+  1 are that draft's photos. Analyze / Quick post record the draft
+  they built from the step-1 photos (step1DraftId, set on all four
+  load paths); a photo-only draft restored into the grid is matched
+  by its auto draft id instead. Listing a different draft from My
+  drafts while step 1 holds another set leaves that set alone.
+  New also clears step1DraftId, so starting fresh abandons the
+  step-1 set too.
+- Preserved: the "It is live!" note (link + item number) stays
+  visible on the listing page; the listed draft stays in My drafts
+  under "Listed on eBay" with its photos; draft stays set on the
+  listing page, so prefill and the v57 revise flow keep working.
+  No auto-navigation: he stays on the listing page with the success
+  note, and step 1 is empty when he goes back to it himself.
+- The intermediate publish returns never reset: needs-address,
+  needs-pick, and needs-scope all return before the success tail,
+  so the photos stay put while he finishes the publish.
+- Batch: runBatch applies the same reset when one of its ok rows
+  is the step-1 draft (the server already returns draft_id on
+  every row, so no server change was needed). A draft that hit a
+  wall never triggers it, and a batch of other drafts leaves the
+  step-1 set alone. All three runBatch callers (confirm,
+  policy-pick, ship-from) are covered because the check lives in
+  runBatch itself. The v57 revise flow never resets.
+- Tests: tests/publish-reset.test.js (25 checks: publish clears
+  the step-1 set and the resume record while the note and the
+  listed draft stay; new photos start a brand-new draft; no reset
+  on needs-address / needs-pick / needs-scope; listing a different
+  draft leaves the step-1 set alone; batch clears only when its
+  draft went live, not on a wall and not for other drafts; no
+  unhandled rejection), fit_check.py check 28 (step-1 draft
+  tracked, reset in the listed tail, reset contents, listing page
+  preserved, batch gating, revise untouched).
+- Release note: build.gradle.kts must be bumped to 61/1.60 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

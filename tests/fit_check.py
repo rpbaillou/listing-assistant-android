@@ -983,6 +983,56 @@ def main():
           'if (editTool !== "crop") return;' in js,
           "pointerdown must ignore the canvas outside Crop mode")
 
+    # 28. v61 clear the photos after a listing goes live. Twice he
+    # took pictures, made a draft, and listed it, then went back to
+    # start and found the old pictures still there — he had to delete
+    # them to start a new set. The cause: postPublish on success only
+    # showed "It is live!" and re-prefilled the listing; it never
+    # cleared selectedFiles, never reset the auto draft id, never
+    # cleared the resume. Only the New button did that reset. After
+    # a confirmed publish the step-1 working set is now cleared the
+    # same way — but only when the photos on step 1 are that draft's
+    # photos (Analyze / Quick post record the draft id; a restored
+    # auto draft is matched by its id), so listing a different draft
+    # from My drafts while step 1 holds another set leaves that set
+    # alone. The listing page is untouched: draft stays set and the
+    # success note stays visible. The same reset runs when a batch
+    # publishes the step-1 draft. The revise flow never resets.
+    check("the step-1 draft is tracked from Analyze and Quick post",
+          "let step1DraftId = null;" in js and
+          js.count("step1DraftId = d.id;") == 4 and
+          "step1DraftId = null; /* v61: New abandons the step-1 set too */" in js,
+          "%d set sites" % js.count("step1DraftId = d.id;"))
+    success = js.split("prefillListing({ keepPublishOk: true });")[1].split(
+        'return "listed";')[0]
+    check("a confirmed publish clears step 1 for its own draft only",
+          "if (step1BelongsToDraft(draft.id)) resetStep1AfterPublish();" in success,
+          "the reset must sit in the listed tail, after prefill")
+    reset = js.split("function resetStep1AfterPublish() {")[1].split(
+        "\nfunction ")[0]
+    check("the reset clears the working set like New does",
+          "clearPreviews();" in reset and
+          "autoDraftId = null;" in reset and
+          "step1DraftId = null;" in reset and
+          "recordResumeDraft(null);" in reset and
+          '$("photo-input").value = "";' in reset,
+          "clearPreviews + ids + resume + input")
+    check("the reset keeps the listing page working",
+          "draft = null" not in reset and
+          'show("step-photos")' not in reset and
+          "publish-ok" not in reset,
+          "draft stays set, no navigation, note untouched")
+    batch = js.split("async function runBatch(")[1].split("return signals;")[0]
+    check("a batch clears step 1 only when its draft went live",
+          "step1BelongsToDraft(r.draft_id)" in batch and
+          "r.ok &&" in batch,
+          "only an ok row for the step-1 draft triggers it")
+    revise = js.split('$("btn-update-photos").addEventListener("click"')[1].split(
+        "async function postPublish")[0]
+    check("the revise flow never clears the step-1 photos",
+          "resetStep1AfterPublish" not in revise,
+          "revise edits a live listing's photos; it must not reset step 1")
+
     print()
     return 1 if FAILURES else 0
 
