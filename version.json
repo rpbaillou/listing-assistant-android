@@ -1,6 +1,1 @@
-{
-  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v60/ebay-listing-assistant-apk-v60.apk",
-  "notes": "The editor is tidier now: one tool at a time behind icons, Crop opens first, and Apply stays at the bottom where you can always reach it.",
-  "versionCode": 60,
-  "versionName": "1.59"
-}
+{"apkUrl":"https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v61/ebay-listing-assistant-apk-v61.apk","notes":"After a listing goes live, the photos clear from the start screen, so it is empty and ready for your next set of pictures.","versionCode":61,"versionName":"1.60"}
