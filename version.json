@@ -1,6 +1,6 @@
 {
-  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v59/ebay-listing-assistant-apk-v59.apk",
-  "notes": "The photo now stays visible while you edit it, every button says what it just did, and you can undo an edit to put the original photo back.",
-  "versionCode": 59,
-  "versionName": "1.58"
+  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v60/ebay-listing-assistant-apk-v60.apk",
+  "notes": "The editor is tidier now: one tool at a time behind icons, Crop opens first, and Apply stays at the bottom where you can always reach it.",
+  "versionCode": 60,
+  "versionName": "1.59"
 }
