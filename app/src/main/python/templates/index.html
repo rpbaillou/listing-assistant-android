@@ -141,6 +141,13 @@
     </div>
     <p class="hint">Checks two ways at once: sold listings from your title words, and similar items listed now found from your first photo.</p>
 
+    <!-- v63: quantity. Every listing used to go up as 1 with no way
+         to say otherwise, and a live listing's quantity could not be
+         changed from the app at all. Whole numbers only, 1 or more. -->
+    <label>Quantity</label>
+    <input id="f-quantity" type="number" min="1" step="1" inputmode="numeric" placeholder="1">
+    <p class="hint">How many of this item you have to sell.</p>
+
     <!-- v51: combined price check — two halves on one screen. The sold
          half keeps the title-based eBay sold search exactly as before
          (it opens eBay's sold search page in the pop-up, where "Use
@@ -457,6 +464,25 @@
       </div>
     </div>
     <div id="revise-spinner" class="spinner hidden">Updating the live listing… uploading the changed photos, then checking eBay shows them.</div>
+
+    <!-- v63: quantity update for a draft that is already live. Same
+         review stop as the photos update: the button asks eBay what
+         the live listing has now, the card names the change
+         ("Quantity changes from 1 to 3."), and nothing goes to eBay
+         until the seller taps Update live listing on it. -->
+    <button id="btn-update-quantity" class="primary big hidden" type="button">Update live listing quantity</button>
+    <div id="revise-qty-error" class="error hidden"></div>
+    <div id="revise-qty-ok" class="ok hidden"></div>
+    <div id="revise-qty-confirm" class="card hidden">
+      <h3>Update the live listing quantity?</h3>
+      <p class="hint">Only the quantity changes. Title, price, photos, and shipping stay as they are.</p>
+      <ul id="revise-qty-changes"></ul>
+      <div class="btnrow wrap">
+        <button id="btn-revise-qty-confirm" class="primary big" type="button">Update live listing</button>
+        <button id="btn-revise-qty-cancel" class="ghost" type="button">Cancel</button>
+      </div>
+    </div>
+    <div id="revise-qty-spinner" class="spinner hidden">Updating the live listing quantity… then checking eBay shows it.</div>
 
     <!-- v49: Or list manually is a collapsed row (design 4). The
          summary is the plain line "Copy details and download photos";

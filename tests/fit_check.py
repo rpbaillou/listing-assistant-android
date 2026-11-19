@@ -793,16 +793,21 @@ def main():
     check("execute verifies by reading the item back and comparing",
           'after_urls != new_urls' in py and
           "did not show the new photos" in py)
+    # v63: the slice ends at the next function definition, not the next
+    # route — the revise-quantity helpers now sit between the photos
+    # execute and the /photos/ route, and they legitimately touch the
+    # offer (the quantity lives on it). The check still proves the
+    # PHOTOS execute itself never creates an offer or re-publishes.
     check("execute never creates an offer or re-publishes",
           "/offer" not in py.split(
               "def api_revise_photos_execute")[1].split(
-              "@app.route")[0] and
+              "\ndef ")[0] and
           "/publish" not in py.split(
               "def api_revise_photos_execute")[1].split(
-              "@app.route")[0] and
+              "\ndef ")[0] and
           "_do_publish" not in py.split(
               "def api_revise_photos_execute")[1].split(
-              "@app.route")[0],
+              "\ndef ")[0],
           "revise execute touches offers or publish")
     check("publish records the live photo list + hashes for later revise",
           'd["ebay_image_urls"] = list(image_urls)' in py and
@@ -1077,6 +1082,56 @@ def main():
           '$("f-condition").addEventListener("change", clearConditionPublishError);' in js and
           'startsWith("Fix these before listing:")' in js,
           "live clear, multi-problem list stays")
+
+    # 30. v63 quantity: enter it before listing, change it live. Nov 19
+    # he could not enter a quantity anywhere and could not edit it on
+    # eBay either, so every listing went up as 1. The quantity was
+    # hardcoded to 1 in two places on the publish path (the inventory
+    # item availability and the offer availableQuantity) and no field
+    # existed. The listing page now has a Quantity field by Price, the
+    # publish sends it on both levels, a saved offer is discarded when
+    # the quantity changes (the v34/v35 snapshot rule), batch carries
+    # each draft's quantity, and a listed draft gets a quantity-only
+    # live update that follows the v57 revise pattern (preview against
+    # the live offer, confirm card naming "Quantity 1 to 3", update
+    # both levels because the listing shows the smaller of the two,
+    # read both back and prove it).
+    check("no hardcoded quantity 1 left on the publish path",
+          '"quantity": 1' not in py and '"availableQuantity": 1' not in py,
+          "both hardcoded 1s gone")
+    check("Quantity field on the listing page, by Price",
+          'id="f-quantity"' in html and
+          '<input id="f-quantity" type="number" min="1" step="1"' in html and
+          "How many of this item you have to sell." in html,
+          "field + plain hint")
+    check("quantity autosaves and prefills like price",
+          'quantity: $("f-quantity").value.trim()' in js and
+          '"f-quantity"' in js and
+          'out.quantity' in js and '$("f-quantity").value = pre.quantity;' in js,
+          "collectForm + prefill")
+    check("publish sends the quantity and names it in the confirm",
+          'quantity: $("f-quantity").value.trim()' in js and
+          '"Quantity: " + $("f-quantity").value.trim()' in js and
+          '"availableQuantity": quantity' in py,
+          "body + confirm + offer")
+    check("a saved offer is discarded when the quantity changes",
+          'recorded_quantity = d.get("ebay_offer_quantity")' in py and
+          'd["ebay_offer_quantity"] = quantity' in py and
+          'd.pop("ebay_offer_quantity", None)' in py,
+          "snapshot record + discard + clear")
+    check("live quantity update follows the v57 revise pattern",
+          '"/revise-quantity?quantity="' in js and
+          '"Quantity changes from %d to %d."' in py and
+          'def _revise_quantity_plan(' in py and
+          'def _offer_put_body(' in py and
+          'id="btn-update-quantity"' in html and
+          'id="revise-qty-confirm"' in html,
+          "preview + confirm card + plan + full offer body")
+    check("live update changes both levels and proves both",
+          'ship_to["quantity"] = new' in py and
+          '"availableQuantity"] = quantity' in py and
+          'after_qty != new or after_item_qty != new' in py,
+          "item PUT + offer PUT + verify")
 
     print()
     return 1 if FAILURES else 0

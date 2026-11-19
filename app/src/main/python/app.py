@@ -1099,6 +1099,28 @@ def _parse_money(raw):
     return v if v > 0 else None
 
 
+def _parse_quantity(raw):
+    """Parse a quantity string to a whole number >= 1, or (None, error).
+
+    Pure function, tested. A quantity is how many of the item he has
+    to sell, so it is always a whole number of 1 or more: blank, zero,
+    negative, fractional ("2.5", "3.0"), and non-numeric values are
+    all invalid. The caller decides the default when no quantity was
+    ever set — an old draft carries no quantity key and publishes as
+    1 — this helper only judges a value that is actually there.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return None, "Enter a whole number of 1 or more for the quantity."
+    try:
+        v = int(s, 10)
+    except ValueError:
+        return None, "Enter a whole number of 1 or more for the quantity."
+    if v < 1:
+        return None, "Enter a whole number of 1 or more for the quantity."
+    return v, None
+
+
 def _best_offer_terms(enabled, decline_raw, accept_raw, price_val):
     """Build listingPolicies.bestOfferTerms, or (None, error) on bad input.
 
@@ -1779,6 +1801,9 @@ def _discard_offer(d, token):
     d.pop("ebay_offer_id", None)
     d.pop("ebay_offer_fulfillment_id", None)
     d.pop("ebay_offer_condition", None)
+    # v63: same for the recorded quantity, so a later quantity change
+    # is judged against the new offer, not a discarded one.
+    d.pop("ebay_offer_quantity", None)
     _save_draft(d)
 
 
@@ -1837,6 +1862,19 @@ def _listing_readiness(d, f, token):
         price_val = f.get("price_val")
         if price_val is None or price_val <= 0:
             problems.append("Set a price above $0 before listing.")
+    # v63: quantity. Same shape as the price check: a parse error rides
+    # in as quantity_error, and a bad value is its own problem. A
+    # missing value is NOT a problem — a draft that never had a
+    # quantity (pre-v63, and every older test's field dict) publishes
+    # as 1, defaulted in _do_publish — so this only fires on a value
+    # that is actually there and wrong.
+    quantity_error = f.get("quantity_error")
+    if quantity_error:
+        problems.append(str(quantity_error))
+    else:
+        quantity = f.get("quantity")
+        if quantity is not None and quantity < 1:
+            problems.append("Set a quantity of 1 or more before listing.")
     if not category_id:
         problems.append("Pick an eBay category first (tap Suggest).")
     if not (fulfillment_id and payment_id and return_id):
@@ -1959,6 +1997,13 @@ def _do_publish(d, f, ship_from=None):
     category_id = (f.get("category_id") or "").strip()
     condition = (f.get("condition") or "").strip()
     condition_details = (f.get("condition_details") or "").strip()
+    # v63: quantity. The endpoints default an untouched draft to 1
+    # before this runs, so a missing value here only means an old
+    # caller — it still publishes as 1, never as 0. An invalid value
+    # never reaches this line: the readiness check above raises first.
+    quantity = f.get("quantity")
+    if quantity is None:
+        quantity = 1
     photos = d.get("photos") or []
     try:
         token = _ebay_access_token()
@@ -2042,7 +2087,10 @@ def _do_publish(d, f, ship_from=None):
             "imageUrls": image_urls,
             **({"aspects": aspects} if aspects else {}),
         },
-        "availability": {"shipToLocationAvailability": {"quantity": 1}},
+        # v63: the quantity he entered, on both levels eBay counts.
+        # Before v63 this was hardcoded to 1, so every listing went
+        # up as a single item with no way to say otherwise.
+        "availability": {"shipToLocationAvailability": {"quantity": quantity}},
     }
     if condition:
         inventory_item["condition"] = condition
@@ -2086,13 +2134,32 @@ def _do_publish(d, f, ship_from=None):
     if offer_id and recorded_condition and recorded_condition != condition:
         _discard_offer(d, token)
         offer_id = None
+    # v63: same snapshot rule for quantity. A saved offer predates a
+    # quantity change, and publish sends the saved offer's quantity,
+    # not the current one — so discard it and create fresh below.
+    # Drafts saved before v63 carry no recorded quantity, so the
+    # comparison is skipped and reuse is preserved.
+    recorded_quantity = d.get("ebay_offer_quantity")
+    if offer_id and recorded_quantity is not None:
+        try:
+            recorded_quantity = int(recorded_quantity)
+        except (TypeError, ValueError):
+            recorded_quantity = None
+        if recorded_quantity is not None and recorded_quantity != quantity:
+            _discard_offer(d, token)
+            offer_id = None
+    # v63: a reused offer (25002 below) publishes its own saved
+    # quantity, not the requested one — the finalize records that
+    # instead, so the draft never claims a quantity eBay does not
+    # have. None unless the reuse branch sets it.
+    offer_reused_quantity = None
     if not offer_id:
         try:
             offer = _ebay_call("POST", "/sell/inventory/v1/offer", token, {
                 "sku": sku,
                 "marketplaceId": "EBAY_US",
                 "format": "FIXED_PRICE",
-                "availableQuantity": 1,
+                "availableQuantity": quantity,
                 "categoryId": category_id,
                 "listingDescription": desc_html or title,
                 "listingPolicies": {
@@ -2123,6 +2190,9 @@ def _do_publish(d, f, ship_from=None):
             # v35: same for the condition, so a later condition change
             # discards it instead of publishing the old condition.
             d["ebay_offer_condition"] = condition
+            # v63: same for the quantity, so a later quantity change
+            # discards it instead of publishing the old quantity.
+            d["ebay_offer_quantity"] = quantity
         except RuntimeError as exc:
             # v30 (audit F3): if eBay says an offer already exists for this
             # SKU (25002-style), reuse it instead of failing the retry.
@@ -2154,6 +2224,11 @@ def _do_publish(d, f, ship_from=None):
                     _rp = str(_lp.get("fulfillmentPolicyId") or "").strip()
                     if _rp:
                         d["ebay_offer_fulfillment_id"] = _rp
+                # v63: same for the reused offer's quantity.
+                _aq = offers[0].get("availableQuantity")
+                if isinstance(_aq, int) and _aq >= 1:
+                    d["ebay_offer_quantity"] = _aq
+                    offer_reused_quantity = _aq
         # v30 (audit F3): persist the offer ID IMMEDIATELY, before publish,
         # so a publish failure cannot orphan the offer and block the retry.
         d["ebay_offer_id"] = offer_id
@@ -2206,6 +2281,17 @@ def _do_publish(d, f, ship_from=None):
     d["ebay_listing_id"] = listing_id
     d["ebay_listing_url"] = listing_url
     d["ebay_sku"] = sku
+    # v63: the quantity this listing went live with, so the draft and
+    # the live listing agree — and so a later quantity change is
+    # judged against this offer, not a stale one. Normally the
+    # requested quantity; a reused offer (25002) publishes its own
+    # saved quantity, so the draft records that instead.
+    if offer_reused_quantity is not None:
+        d["ebay_offer_quantity"] = offer_reused_quantity
+        d["quantity"] = str(offer_reused_quantity)
+    else:
+        d["ebay_offer_quantity"] = quantity
+        d["quantity"] = str(quantity)
     # v57: record the live photo list + a hash of each local file, so a
     # later photos-only update can reuse the unchanged URLs and upload
     # only what actually changed.
@@ -3137,6 +3223,19 @@ def api_ebay_publish():
     except (ValueError, TypeError):
         price_val = None
         price_error = "Set a price above $0 before listing."
+    # v63: quantity. The listing page sends it with every publish;
+    # an old draft carries no quantity key at all and publishes as 1
+    # (the field's default). A value that is actually there must be a
+    # whole number of 1 or more — anything else rides into f as a
+    # quantity_error so the compliance check reports it with every
+    # other problem instead of eBay's own error arriving later.
+    quantity_raw = body.get("quantity")
+    if quantity_raw is None:
+        quantity_raw = d.get("quantity")
+    if quantity_raw is None:
+        quantity, quantity_error = 1, None
+    else:
+        quantity, quantity_error = _parse_quantity(quantity_raw)
     # v9: best offer. The toggle and optional auto prices come from the
     # listing page, falling back to the draft's saved values. Toggle off =
     # today's behavior, unchanged (no bestOfferTerms sent).
@@ -3185,6 +3284,8 @@ def api_ebay_publish():
             "description": description,
             "price_val": price_val,
             "price_error": price_error,
+            "quantity": quantity,
+            "quantity_error": quantity_error,
             "bo_error": bo_error,
             "condition": condition,
             "condition_details": condition_details,
@@ -3282,6 +3383,17 @@ def api_ebay_batch_publish():
             results.append({"draft_id": d["id"], "title": title, "ok": False,
                             "error": "No price set."})
             continue
+        # v63: quantity, per draft — a draft that never had one
+        # publishes as 1, a draft with a bad one is reported and
+        # skipped like a draft with no price.
+        if "quantity" not in d:
+            quantity, quantity_error = 1, None
+        else:
+            quantity, quantity_error = _parse_quantity(d.get("quantity"))
+        if quantity_error:
+            results.append({"draft_id": d["id"], "title": title, "ok": False,
+                            "error": quantity_error})
+            continue
         title_v = str(d.get("title", "")).strip()[:80]
         if not title_v:
             results.append({"draft_id": d["id"], "title": title, "ok": False,
@@ -3300,6 +3412,10 @@ def api_ebay_batch_publish():
                 "title": title_v,
                 "description": str(d.get("description", "")).strip(),
                 "price_val": price_val,
+                # v63: each draft carries its own quantity (see the
+                # per-draft check above); _do_publish sends it on both
+                # the inventory item and the offer.
+                "quantity": quantity,
                 "condition": str(d.get("condition", "") or "").strip(),
                 "condition_details": str(d.get("condition_details", "") or "").strip()[:1000],
                 "category_id": category_id,
@@ -3682,7 +3798,7 @@ def api_draft_save(draft_id):
         return jsonify({"error": "Draft not found."}), 404
     body = request.get_json(force=True) or {}
     for key in ("title", "description", "category", "price", "identification_notes",
-                "condition_details"):
+                "condition_details", "quantity"):
         if key in body:
             d[key] = str(body[key])[:5000]
     # v6: condition must be one of eBay's condition values (or empty = unset).
@@ -4255,6 +4371,281 @@ def api_revise_photos_execute(draft_id):
                     "uploaded": len(plan["uploads"]),
                     "removed": plan["removed"],
                     "message": "The live listing now shows the new photos."})
+
+
+def _revise_quantity_eligible(d):
+    """v63: only a draft this app published can have its live quantity
+    changed. Returns (error, status), or None when the draft is
+    eligible. No photos requirement (unlike _revise_eligible for
+    photos) — a quantity change needs only the live offer."""
+    if d is None:
+        return "Draft not found.", 404
+    if not d.get("ebay_listing_id") or not d.get("ebay_offer_id"):
+        return ("This draft was not published by the app, so there is no "
+                "live listing to update."), 409
+    return None
+
+
+def _revise_quantity_plan(d, token, requested):
+    """v63: the quantity-change plan. Reads the live offer for this
+    draft's SKU — the stored offer id first, the sku lookup when it
+    is missing or gone — and compares its availableQuantity with the
+    requested quantity. The listing shows the smaller of the inventory
+    item quantity and the offer quantity (eBay's two-level quantity
+    rule), so the update changes BOTH levels and the plan carries
+    both live objects. Returns a dict with the live quantity, the
+    requested quantity, the offer id, the live offer and item, an
+    unchanged flag, and the plain-words changes list."""
+    sku = (d.get("ebay_sku") or ("la" + d["id"])).strip()
+    offer_id = (d.get("ebay_offer_id") or "").strip()
+    offer = None
+    if offer_id:
+        try:
+            offer = _ebay_call("GET",
+                               f"/sell/inventory/v1/offer/{offer_id}", token)
+        except _EbayApiError as exc:
+            if getattr(exc, "status", None) == 404:
+                offer = None
+            else:
+                raise
+    if not isinstance(offer, dict) or not offer:
+        # The stored offer id is gone (or was never saved): fall back
+        # to the sku lookup, which lists the SKU's offers.
+        try:
+            found = _ebay_call("GET",
+                               f"/sell/inventory/v1/offer?sku={sku}", token)
+        except _EbayApiError as exc:
+            if getattr(exc, "status", None) == 404:
+                found = {}
+            else:
+                raise
+        offers = found.get("offers") if isinstance(found, dict) else None
+        if offers:
+            if offer_id:
+                for o in offers:
+                    if isinstance(o, dict) and \
+                            str(o.get("offerId") or "").strip() == offer_id:
+                        offer = o
+                        break
+            if offer is None and isinstance(offers[0], dict):
+                offer = offers[0]
+    if not isinstance(offer, dict) or not offer:
+        raise RuntimeError(
+            "eBay no longer has this listing's offer. It may have been "
+            "ended or removed on eBay's side. Check Seller Hub.")
+    live = offer.get("availableQuantity")
+    if not isinstance(live, int):
+        try:
+            live = int(live)
+        except (TypeError, ValueError):
+            raise RuntimeError(
+                "eBay did not say how many this listing has. Try again.")
+    offer_id = str(offer.get("offerId") or offer_id or "").strip()
+    if not offer_id:
+        raise RuntimeError(
+            "eBay did not return an offer number for this listing. "
+            "Check Seller Hub.")
+    try:
+        item = _ebay_call("GET",
+                          f"/sell/inventory/v1/inventory_item/{sku}", token)
+    except _EbayApiError as exc:
+        if getattr(exc, "status", None) == 404:
+            raise RuntimeError(
+                "eBay no longer has this item. It may have been ended, "
+                "sold, or removed on eBay's side. Check Seller Hub.")
+        raise
+    if not isinstance(item, dict):
+        raise RuntimeError(
+            "eBay returned something unexpected for this item. Try again.")
+    unchanged = (live == requested)
+    if unchanged:
+        changes = ["The live listing already has a quantity of %d." % live]
+    else:
+        changes = ["Quantity changes from %d to %d." % (live, requested)]
+    return {"sku": sku, "offer_id": offer_id, "offer": offer,
+            "item": item, "live_quantity": live, "requested": requested,
+            "unchanged": unchanged, "changes": changes}
+
+
+def _offer_put_body(offer, quantity):
+    """v63: the body for PUT /sell/inventory/v1/offer/{offerId}.
+    updateOffer replaces the whole offer, so every field the offer
+    was made with is required — a partial body with only
+    availableQuantity is not enough (eBay's updateOffer docs), and
+    for a published offer listingDescription is required too. Build
+    it from the live offer eBay just returned, swapping only the
+    quantity, so nothing else can drift. A required field missing
+    from eBay's own read fails plainly here, before anything is
+    sent, instead of eBay refusing a half-built offer. Read-only
+    fields (status, listingId) are never sent."""
+    body = {}
+    for k in ("offerId", "sku", "marketplaceId", "format", "categoryId",
+              "listingDescription", "listingPolicies", "pricingSummary",
+              "listingDuration", "merchantLocationKey", "charity", "tax"):
+        if k in offer and offer[k] is not None:
+            body[k] = offer[k]
+    body["availableQuantity"] = quantity
+    body = json.loads(json.dumps(body))
+    missing = [k for k in ("sku", "marketplaceId", "format", "categoryId",
+                           "listingDescription", "listingPolicies",
+                           "pricingSummary") if k not in body]
+    if missing:
+        raise RuntimeError(
+            "eBay did not return the full listing, so the quantity "
+            "cannot be updated safely. Check Seller Hub.")
+    return body
+
+
+@app.route("/api/drafts/<draft_id>/revise-quantity", methods=["GET"])
+def api_revise_quantity_preview(draft_id):
+    """v63: preview a quantity change for a listed draft. GET only —
+    nothing is sent to eBay beyond reading the live offer and item.
+    The plan says exactly what the confirm screen will show."""
+    d = _load_draft(draft_id)
+    err = _revise_quantity_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    requested, qerr = _parse_quantity(request.args.get("quantity", ""))
+    if qerr:
+        return jsonify({"error": qerr}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        plan = _revise_quantity_plan(d, token, requested)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity preview", exc)
+        return jsonify({"error": str(exc)}), 502
+    return jsonify({
+        "listing_id": d["ebay_listing_id"],
+        "listing_url": d.get("ebay_listing_url", ""),
+        "title": d.get("title", ""),
+        "live_quantity": plan["live_quantity"],
+        "requested_quantity": plan["requested"],
+        "unchanged": plan["unchanged"],
+        "changes": plan["changes"],
+    })
+
+
+@app.route("/api/drafts/<draft_id>/revise-quantity", methods=["POST"])
+def api_revise_quantity_execute(draft_id):
+    """v63: run the quantity change after the confirm screen. The plan
+    is recomputed fresh here — the client sends only its agreement and
+    the wanted quantity, never the plan — so a stale preview cannot
+    send a stale update. Updates the inventory item quantity first,
+    then the offer's availableQuantity (the listing shows the smaller
+    of the two, so both must agree), then reads both back to prove the
+    new quantity took. Title, price, photos, policies, and everything
+    else ride along untouched. No new offer, no re-publish."""
+    d = _load_draft(draft_id)
+    err = _revise_quantity_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirmed"):
+        return jsonify({"error": "Confirm the quantity update first."}), 400
+    requested, qerr = _parse_quantity(body.get("quantity", ""))
+    if qerr:
+        return jsonify({"error": qerr}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        plan = _revise_quantity_plan(d, token, requested)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity plan", exc)
+        return jsonify({"error": str(exc)}), 502
+    if plan["unchanged"]:
+        return jsonify({"ok": True, "unchanged": True,
+                        "message": "The live listing already has a "
+                                   "quantity of %d." % plan["live_quantity"],
+                        "listing_id": d["ebay_listing_id"],
+                        "listing_url": d.get("ebay_listing_url", "")})
+    new = plan["requested"]
+    # The offer body is built (and validated) BEFORE anything is
+    # sent, so a half-built offer fails here with nothing changed —
+    # the item PUT below must never run on its own.
+    try:
+        put_offer = _offer_put_body(plan["offer"], new)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity offer body", exc)
+        return jsonify({"error": str(exc)}), 502
+    # 1. inventory item first, exactly as eBay returned it, with only
+    # the quantity swapped — the listing shows the smaller of the item
+    # and offer quantities, so the item is moved before the offer.
+    put_item = json.loads(json.dumps(plan["item"]))
+    avail = put_item.get("availability")
+    if not isinstance(avail, dict):
+        avail = {}
+    ship_to = avail.get("shipToLocationAvailability")
+    if not isinstance(ship_to, dict):
+        ship_to = {}
+    ship_to["quantity"] = new
+    avail["shipToLocationAvailability"] = ship_to
+    put_item["availability"] = avail
+    try:
+        _ebay_call("PUT",
+                   f"/sell/inventory/v1/inventory_item/{plan['sku']}",
+                   token, put_item)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity item put", exc)
+        return jsonify({"error": str(exc)}), 502
+    # 2. the offer, as a full replacement (see _offer_put_body).
+    try:
+        _ebay_call("PUT",
+                   f"/sell/inventory/v1/offer/{plan['offer_id']}",
+                   token, put_offer)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity offer put", exc)
+        return jsonify({"error": str(exc)}), 502
+    # 3. read both back and prove the new quantity took.
+    try:
+        after_offer = _ebay_call(
+            "GET", f"/sell/inventory/v1/offer/{plan['offer_id']}", token)
+        after_item = _ebay_call(
+            "GET", f"/sell/inventory/v1/inventory_item/{plan['sku']}", token)
+    except RuntimeError as exc:
+        _log_ebay_failure("revise-quantity verify", exc)
+        return jsonify({"error": "The update was sent but eBay could not "
+                                 "confirm it. Check Seller Hub before "
+                                 "trying again: " + str(exc)}), 502
+    after_qty = None
+    if isinstance(after_offer, dict):
+        try:
+            after_qty = int(after_offer.get("availableQuantity"))
+        except (TypeError, ValueError):
+            after_qty = None
+    after_item_qty = None
+    if isinstance(after_item, dict):
+        try:
+            after_item_qty = int(
+                ((after_item.get("availability") or {})
+                 .get("shipToLocationAvailability") or {}).get("quantity"))
+        except (TypeError, ValueError):
+            after_item_qty = None
+    if after_qty != new or after_item_qty != new:
+        app.logger.warning(
+            "revise-quantity verify mismatch draft=%s sku=%s expected=%s "
+            "offer=%s item=%s", d["id"], plan["sku"], new, after_qty,
+            after_item_qty)
+        return jsonify({"error": "eBay did not show the new quantity. "
+                                 "Check the listing in Seller Hub before "
+                                 "trying again."}), 502
+    d["quantity"] = str(new)
+    d["ebay_offer_quantity"] = new
+    _save_draft(d)
+    return jsonify({"ok": True,
+                    "listing_id": d["ebay_listing_id"],
+                    "listing_url": d.get("ebay_listing_url", ""),
+                    "live_quantity": new,
+                    "message": "The live listing now has a quantity "
+                               "of %d." % new})
 
 
 @app.route("/photos/<path:rel>")

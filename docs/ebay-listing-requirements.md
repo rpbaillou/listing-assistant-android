@@ -1551,3 +1551,109 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v63: quantity — enter it before listing, change it live
+- The report (Nov 19, v1.61): he could not enter a quantity anywhere
+  and could not edit it on eBay either. The eBay app blocks editing
+  his API-created listings with an inventory-process message (same
+  as photos, Nov 18), so the app has to let him do both.
+- Cause: there was NO quantity field anywhere in the app (no matches
+  for "quantity" in the template or the listing-page JS), and the
+  quantity was hardcoded to 1 in two places on the publish path
+  (the inventory item availability and the offer availableQuantity).
+  The v57 revise flow is photos-only by design, so a live listing's
+  quantity could not be changed from the app either.
+- eBay's quantity rule, verified from the Inventory API docs before
+  building (not guessed): a listing has TWO quantities, and it shows
+  the smaller of the two — the inventory item's
+  shipToLocationAvailability.quantity and the offer's
+  availableQuantity. Updating only one leaves the listing showing
+  the other. And updateOffer replaces the WHOLE offer, so every
+  field the offer was made with is required — a partial body with
+  only availableQuantity is not enough, and listingDescription is
+  required for a published offer.
+- Fix, listing page: a Quantity field sits by Price — a number input,
+  whole numbers only, minimum 1, default 1, with the plain hint
+  "How many of this item you have to sell." It autosaves and
+  prefills like Price (collectForm, listingPrefill, loadDraftIntoForm).
+  The publish confirm dialog names the quantity, and the publish
+  body carries it.
+- Fix, publish: both hardcoded 1s now send the entered quantity
+  (inventory item availability and offer availableQuantity). Invalid
+  input (0, negative, fractional, non-number, blank) is blocked with
+  the plain message "Enter a whole number of 1 or more for the
+  quantity." — checked client-side before the confirm dialog and
+  server-side in the compliance check (quantity_error rides with the
+  other problems). A draft that never had a quantity (pre-v63, or
+  the batch path reading an old draft) publishes as 1.
+- Fix, snapshot: a saved offer is a snapshot, so changing the
+  quantity after an offer was made discards it and creates a fresh
+  offer carrying the new quantity — the v34/v35 rule, extended.
+  The draft records ebay_offer_quantity at creation, at 25002 reuse
+  (from eBay's own availableQuantity), and at publish. A reused
+  offer (25002) publishes ITS saved quantity, not the requested one,
+  so the draft records the reused number — otherwise a later change
+  would be judged against a quantity eBay does not have.
+- Fix, batch: each draft carries its own quantity through batch
+  publish; a draft with a bad quantity is reported and skipped like
+  a draft with no price, and the rest of the batch still runs.
+- Fix, live update: a listed draft gets "Update live listing
+  quantity" on the listing page (shown only for listed drafts, next
+  to the photos button). It follows the v57 revise pattern: the
+  preview reads the live offer (stored offer id first, sku lookup
+  when it is missing or gone) and the confirm card names exactly
+  what will change ("Quantity changes from 1 to 3.") — the LIVE
+  quantity is the "from" value, so a stored number that drifted
+  (a sale, for example) can never silently change the listing. On
+  confirm, the server recomputes the plan, updates the inventory
+  item quantity first, then the offer's availableQuantity as a full
+  replacement built from the live offer (only the quantity swapped;
+  read-only fields like status never go out; the offer body is
+  built and validated BEFORE anything is sent, so a half-built
+  offer fails with nothing changed), then reads both back and
+  proves the new quantity took before updating the draft. An
+  unchanged quantity sends nothing. Bids, sales, or any eBay error
+  surfaces eBay's message plainly and stops; failures are logged
+  with status + errorId + message (no tokens). Title, price,
+  photos, policies, and everything else ride along untouched. No
+  new offer, no re-publish.
+- The v57 fit_check slice changed in this version: the "execute never
+  creates an offer or re-publishes" check used to slice the photos
+  execute up to the next @app.route, but the revise-quantity
+  helpers now sit between the photos execute and the /photos/ route
+  and legitimately touch the offer. The slice now ends at the next
+  function definition, so the check still proves the PHOTOS execute
+  itself never creates an offer or re-publishes.
+- Tests: tests/test_quantity.py (27 tests: _parse_quantity accepts
+  whole numbers of 1 or more and rejects blank/0/negative/fractional/
+  non-number; publish with quantity 3 sends 3 on both levels and
+  records it on the draft; untouched defaults to 1; invalid quantity
+  blocked plainly with nothing sent; a quantity change discards the
+  saved offer and creates a fresh one carrying the new quantity; the
+  same quantity reuses the saved offer; a 25002 reuse records eBay's
+  quantity, not the requested one; the publish endpoint passes the
+  quantity through and defaults to 1; batch carries each draft's
+  quantity and skips a bad one only; the live-update preview names
+  the live and new quantities, the unchanged case, the invalid case,
+  the gone-offer case, and the sku-lookup fallback; execute updates
+  the item before the offer with a full replacement body, sends
+  nothing when unchanged, fails plainly on a verify mismatch, on an
+  unconfirmed post, and when the offer body is incomplete),
+  tests/quantity.test.js (40 checks: parseQuantity, listingPrefill
+  quantity, collectForm carries it, the Update quantity button shows
+  only for listed drafts, preview + confirm card + Cancel sends
+  nothing, confirm posts confirmed:true with the quantity and shows
+  the success note with the listing link, unchanged says so plainly,
+  a bad quantity shows the plain message and sends nothing, a
+  preview failure shows eBay's message), fit_check.py check 30
+  (no hardcoded quantity 1 left, field + hint, autosave + prefill,
+  publish body + confirm, snapshot record + discard + clear, live
+  update follows the v57 pattern, both levels updated and proved).
+- Live proof still outstanding, same as v57: eBay's Inventory API
+  calls are production-only in this flow, so the live update is only
+  mock-tested — he was told to try it on ONE listing first and
+  check the quantity changed on eBay.
+- Release note: build.gradle.kts must be bumped to 63/1.62 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).
