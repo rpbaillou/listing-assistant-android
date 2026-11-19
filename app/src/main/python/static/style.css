@@ -167,6 +167,31 @@ button:disabled { opacity: 0.45; cursor: default; }
 .editor-status {
   margin: 0.5rem 0 0; font-size: 0.9rem; color: #1c1c1e; min-height: 1.2em;
 }
+/* v60: one tool at a time, behind icons (standing rule, Nov 18).
+   The old layout jammed every control onto one long scrolling page
+   and scrolling down to Apply kept hitting a slider by accident.
+   A toolbar of four tools sits under the preview; tapping one opens
+   only that tool's controls, and the Apply/Cancel bar sticks to the
+   bottom of the panel, so Apply is always in reach without
+   scrolling. The active tool reuses the verified primary pair
+   (white on #2a63d8). Each tool button is a quarter of the row, so
+   all four fit a narrow phone at finger size. */
+.editor-tools { display: flex; gap: 0.5rem; margin: 0.6rem 0 0.2rem; }
+.edit-tool {
+  flex: 1 1 0; min-width: 0; min-height: 52px;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 0.15rem;
+  font-size: 0.8rem; font-weight: 600; padding: 0.4rem 0.2rem;
+}
+.edit-tool svg { display: block; }
+.edit-tool[aria-pressed="true"] { background: #2a63d8; color: #fff; border-color: #2a63d8; }
+.edit-panel { margin-top: 0.4rem; }
+.edit-panel[hidden] { display: none; }
+.editor-actions {
+  position: sticky; bottom: 0; z-index: 2;
+  background: #fff; margin: 0.8rem -1rem -1rem; padding: 0.6rem 1rem 1rem;
+}
+.editor-actions .primary { flex: 1.4; }
 /* v56: full-editor controls. Range inputs are full-width with a 44px
    touch height and the brand-blue accent; the active filter chip
    reuses the verified primary pair (white on #2a63d8). */

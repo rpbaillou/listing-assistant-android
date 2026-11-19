@@ -917,6 +917,72 @@ def main():
           "response.cache_control.max_age = 0" in py,
           "page and /static/* must send no-cache")
 
+    # 27. v60 editor redesign: one tool at a time, behind icons
+    # (standing rule, Nov 18). The old layout jammed every control
+    # onto one long scrolling page, and scrolling down to Apply kept
+    # hitting a slider by accident. A toolbar of four tools sits
+    # under the preview; tapping one opens only that tool's panel.
+    # Crop opens by default, since cropping is most of what he does,
+    # and the crop handles only live in Crop mode. Apply and Cancel
+    # sit in a bar stuck to the bottom of the panel, always in reach.
+    tools = html.split('<div class="editor-tools"')[1].split("</div>")[0]
+    check("editor toolbar holds four tools, Crop pressed by default",
+          tools.count('class="edit-tool') == 4 and
+          all('data-tool="%s"' % t in tools
+              for t in ("adjust", "crop", "rotate", "filters")) and
+          'data-tool="crop" type="button" aria-pressed="true"' in tools and
+          tools.count('aria-pressed="true"') == 1,
+          "toolbar: %d tools" % tools.count('class="edit-tool'))
+    check("four tool panels exist, Crop open and the rest hidden",
+          html.count('class="edit-panel"') == 4 and
+          all('data-panel="%s"' % t in html
+              for t in ("adjust", "crop", "rotate", "filters")) and
+          'class="edit-panel" data-panel="crop">' in html and
+          all('class="edit-panel" data-panel="%s" hidden' % t in html
+              for t in ("adjust", "rotate", "filters")),
+          "panels: %d" % html.count('class="edit-panel"'))
+    check("each tool's controls live inside its own panel",
+          html.find('data-panel="adjust"') < html.find('id="edit-brightness"') and
+          html.find('data-panel="crop"') < html.find('class="edit-crop-preset') and
+          html.find('data-panel="rotate"') < html.find('id="edit-straighten"') and
+          html.find('data-panel="filters"') < html.find('class="edit-filter'),
+          "controls must sit inside their tool panels, not one flat list")
+    actions = html.split('<div class="editor-actions')[1].split("</div>")[0]
+    check("Apply, Cancel, and Reset sit in a fixed bar at the bottom",
+          all('id="%s"' % i in actions
+              for i in ("btn-edit-reset", "btn-edit-cancel", "btn-edit-apply")),
+          "the bar must hold Reset, Cancel, Apply")
+    check("the action bar sticks to the bottom of the panel",
+          rules.get(".editor-actions", {}).get("position") == "sticky" and
+          rules.get(".editor-actions", {}).get("bottom") == "0" and
+          rules.get(".editor-actions", {}).get("background") == "#fff",
+          str(rules.get(".editor-actions", {})))
+    check("tool buttons are finger-sized and share the row evenly",
+          px(rules.get(".edit-tool", {}).get("min-height")) is not None and
+          px(rules.get(".edit-tool", {}).get("min-height")) >= 44 and
+          rules.get(".edit-tool", {}).get("flex") == "1 1 0",
+          str(rules.get(".edit-tool", {})))
+    check("the active tool is white on brand blue",
+          rules.get('.edit-tool[aria-pressed="true"]', {}).get("background") == "#2a63d8" and
+          rules.get('.edit-tool[aria-pressed="true"]', {}).get("color") == "#fff" and
+          contrast("#fff", "#2a63d8") >= 4.5,
+          "contrast %.1f:1" % contrast("#fff", "#2a63d8"))
+    check("hidden panels are never shown",
+          rules.get(".edit-panel[hidden]", {}).get("display") == "none",
+          str(rules.get(".edit-panel[hidden]", {})))
+    check("Crop is the default tool on open and on close",
+          js.count('editTool = "crop";') >= 2 and
+          "let editTool = \"crop\";" in js,
+          "openEditorFor and closeEditor must both reset to Crop")
+    check("switching tools shows only that tool's panel",
+          "function setEditorTool(" in js and
+          "p.hidden = p.dataset.panel !== editTool;" in js and
+          'document.querySelectorAll(".edit-tool")' in js,
+          "setEditorTool must hide the other panels")
+    check("crop handles only live in Crop mode",
+          'if (editTool !== "crop") return;' in js,
+          "pointerdown must ignore the canvas outside Crop mode")
+
     print()
     return 1 if FAILURES else 0
 

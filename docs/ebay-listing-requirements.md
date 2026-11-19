@@ -1384,3 +1384,58 @@ remembers the open draft.
   stale-cache theory is dead and it is a missed path in the editor
   code, which needs a live repro on 1.58 (which photo, which screen,
   first open or after editing one).
+
+## v60: editor redesign — one tool at a time, behind icons
+
+- Live report (Nov 18, 22:23): he constantly hits a slider or
+  another control by accident while scrolling all the way down to
+  Apply. Everything was on one page, and the trip to the bottom
+  kept catching controls. He wants it like the eBay photo tool:
+  tap an icon for a setting and that brings up only that setting's
+  options.
+- Standing rule (Nov 18, saved in AGENTS.md): one tool at a time,
+  behind icons. Never jam every control onto one long scrolling
+  page. When a screen has several groups of controls, put each
+  group behind its own icon in a toolbar; tapping an icon opens
+  only that group's controls, and the main action (Apply/Save)
+  stays fixed and reachable without scrolling. A long scrolling
+  control panel is a defect, not a layout. Applies to everything
+  built, not just the editor.
+- Layout: a toolbar of four tools under the sticky preview —
+  Adjust, Crop, Rotate, Filters — each with an icon and a label.
+  Only the active tool's panel is visible; tapping another icon
+  switches. Crop opens by default, since cropping is most of what
+  he does (added Nov 18, 22:25), and the next open starts on Crop
+  again whatever the last session left open. Apply, Cancel, and
+  Reset sit in a bar stuck to the bottom of the panel, always in
+  reach without scrolling.
+- Panels: Adjust holds Auto enhance plus the five sliders
+  (Brightness, Contrast, Saturation, Warmth, Sharpness). Crop
+  holds the four crop presets plus the drag hint; the canvas crop
+  handles only live in Crop mode, so outside it a stray touch on
+  the photo cannot grab or move the crop (the box is still drawn).
+  Rotate holds the Straighten slider plus Rotate left/right and
+  Flip. Filters holds the five filter chips. Switching tools never
+  touches the edit state: sliders, crop, rotation, and filters all
+  survive a switch.
+- Nothing is removed: the sticky preview and the status line (v59),
+  Auto enhance with the v58 cap, Undo after Apply (v59), the v58
+  tilt fixes, the 44px crop corners and remapCropToFrame, and the
+  v59 no-cache static serving all stay exactly as they were.
+- Tests: tests/photo-editor.test.js (12 new checks in section 12:
+  the editor opens on Crop by default; each icon opens only its
+  panel; switching keeps the adjustments; every ability still
+  works through the new UI — crop preset, Reset, slider, filter,
+  straighten; a corner touch outside Crop mode grabs nothing and
+  leaves the crop alone; the same touch in Crop mode grabs the
+  corner; reopening after Cancel starts on Crop again),
+  fit_check.py check 27 (toolbar with four tools and Crop pressed,
+  four panels with Crop open, controls inside their own panels,
+  Reset/Cancel/Apply in a sticky bottom bar, finger-sized tool
+  buttons, active tool contrast, Crop default on open and close,
+  crop handles gated on Crop mode).
+- Release note: build.gradle.kts must be bumped to 60/1.59 in the
+  code commit (check 21 guards it; v55 caught the unbumped-gradle
+  defect). Release order is the v59 order (tag first, wait for CI
+  to publish the asset, only then commit version.json), so the
+  updater never 404s on an asset that does not exist yet.

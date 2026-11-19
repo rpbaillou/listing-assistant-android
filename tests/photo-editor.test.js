@@ -11,7 +11,9 @@
  * and flip change the frame; Reset restores, Cancel discards, Apply
  * saves into the same slot; draft Edit opens the in-app editor (never
  * the old Pixel handoff) and its Apply saves through the replace
- * endpoint plus a thumbnail refresh.
+ * endpoint plus a thumbnail refresh. v60: one tool at a time behind
+ * icons (Adjust, Crop, Rotate, Filters), Crop open by default, and
+ * the crop handles only live in Crop mode.
  * Run: node tests/photo-editor.test.js (exit 0 = pass). */
 const fs = require("fs");
 const path = require("path");
@@ -310,6 +312,19 @@ function newContext(source) {
     b.className = "edit-crop-preset secondary";
     if (ratio) b.dataset.ratio = ratio;
   });
+  /* v60: the tool toolbar and panels live in the HTML, so they must
+     exist before app.js binds its listeners at load time. Crop is
+     the default tool: its panel is open and its button is pressed. */
+  ["adjust", "crop", "rotate", "filters"].forEach((name) => {
+    const b = makeEl("", "button");
+    b.className = "edit-tool secondary";
+    b.dataset.tool = name;
+    b.setAttribute("aria-pressed", name === "crop" ? "true" : "false");
+    const p = makeEl("", "div");
+    p.className = "edit-panel";
+    p.dataset.panel = name;
+    p.hidden = name !== "crop";
+  });
   vm.runInContext(source, sandbox);
   const $ = (id) => sandbox.document.getElementById(id);
   const ctx = (code) => vm.runInContext(code, sandbox);
@@ -377,6 +392,12 @@ const chip = (name) => ALL_ELS.find((e) => e.dataset.filter === name);
 const cropPreset = (ratio) =>
   ALL_ELS.find((e) => e.classList.contains("edit-crop-preset") &&
     (e.dataset.ratio || null) === ratio);
+const tool = (name) =>
+  ALL_ELS.find((e) => e.classList.contains("edit-tool") &&
+    e.dataset.tool === name);
+const panel = (name) =>
+  ALL_ELS.find((e) => e.classList.contains("edit-panel") &&
+    e.dataset.panel === name);
 
 (async () => {
   const { sandbox, $, ctx, resolveFetch, tick, fire,
@@ -817,6 +838,83 @@ const cropPreset = (ratio) =>
   await tick(); await tick();
   check("the stale-slider draft open renders untilted",
     lastRotate() === 0);
+  $("btn-edit-cancel").click();
+
+  /* ---------- 12. v60: one tool at a time, behind icons; Crop
+     opens by default, and the crop handles only live in Crop mode */
+  ctx("openEditor(0);");
+  await tick(); await tick();
+  check("the editor opens on Crop by default",
+    ctx("editTool") === "crop" &&
+    tool("crop").getAttribute("aria-pressed") === "true" &&
+    tool("adjust").getAttribute("aria-pressed") === "false" &&
+    tool("rotate").getAttribute("aria-pressed") === "false" &&
+    tool("filters").getAttribute("aria-pressed") === "false" &&
+    panel("crop").hidden === false &&
+    panel("adjust").hidden === true &&
+    panel("rotate").hidden === true &&
+    panel("filters").hidden === true);
+  cropPreset("1").click();
+  check("a crop preset works from the Crop panel",
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 100, y: 0, w: 600, h: 600 }));
+  $("btn-edit-reset").click();
+  check("Reset still restores the full frame through the new UI",
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 0, y: 0, w: 800, h: 600 }) &&
+    ctx("editStraighten") === 0);
+  tool("adjust").click();
+  check("tapping Adjust opens only the Adjust panel",
+    ctx("editTool") === "adjust" &&
+    panel("adjust").hidden === false &&
+    panel("crop").hidden === true &&
+    panel("rotate").hidden === true &&
+    panel("filters").hidden === true &&
+    tool("adjust").getAttribute("aria-pressed") === "true" &&
+    $("editor-status").textContent === "Adjust open.");
+  await slide("edit-brightness", 40);
+  check("Brightness still reaches the preview from the Adjust panel",
+    ctx("editAdj.brightness") === 40 && hasFilter("brightness(1.400)"));
+  tool("crop").click();
+  tool("adjust").click();
+  check("switching tools keeps the adjustments",
+    ctx("editAdj.brightness") === 40 && $("edit-brightness").value === "40");
+  tool("filters").click();
+  chip("vivid").click();
+  check("a filter tap works from the Filters panel",
+    ctx("editFilter") === "vivid" &&
+    $("editor-status").textContent === "Vivid filter on.");
+  tool("rotate").click();
+  await slide("edit-straighten", 10);
+  check("straighten works from the Rotate panel",
+    ctx("editStraighten") === 10 &&
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 139, y: 139, w: 614, h: 452 }));
+  $("btn-edit-reset").click();
+  tool("adjust").click();
+  fire($("editor-canvas"), "pointerdown",
+    { clientX: 9, clientY: 9, preventDefault() {} });
+  check("a corner touch outside Crop mode grabs nothing",
+    ctx("editDrag") === null);
+  fire($("editor-canvas"), "pointermove",
+    { clientX: 30, clientY: 30, preventDefault() {} });
+  fire($("editor-canvas"), "pointerup", {});
+  check("a drag outside Crop mode leaves the crop alone",
+    JSON.stringify(ctx("editCrop")) ===
+      JSON.stringify({ x: 0, y: 0, w: 800, h: 600 }));
+  tool("crop").click();
+  fire($("editor-canvas"), "pointerdown",
+    { clientX: 9, clientY: 9, preventDefault() {} });
+  check("back in Crop mode the same touch grabs the corner",
+    ctx("editDrag && editDrag.mode") === "nw");
+  fire($("editor-canvas"), "pointerup", {});
+  tool("filters").click();
+  $("btn-edit-cancel").click();
+  ctx("openEditor(0);");
+  await tick(); await tick();
+  check("reopening after Cancel starts on Crop again",
+    ctx("editTool") === "crop" && panel("crop").hidden === false &&
+    panel("filters").hidden === true);
   $("btn-edit-cancel").click();
 
   check("no unhandled promise rejections", unhandled.length === 0,

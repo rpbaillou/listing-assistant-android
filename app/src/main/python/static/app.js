@@ -621,6 +621,10 @@ function editorHitTest(px, py) {
 
 $("editor-canvas").addEventListener("pointerdown", (e) => {
   if (!editImg) return;
+  /* v60: crop handles only live in Crop mode — outside it a stray
+     touch on the photo cannot grab or move the crop by mistake.
+     The crop box is still drawn (drawEditor), just not draggable. */
+  if (editTool !== "crop") return;
   const p = editorCanvasPos(e);
   const mode = editorHitTest(p.x, p.y);
   if (!mode) return;
@@ -715,6 +719,8 @@ function openEditorFor(blob, source) {
   editAdj = defaultAdjustments();
   editFilter = "original";
   editDrag = null;
+  /* v60: Crop opens by default — cropping is most of what he does. */
+  editTool = "crop";
   /* v58: reset the sliders on screen now, before the image loads —
      the controls must read zero the moment the editor opens, not
      only once the photo arrives. The previous session's slider
@@ -785,6 +791,9 @@ function closeEditor() {
   editAdj = defaultAdjustments();
   editFilter = "original";
   editCrop = null;
+  /* v60: the next open starts on Crop again, never on whatever tool
+     the last session left open. */
+  editTool = "crop";
   syncEditorControls();
 }
 $("btn-edit-cancel").addEventListener("click", closeEditor);
@@ -917,6 +926,33 @@ function setEditorStatus(msg) {
   const el = $("editor-status");
   if (el) el.textContent = msg;
 }
+/* v60: one tool at a time, behind icons (standing rule, Nov 18).
+   The editor used to show every control on one long scrolling page,
+   and scrolling down to Apply kept hitting a slider by accident.
+   Now a toolbar holds Adjust, Crop, Rotate, Filters; only the active
+   tool's panel is visible. Crop opens by default, since cropping is
+   most of what he does. The tool is state like the rest: syncing
+   re-asserts the panels and the pressed tool, so a stale DOM value
+   can never disagree with the editor. */
+let editTool = "crop";
+const EDIT_TOOLS = ["adjust", "crop", "rotate", "filters"];
+const EDIT_TOOL_LABELS = { adjust: "Adjust", crop: "Crop",
+  rotate: "Rotate", filters: "Filters" };
+function syncEditorTool() {
+  document.querySelectorAll(".edit-panel").forEach((p) => {
+    p.hidden = p.dataset.panel !== editTool;
+  });
+  document.querySelectorAll(".edit-tool").forEach((b) => {
+    b.setAttribute("aria-pressed",
+      b.dataset.tool === editTool ? "true" : "false");
+  });
+}
+function setEditorTool(tool, announce) {
+  if (EDIT_TOOLS.indexOf(tool) < 0) return;
+  editTool = tool;
+  syncEditorTool();
+  if (announce !== false) setEditorStatus(EDIT_TOOL_LABELS[tool] + " open.");
+}
 function syncEditorControls() {
   const setVal = (id, v) => { const el = $(id); if (el) el.value = String(v); };
   const setText = (id, v) => { const el = $(id); if (el) el.textContent = String(v); };
@@ -936,6 +972,7 @@ function syncEditorControls() {
     b.setAttribute("aria-pressed",
       b.dataset.filter === editFilter ? "true" : "false");
   });
+  syncEditorTool();
 }
 function bindEditorSlider(id, label, apply) {
   const el = $(id);
@@ -961,6 +998,12 @@ bindEditorSlider("edit-straighten", "Straighten", (v) => {
   const before = editVisibleFrame();
   editStraighten = v;
   if (editCrop) editCrop = remapCropToFrame(editCrop, before, editVisibleFrame(), EDIT_MIN_CROP);
+});
+/* v60: the tool toolbar — tapping an icon opens only that tool's
+   panel. Switching tools never touches the edit state, so sliders,
+   crop, rotation, and filters all survive a switch. */
+document.querySelectorAll(".edit-tool").forEach((b) => {
+  b.addEventListener("click", () => setEditorTool(b.dataset.tool));
 });
 document.querySelectorAll(".edit-filter").forEach((b) => {
   b.addEventListener("click", () => {
