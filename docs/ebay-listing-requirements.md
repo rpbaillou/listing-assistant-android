@@ -1352,3 +1352,35 @@ remembers the open draft.
   (42 total, up from 29).
 - Release note: build.gradle.kts must be bumped to 59/1.58 in the code
   commit (check 21 guards it; v55 caught the unbumped-gradle defect).
+- Lesson, Nov 18, the version.json-before-asset race: version.json
+  went live at 59/1.58 while the apk-v59 release did not exist yet
+  (the tag had just been pushed and CI was still building), and the
+  in-app updater answered his update check with HTTP 404, because
+  version.json already pointed at an asset that was not there. The
+  asset landed minutes later (CI success, release published, asset
+  verified downloadable), and a retry works, but the window must
+  never happen again. Adopted for the next release: tag first, wait
+  for CI to publish the asset, and only then commit version.json
+  (tag, CI asset, version.json). The workflow builds the APK from
+  the tagged commit's build.gradle.kts, not from version.json, so
+  tagging the code commit works; the version.json commit lands
+  after, and the final fit_check run (check 21) happens after it,
+  before he is told to update.
+- Live report, Nov 18, badge confirmed v1.57: the tilt STILL happens
+  on 1.57, so the v58 fix missed a path or never reached him. The
+  v58 fix itself is verified correct in the released code and
+  re-proven in v59 through every open path in the harness (edit
+  photo 1, Apply or Cancel, open photo 2, both screens, stale
+  slider forced on open), and no missed path was found in the code.
+  The remaining explanation that fits a badge-confirmed 1.57 with
+  the tilt unchanged is the stale cached app.js: the badge reflects
+  the APK version, not the JavaScript the WebView runs, and Flask's
+  static route served app.js with a 12h max-age, so the editor could
+  still be running the cached v56 code (the closeEditor leak) hours
+  after the 1.57 update. The v59 no-cache fix is the remedy for
+  that case: updating to 1.58 replaces the APK, and the new server
+  forces the WebView to revalidate the script, so the v58 editor
+  code finally runs. If the tilt still happens on 1.58, the
+  stale-cache theory is dead and it is a missed path in the editor
+  code, which needs a live repro on 1.58 (which photo, which screen,
+  first open or after editing one).
