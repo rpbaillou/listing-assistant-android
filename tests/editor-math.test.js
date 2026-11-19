@@ -79,6 +79,7 @@ check("clamp min size at far edge stays in bounds",
 
 /* v56: full-editor pure helpers. */
 const { defaultAdjustments, adjustmentFilter, autoEnhanceValues,
+        autoEnhanceStatus,
         aspectCropRect, rotatedFrameSize, straightenFrame,
         clampCropToFrame, remapCropToFrame, sharpenImageData } = sandbox;
 function ctxExpr(expr) { return vm.runInContext(expr, sandbox); }
@@ -113,6 +114,16 @@ check("auto enhance never gives a positive brightness at or above the target mea
   autoEnhanceValues(255, 0).brightness === -30);
 check("auto enhance still brightens a genuinely dark photo",
   autoEnhanceValues(60, 20).brightness === 29);
+/* v59: the status line says the exact values Auto enhance set, or
+   that the photo was already bright enough to need no lift. */
+check("auto enhance status names the exact values it set",
+  autoEnhanceStatus({ brightness: 29, contrast: 22, saturation: 12 }) ===
+    "Auto enhance set Brightness +29, Contrast +22, Saturation +12." &&
+  autoEnhanceStatus({ brightness: -30, contrast: -9, saturation: 12 }) ===
+    "Auto enhance set Brightness -30, Contrast -9, Saturation +12.");
+check("auto enhance status says the photo needed no lift when it did not",
+  autoEnhanceStatus({ brightness: 0, contrast: 0, saturation: 12 }) ===
+    "Auto enhance: the photo is already bright, so no brightness or contrast change. Saturation +12.");
 
 check("aspectCropRect null ratio is the full frame",
   eq(aspectCropRect(1000, 800, null), { x: 0, y: 0, w: 1000, h: 800 }));

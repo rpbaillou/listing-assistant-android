@@ -59,12 +59,17 @@ const ALL_CANVASES = [];
 
 /* Recording 2d context: every call lands in ctx.calls, and property
    writes that the editor depends on (filter, fillStyle,
-   globalCompositeOperation) are recorded too. */
+   globalCompositeOperation) are recorded too. v59: getImageData
+   returns pixels that reflect the filter active when the image was
+   drawn, so the tests can read a preview back and prove an
+   adjustment really landed on the canvas instead of only changing
+   state. */
 function makeCtx() {
   const calls = [];
   const ctx = {
     calls,
     lineWidth: 1,
+    _lastDrawFilter: "",
     save() { calls.push(["save"]); },
     restore() { calls.push(["restore"]); },
     translate(x, y) { calls.push(["translate", x, y]); },
@@ -73,13 +78,26 @@ function makeCtx() {
     clearRect(...a) { calls.push(["clearRect", ...a]); },
     fillRect(...a) { calls.push(["fillRect", ...a]); },
     strokeRect(...a) { calls.push(["strokeRect", ...a]); },
-    drawImage(...a) { calls.push(["drawImage", ...a]); },
+    drawImage(...a) {
+      calls.push(["drawImage", ...a]);
+      /* The filter in force for this draw is what the drawn pixels
+         show; a canvas that never drew an image (the Auto enhance
+         probe) reads the plain source gray, 60. */
+      ctx._lastDrawFilter = _filter;
+    },
     getImageData(x, y, w, h) {
       calls.push(["getImageData", w, h]);
       const data = new Uint8ClampedArray(w * h * 4);
+      let v = 60;
+      const f = ctx._lastDrawFilter || "";
+      const b = f.match(/brightness\(([\d.]+)\)/);
+      const c = f.match(/contrast\(([\d.]+)\)/);
+      if (b) v = v * Number(b[1]);
+      if (c) v = 127.5 + (v - 127.5) * Number(c[1]);
+      v = Math.max(0, Math.min(255, Math.round(v)));
       for (let i = 0; i < w * h; i++) {
-        data[i * 4] = 60; data[i * 4 + 1] = 60;
-        data[i * 4 + 2] = 60; data[i * 4 + 3] = 255;
+        data[i * 4] = v; data[i * 4 + 1] = v;
+        data[i * 4 + 2] = v; data[i * 4 + 3] = 255;
       }
       return { width: w, height: h, data };
     },
@@ -605,6 +623,201 @@ const cropPreset = (ratio) =>
   check("draft Edit that cannot fetch the photo says so plainly",
     !$("draft-photo-error").classList.contains("hidden") &&
     $("draft-photo-error").textContent.includes("Couldn't open that photo"));
+
+  /* ---------- 9. v59: the preview really changes, the status line
+     says what happened, and Apply says it is saving ---------- */
+  const previewLum = () => {
+    /* The preview is the render canvas copied 1:1 onto the display
+       canvas, so the newest render canvas holds exactly the pixels
+       the preview shows. */
+    const rc = ALL_CANVASES[ALL_CANVASES.length - 1];
+    return rc._ctx.getImageData(0, 0, 1, 1).data[0];
+  };
+  const undoButtonsIn = (box) => {
+    /* Buttons still on screen in one grid (the harness never drops
+       dead elements from ALL_ELS, so a walk of the live grid is the
+       honest count). */
+    const out = [];
+    const walk = (el) => {
+      if (!el) return;
+      if (el.textContent === "Undo edit") out.push(el);
+      (el._kids || []).forEach(walk);
+    };
+    walk(box);
+    return out;
+  };
+  ctx("openEditor(0);");
+  await tick(); await tick();
+  check("preview opens showing the plain photo",
+    previewLum() === 60 &&
+    $("editor-status").textContent === "Photo ready to edit.");
+  $("btn-edit-auto").click();
+  check("Auto enhance redraws the preview pixels right away",
+    previewLum() === 66);
+  check("Auto enhance says the exact values it set",
+    $("editor-status").textContent ===
+      "Auto enhance set Brightness +29, Contrast +22, Saturation +12.");
+  await slide("edit-brightness", 40);
+  check("a slider move redraws the preview pixels and says the value",
+    previewLum() === 74 &&
+    $("editor-status").textContent === "Brightness 40.");
+  chip("vivid").click();
+  check("a filter tap redraws the preview and says which filter is on",
+    previewLum() === 53 &&
+    $("editor-status").textContent === "Vivid filter on.");
+  $("btn-edit-reset").click();
+  check("Reset redraws the plain photo and says so",
+    previewLum() === 60 &&
+    $("editor-status").textContent === "Reset. All changes cleared.");
+
+  /* ---------- 10. v59: Undo after Apply restores the exact
+     pre-edit photo, on both screens ---------- */
+  ctx("autoDraftId = 'a1';");
+  await slide("edit-brightness", 20);
+  const undoOrig = ctx("selectedFiles[0].blob");
+  fetchCalls.length = 0;
+  $("btn-edit-apply").click();
+  check("Apply says it is saving while it works",
+    $("btn-edit-apply").textContent === "Saving…" &&
+    $("btn-edit-apply").disabled === true);
+  await tick(); await tick(); await tick();
+  check("Apply restores the button and closes the editor",
+    $("btn-edit-apply").textContent === "Apply" &&
+    $("btn-edit-apply").disabled === false &&
+    $("editor").classList.contains("hidden"));
+  resolveFetch("/api/drafts/a1/photos/0/replace",
+    { draft: { id: "a1", photos: ["a1/1.jpg"] } });
+  await tick(); await tick();
+  check("an Undo edit button appears on the edited photo",
+    undoButtonsIn($("thumbs")).length === 1);
+  check("the edited photo is not the original yet",
+    ctx("selectedFiles[0].blob") !== undoOrig);
+  fetchCalls.length = 0;
+  undoButtonsIn($("thumbs"))[0].click();
+  await tick(); await tick(); await tick();
+  check("Undo posts the photo back to the auto draft",
+    fetchCalls.some((c) => String(c.url) === "/api/drafts/a1/photos/0/replace"));
+  resolveFetch("/api/drafts/a1/photos/0/replace",
+    { draft: { id: "a1", photos: ["a1/1.jpg"] } });
+  await tick(); await tick();
+  check("Undo restores the exact pre-edit photo",
+    ctx("selectedFiles[0].blob") === undoOrig);
+  check("Undo is gone once used",
+    undoButtonsIn($("thumbs")).length === 0);
+  /* Draft page: same undo, through the replace endpoint. */
+  ctx("openDraftEditor(1);");
+  await tick();
+  resolveFetch("/photos/d9/2.jpg", null, true, fakeBlob);
+  await tick(); await tick();
+  await slide("edit-brightness", 20);
+  fetchCalls.length = 0;
+  $("btn-edit-apply").click();
+  await tick(); await tick(); await tick();
+  check("draft Apply posts to the draft replace endpoint",
+    fetchCalls.some((c) => String(c.url) === "/api/drafts/d9/photos/1/replace"));
+  resolveFetch("/api/drafts/d9/photos/1/replace", { draft: DRAFT2 });
+  await tick(); await tick();
+  resolveFetch("/api/drafts/d9", { draft: DRAFT2 });
+  await tick(); await tick(); await tick();
+  check("draft Apply shows an Undo edit button and confirms the save",
+    undoButtonsIn($("draft-photos")).length === 1 &&
+    $("draft-photo-note").textContent.includes("Edit saved"));
+  fetchCalls.length = 0;
+  undoButtonsIn($("draft-photos"))[0].click();
+  await tick(); await tick(); await tick();
+  const undoCall = fetchCalls.find((c) =>
+    String(c.url) === "/api/drafts/d9/photos/1/replace");
+  check("draft Undo posts the original bytes back",
+    undoCall !== undefined &&
+    (await undoCall.opts.body.get("photo").text()) === "photo-bytes");
+  resolveFetch("/api/drafts/d9/photos/1/replace", { draft: DRAFT2 });
+  await tick(); await tick();
+  resolveFetch("/api/drafts/d9", { draft: DRAFT2 });
+  await tick(); await tick(); await tick();
+  check("draft Undo is gone once used",
+    undoButtonsIn($("draft-photos")).length === 0);
+
+  /* ---------- 11. v59: the tilt cannot come back through any open
+     path — edit photo 1, Apply or Cancel, open photo 2, on both
+     screens ---------- */
+  ctx("selectedFiles.push({ blob: fakeBlob, name: 'photo2.jpg', url: 'blob:seed-2' });");
+  ctx("renderThumbs();");
+  check("a photo that was never edited has no Undo button",
+    undoButtonsIn($("thumbs")).length === 0);
+  /* Step 1, Apply path: straighten 14, Apply, open the other photo. */
+  ctx("openEditor(0);");
+  await tick(); await tick();
+  await slide("edit-straighten", 14);
+  fetchCalls.length = 0;
+  $("btn-edit-apply").click();
+  await tick(); await tick(); await tick();
+  resolveFetch("/api/drafts/a1/photos/0/replace",
+    { draft: { id: "a1", photos: ["a1/1.jpg"] } });
+  await tick(); await tick();
+  ctx("openEditor(1);");
+  await tick(); await tick();
+  check("after Apply, the next photo opens straight",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0" &&
+    lastRotate() === 0);
+  /* Step 1, Cancel path: straighten 14, Cancel, open the other photo. */
+  await slide("edit-straighten", 14);
+  $("btn-edit-cancel").click();
+  ctx("openEditor(0);");
+  await tick(); await tick();
+  check("after Cancel, the next photo opens straight",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0" &&
+    lastRotate() === 0);
+  $("btn-edit-cancel").click();
+  /* Draft, Cancel path. */
+  ctx("openDraftEditor(1);");
+  await tick();
+  resolveFetch("/photos/d9/2.jpg", null, true, fakeBlob);
+  await tick(); await tick();
+  await slide("edit-straighten", 14);
+  $("btn-edit-cancel").click();
+  ctx("openDraftEditor(0);");
+  await tick();
+  resolveFetch("/photos/d9/1.jpg", null, true, fakeBlob);
+  await tick(); await tick();
+  check("after Cancel on the draft page, the next photo opens straight",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0" &&
+    lastRotate() === 0);
+  $("btn-edit-cancel").click();
+  /* Draft, Apply path. */
+  ctx("openDraftEditor(1);");
+  await tick();
+  resolveFetch("/photos/d9/2.jpg", null, true, fakeBlob);
+  await tick(); await tick();
+  await slide("edit-straighten", 14);
+  fetchCalls.length = 0;
+  $("btn-edit-apply").click();
+  await tick(); await tick(); await tick();
+  resolveFetch("/api/drafts/d9/photos/1/replace", { draft: DRAFT2 });
+  await tick(); await tick();
+  resolveFetch("/api/drafts/d9", { draft: DRAFT2 });
+  await tick(); await tick(); await tick();
+  ctx("openDraftEditor(0);");
+  await tick();
+  resolveFetch("/photos/d9/1.jpg", null, true, fakeBlob);
+  await tick(); await tick();
+  check("after Apply on the draft page, the next photo opens straight",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0" &&
+    lastRotate() === 0);
+  $("btn-edit-cancel").click();
+  /* Stale slider forced onto the draft path, the way a WebView
+     form-state restore would — the open must zero it before the
+     photo loads, not only once it arrives. */
+  $("edit-straighten").value = "14";
+  ctx("openDraftEditor(0);");
+  await tick();
+  resolveFetch("/photos/d9/1.jpg", null, true, fakeBlob);
+  await tick();
+  check("a stale slider cannot tilt a draft open",
+    ctx("editStraighten") === 0 && $("edit-straighten").value === "0");
+  await tick(); await tick();
+  check("the stale-slider draft open renders untilted",
+    lastRotate() === 0);
+  $("btn-edit-cancel").click();
 
   check("no unhandled promise rejections", unhandled.length === 0,
     unhandled.map((e) => String(e && e.stack || e)).join(" | "));

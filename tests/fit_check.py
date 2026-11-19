@@ -853,11 +853,69 @@ def main():
           "bright photos must never gain brightness")
     check("a failed Auto enhance probe leaves the photo alone",
           "brightness: 8, contrast: 12" not in js and
-          "if (!vals) return;" in js,
+          "Auto enhance could not read the photo. Nothing changed." in js,
           "no blind boost when the probe fails")
     check("editor sliders let a vertical scroll pass through",
           rules.get('.edit-slider input[type="range"]', {}).get("touch-action") == "pan-y",
           str(rules.get('.edit-slider input[type="range"]', {})))
+
+    # 26. v59 editor feedback + undo + stale-app.js. (a) The preview
+    # used to scroll off the top when he went down to the buttons,
+    # so Auto enhance looked dead until Apply, when the change was
+    # already baked in. The preview now sticks to the top of the
+    # panel while the controls scroll beneath it, and a status line
+    # says what each button just did. Taps draw right away instead
+    # of only on the next animation frame, and Apply says Saving
+    # while it works. (b) Apply had no undo: the pre-edit photo is
+    # stashed now, and an Undo edit button on the photo puts the
+    # exact original back, on both screens. (c) The tilt "came back"
+    # after v58 because Flask's static route answers with a 12h
+    # max-age and the WebView does not clear its HTTP cache on an
+    # app update, so the badge said 1.57 while the editor still ran
+    # the cached v56 app.js. The page and /static/* now revalidate
+    # on every load.
+    check("editor preview sticks to the top of the panel",
+          rules.get(".editor-preview", {}).get("position") == "sticky" and
+          rules.get(".editor-preview", {}).get("top") == "0" and
+          rules.get(".editor-preview", {}).get("background") == "#fff",
+          str(rules.get(".editor-preview", {})))
+    check("editor status line exists in the page and is dark on white",
+          'id="editor-status"' in html and
+          rules.get(".editor-status", {}).get("color") == "#1c1c1e" and
+          contrast("#1c1c1e", "#fff") >= 4.5,
+          "contrast %.1f:1" % contrast("#1c1c1e", "#fff"))
+    check("every editor action reports itself on the status line",
+          js.count("setEditorStatus(") >= 10 and
+          '"btn-edit-auto"' in js and "autoEnhanceStatus(" in js,
+          "status must be set after open, sliders, filters, crop, rotate, flip, auto, reset")
+    check("Auto enhance and filter taps draw right away, not only on rAF",
+          '"btn-edit-auto"' in js and
+          js.split('function autoEnhanceStatus(')[1].split(
+              '$("btn-edit-reset")')[0].count("drawEditor();") >= 1 and
+          js.split('document.querySelectorAll(".edit-filter")')[-1].split(
+              'document.querySelectorAll(".edit-crop-preset")')[0].count(
+              "drawEditor();") >= 1,
+          "taps must draw synchronously so the preview visibly changes")
+    check("Apply says Saving while it works and restores Apply after",
+          'btn.textContent = "Saving…";' in js and
+          'btn.textContent = "Apply";' in js,
+          "Apply must show its working state")
+    check("Apply stashes the pre-edit photo for Undo on both screens",
+          "editSourceBlob = blob;" in js and
+          "entry._undoBlob = beforeBlob;" in js and
+          "draftUndoByRel[editSource.rel] = beforeBlob;" in js,
+          "the stash must hold the exact pre-edit bytes")
+    check("Undo restores the exact original and is offered on the photo",
+          "function undoStep1Edit(" in js and
+          "function undoDraftEdit(" in js and
+          'u.textContent = "Undo edit";' in js and
+          js.count('u.textContent = "Undo edit";') >= 2,
+          "both screens need a one-tap Undo on the photo")
+    check("the app shell revalidates instead of serving a cached update",
+          'request.path == "/" or request.path.startswith("/static/")' in py and
+          "response.cache_control.no_cache = True" in py and
+          "response.cache_control.max_age = 0" in py,
+          "page and /static/* must send no-cache")
 
     print()
     return 1 if FAILURES else 0

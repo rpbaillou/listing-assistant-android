@@ -148,6 +148,23 @@ MAX_FILE_MB = 12
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_PHOTOS * MAX_FILE_MB * 1024 * 1024
 
+
+@app.after_request
+def _no_cache_app_shell(response):
+    # v59: the page and its script/style must revalidate on every
+    # load. Flask's static route answers with a 12h max-age, and the
+    # WebView does not clear its HTTP cache when the app updates —
+    # so after the v58 update the badge said 1.57 (version.json is
+    # fetched with a cache buster) while the editor still ran the
+    # cached v56 app.js, which has the closeEditor leak, and the tilt
+    # "came back" on the next photo. Same class of bug as the /photos/
+    # no-cache fix in v54. Revalidation costs nothing on a local
+    # server: an unchanged file still answers 304.
+    if request.path == "/" or request.path.startswith("/static/"):
+        response.cache_control.no_cache = True
+        response.cache_control.max_age = 0
+    return response
+
 _oauth_states = {}      # state -> created epoch (single use, 10 min)
 _app_token_cache = {}   # {"token":..., "expires_at":...} for taxonomy calls
 

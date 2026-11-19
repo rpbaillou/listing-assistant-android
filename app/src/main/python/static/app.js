@@ -174,6 +174,17 @@ function renderThumbs() {
     frame.appendChild(x);
     frame.appendChild(e);
     wrap.appendChild(frame);
+    /* v59: Undo edit appears on a photo that was edited, and puts
+       the exact pre-edit photo back with one tap. */
+    if (entry._undoBlob) {
+      const u = document.createElement("button");
+      u.type = "button";
+      u.className = "thumb-edit-below";
+      u.textContent = "Undo edit";
+      u.setAttribute("aria-label", "Undo the last edit to this photo");
+      u.addEventListener("click", () => undoStep1Edit(i));
+      wrap.appendChild(u);
+    }
     /* v44: drag to reorder — the frame is the drag handle (see
        attachThumbDrag below); the v40 ◀ ▶ buttons are gone. */
     attachThumbDrag(frame, wrap, box, i, reorderPhoto);
@@ -473,6 +484,11 @@ let editCrop = null;     /* {x,y,w,h} in FRAME coordinates (bounding box of
 let editScale = 1;       /* display px per frame px */
 let editDrag = null;     /* {mode, startX, startY, crop} in canvas px */
 let editSource = null;   /* v56: {kind:"step1"} or {kind:"draft", rel} */
+let editSourceBlob = null; /* v59: the pristine photo bytes the editor
+  opened with — Apply stashes these so the edit can be undone */
+let draftUndoByRel = {};   /* v59: draft photo rel -> pre-edit Blob, the
+  one-tap Undo stash for the listing page (session only: a reload
+  drops the stash and the Undo button with it) */
 const EDIT_MIN_CROP = 50; /* min crop edge, frame px */
 
 function editorDisplaySize(rw, rh) {
@@ -537,6 +553,10 @@ function renderEditedFrame(scale) {
 
 function drawEditor() {
   if (!editImg) return;
+  /* v59: every redraw re-asserts the controls from the state, so a
+     stale slider value (a WebView form-state restore, a stray touch)
+     can never sit on screen disagreeing with the render. */
+  syncEditorControls();
   const canvas = $("editor-canvas");
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -654,6 +674,7 @@ function rotateEditor(delta) {
      predictable than remapping a rect across a dimension swap. */
   editCrop = editVisibleFrame();
   drawEditor();
+  setEditorStatus(delta > 0 ? "Rotated right." : "Rotated left.");
 }
 $("btn-edit-rotl").addEventListener("click", () => rotateEditor(-90));
 $("btn-edit-rotr").addEventListener("click", () => rotateEditor(90));
@@ -686,6 +707,7 @@ async function reloadDraftPhotosOnly() {
    pristine photo; every control only changes state until Apply. */
 function openEditorFor(blob, source) {
   editSource = source;
+  editSourceBlob = blob;
   editIndex = source.index;
   editRot = 0;
   editFlip = false;
@@ -711,6 +733,7 @@ function openEditorFor(blob, source) {
     $("editor").classList.remove("hidden");
     document.body.style.overflow = "hidden";
     drawEditor();
+    setEditorStatus("Photo ready to edit.");
   };
   img.onerror = () => {
     URL.revokeObjectURL(url);
@@ -753,6 +776,7 @@ function closeEditor() {
   editIndex = -1;
   editDrag = null;
   editSource = null;
+  editSourceBlob = null;
   /* v58: leave nothing behind for the next open. A Straighten (or
      any adjustment) left over from this session used to survive
      Cancel — in the state and on the sliders — and leak back into
@@ -774,6 +798,11 @@ $("btn-edit-apply").addEventListener("click", async () => {
   if (!editImg || !editSource) return;
   const btn = $("btn-edit-apply");
   btn.disabled = true;
+  btn.textContent = "Saving…";
+  /* v59: the photo as it was before this edit. Stashed only once
+     the save lands (below), so a failed save never offers an Undo
+     for an edit that did not happen. */
+  const beforeBlob = editSourceBlob;
   try {
     const rendered = renderEditedFrame(1);
     const c = editCrop, rs = rendered.scale;
@@ -791,6 +820,11 @@ $("btn-edit-apply").addEventListener("click", async () => {
       if (entry.url) URL.revokeObjectURL(entry.url);
       entry.blob = blob;
       entry.url = URL.createObjectURL(blob);
+      /* v59: the pre-edit photo stays on the entry, so the Undo edit
+         button (renderThumbs) can put the exact original back. It
+         moves with the entry on reorder and leaves with it on
+         delete, so it can never point at the wrong photo. */
+      if (beforeBlob) entry._undoBlob = beforeBlob;
       renderThumbs();
       /* v50: the edited photo replaces the saved one in the auto draft. */
       replaceAutoDraftPhoto(editSource.index, blob);
@@ -801,9 +835,17 @@ $("btn-edit-apply").addEventListener("click", async () => {
       fd.append("photo", blob, "edited.jpg");
       await api("/api/drafts/" + draft.id + "/photos/" + editSource.index + "/replace",
                 { method: "POST", body: fd });
+      /* v59: the pre-edit bytes stay filed by photo path, so the
+         Undo edit button (renderDraftPhotos) can put them back. */
+      if (beforeBlob && editSource.rel) draftUndoByRel[editSource.rel] = beforeBlob;
       await reloadDraftPhotosOnly();
       closeEditor();
       hideDraftPhotoError();
+      /* v59: the save is confirmed where he lands, with the Undo
+         pointed at. */
+      $("draft-photo-note").textContent =
+        "Edit saved. Tap Undo edit on the photo to put the original back.";
+      $("draft-photo-note").classList.remove("hidden");
     }
   } catch (e) {
     if (editSource && editSource.kind === "draft") {
@@ -812,9 +854,46 @@ $("btn-edit-apply").addEventListener("click", async () => {
       showError("Couldn't save that edit. Try again.");
     }
   } finally {
+    btn.textContent = "Apply";
     btn.disabled = false;
   }
 });
+
+/* v59: Undo after Apply. Apply replaces the photo in its slot with
+   no way back, so the pre-edit photo is stashed and an Undo edit
+   button appears on that photo (both screens, until the next edit
+   of the same photo). Undo restores the exact pre-edit bytes, not a
+   re-render, and re-saves them the same way Apply does. Session
+   only: a page reload drops the stash and the button with it. */
+async function undoStep1Edit(i) {
+  const entry = selectedFiles[i];
+  if (!entry || !entry._undoBlob) return;
+  const blob = entry._undoBlob;
+  delete entry._undoBlob;
+  if (entry.url) URL.revokeObjectURL(entry.url);
+  entry.blob = blob;
+  entry.url = URL.createObjectURL(blob);
+  renderThumbs();
+  replaceAutoDraftPhoto(i, blob);
+  hideError();
+}
+async function undoDraftEdit(i) {
+  if (!draft || !draft.id) return;
+  const p = (draft.photos || [])[i];
+  const blob = p ? draftUndoByRel[p] : null;
+  if (!blob) return;
+  hideDraftPhotoError();
+  try {
+    const fd = new FormData();
+    fd.append("photo", blob, "edited.jpg");
+    await api("/api/drafts/" + draft.id + "/photos/" + i + "/replace",
+              { method: "POST", body: fd });
+    delete draftUndoByRel[p];
+    await reloadDraftPhotosOnly();
+  } catch (e) {
+    showDraftPhotoError("Couldn't undo that edit. Try again.");
+  }
+}
 
 /* v56: editor controls. Sliders adjust live (redrawn on the next
    animation frame, so dragging stays smooth); a manual slider move
@@ -827,6 +906,16 @@ function scheduleEditorDraw() {
   const raf = (typeof requestAnimationFrame === "function")
     ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
   raf(() => { editDrawQueued = false; drawEditor(); });
+}
+/* v59: the editor status line (see the sticky preview in the
+   template) says what each button just did, in plain words, so a tap
+   is never silent. */
+function signedNum(v) {
+  return (v > 0 ? "+" : "") + v;
+}
+function setEditorStatus(msg) {
+  const el = $("editor-status");
+  if (el) el.textContent = msg;
 }
 function syncEditorControls() {
   const setVal = (id, v) => { const el = $(id); if (el) el.value = String(v); };
@@ -848,21 +937,23 @@ function syncEditorControls() {
       b.dataset.filter === editFilter ? "true" : "false");
   });
 }
-function bindEditorSlider(id, apply) {
+function bindEditorSlider(id, label, apply) {
   const el = $(id);
   if (!el) return;
   el.addEventListener("input", () => {
-    apply(Number(el.value) || 0);
+    const v = Number(el.value) || 0;
+    apply(v);
+    setEditorStatus(label + " " + v + ".");
     syncEditorControls();
     scheduleEditorDraw();
   });
 }
-bindEditorSlider("edit-brightness", (v) => { editAdj.brightness = v; editFilter = ""; });
-bindEditorSlider("edit-contrast", (v) => { editAdj.contrast = v; editFilter = ""; });
-bindEditorSlider("edit-saturation", (v) => { editAdj.saturation = v; editFilter = ""; });
-bindEditorSlider("edit-warmth", (v) => { editAdj.warmth = v; editFilter = ""; });
-bindEditorSlider("edit-sharpness", (v) => { editAdj.sharpness = v; editFilter = ""; });
-bindEditorSlider("edit-straighten", (v) => {
+bindEditorSlider("edit-brightness", "Brightness", (v) => { editAdj.brightness = v; editFilter = ""; });
+bindEditorSlider("edit-contrast", "Contrast", (v) => { editAdj.contrast = v; editFilter = ""; });
+bindEditorSlider("edit-saturation", "Saturation", (v) => { editAdj.saturation = v; editFilter = ""; });
+bindEditorSlider("edit-warmth", "Warmth", (v) => { editAdj.warmth = v; editFilter = ""; });
+bindEditorSlider("edit-sharpness", "Sharpness", (v) => { editAdj.sharpness = v; editFilter = ""; });
+bindEditorSlider("edit-straighten", "Straighten", (v) => {
   /* v58: the crop keeps its relative place in the visible frame as
      the frame grows or shrinks with straightening, so undoing
      straighten grows the crop back instead of only ever clamping
@@ -877,7 +968,12 @@ document.querySelectorAll(".edit-filter").forEach((b) => {
     editAdj = Object.assign(defaultAdjustments(), preset);
     editFilter = b.dataset.filter || "original";
     syncEditorControls();
-    scheduleEditorDraw();
+    /* v59: a tap draws right away, not only on the next animation
+       frame, so the preview visibly changes in the same moment as
+       the tap. */
+    drawEditor();
+    const name = (editFilter.charAt(0).toUpperCase() + editFilter.slice(1));
+    setEditorStatus(name + " filter on.");
   });
 });
 document.querySelectorAll(".edit-crop-preset").forEach((b) => {
@@ -888,13 +984,26 @@ document.querySelectorAll(".edit-crop-preset").forEach((b) => {
     const rect = aspectCropRect(frame.w, frame.h, ratio);
     editCrop = { x: rect.x + frame.x, y: rect.y + frame.y, w: rect.w, h: rect.h };
     drawEditor();
+    setEditorStatus("Crop: " + (b.textContent || "").trim() + ".");
   });
 });
 $("btn-edit-flip").addEventListener("click", () => {
   if (!editImg) return;
   editFlip = !editFlip;
   drawEditor();
+  setEditorStatus(editFlip ? "Flipped." : "Flip off.");
 });
+function autoEnhanceStatus(vals) {
+  /* v59: what the status line says after Auto enhance — the exact
+     values it set, or that the photo was already bright enough to
+     need no lift. Pure, so the wording is unit-tested. */
+  if (vals.brightness === 0 && vals.contrast === 0) {
+    return "Auto enhance: the photo is already bright, so no brightness or contrast change. Saturation +12.";
+  }
+  return "Auto enhance set Brightness " + signedNum(vals.brightness) +
+    ", Contrast " + signedNum(vals.contrast) +
+    ", Saturation " + signedNum(vals.saturation) + ".";
+}
 $("btn-edit-auto").addEventListener("click", () => {
   if (!editImg) return;
   /* v58: when the probe fails, leave the photo alone — the old blind
@@ -920,13 +1029,20 @@ $("btn-edit-auto").addEventListener("click", () => {
     const stddev = Math.sqrt(Math.max(0, sumSq / n - mean * mean));
     vals = autoEnhanceValues(mean, stddev);
   } catch (e) { /* probe failed: no measurement, no change */ }
-  if (!vals) return;
+  if (!vals) {
+    setEditorStatus("Auto enhance could not read the photo. Nothing changed.");
+    return;
+  }
   editAdj.brightness = vals.brightness;
   editAdj.contrast = vals.contrast;
   editAdj.saturation = vals.saturation;
   editFilter = "";
   syncEditorControls();
-  scheduleEditorDraw();
+  /* v59: a tap draws right away (see the filter handler), and the
+     status line says the exact values it set — or that the photo
+     was already bright enough to need no lift. */
+  drawEditor();
+  setEditorStatus(autoEnhanceStatus(vals));
 });
 $("btn-edit-reset").addEventListener("click", () => {
   if (!editImg) return;
@@ -936,6 +1052,7 @@ $("btn-edit-reset").addEventListener("click", () => {
   editCrop = editVisibleFrame();
   syncEditorControls();
   drawEditor();
+  setEditorStatus("Reset. All changes cleared.");
 });
 
 /* v36: shared photo-count helpers (pure, unit-tested). roomFor is how
@@ -1436,6 +1553,17 @@ function renderDraftPhotos(d) {
     e.setAttribute("aria-label", "Edit this photo");
     e.addEventListener("click", () => openDraftEditor(i));
     wrap.appendChild(e);
+    /* v59: Undo edit, same as step 1 — restores the exact photo the
+       editor opened with. */
+    if (draftUndoByRel[p]) {
+      const u = document.createElement("button");
+      u.type = "button";
+      u.className = "thumb-edit-below";
+      u.textContent = "Undo edit";
+      u.setAttribute("aria-label", "Undo the last edit to this photo");
+      u.addEventListener("click", () => undoDraftEdit(i));
+      wrap.appendChild(u);
+    }
     /* v44: drag to reorder — the frame is the drag handle (see
        attachThumbDrag); the v40 ◀ ▶ buttons are gone. */
     attachThumbDrag(frame, wrap, box, i, reorderDraftPhoto);
@@ -1453,9 +1581,12 @@ function renderDraftPhotos(d) {
 async function deleteDraftPhoto(i) {
   if (!draft || !draft.id) return;
   hideDraftPhotoError();
+  const rel = (draft.photos || [])[i];
   try {
     const res = await api("/api/drafts/" + draft.id + "/photos/" + i, { method: "DELETE" });
     draft = res.draft;
+    /* v59: a deleted photo has nothing left to undo. */
+    if (rel) delete draftUndoByRel[rel];
     renderDraftPhotos(draft);
     $("draft-photo-note").textContent = "Photo removed.";
     $("draft-photo-note").classList.remove("hidden");

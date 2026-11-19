@@ -1254,7 +1254,7 @@ remembers the open draft.
   packaging erases the faint print. When the histogram probe fails,
   the Auto button leaves the photo alone instead of applying the
   old blind +8 brightness / +12 contrast fallback.
-- Tests: tests/photo-editor.test.js (12 new checks: straighten 14
+- Tests: tests/photo-editor.test.js (13 new checks: straighten 14
   tilts the render, Cancel leaves no Straighten behind, a fresh
   open zeroes the sliders before the photo loads, a stray input
   while opening cannot re-tilt the photo, a fresh open renders
@@ -1271,4 +1271,84 @@ remembers the open draft.
   tolerance, remap on the straighten handler, auto-enhance cap,
   no blind fallback, slider pan-y).
 - Release note: build.gradle.kts must be bumped to 58/1.57 in the code
+  commit (check 21 guards it; v55 caught the unbumped-gradle defect).
+
+## v59: editor preview, feedback, Undo, and the stale app.js
+
+- Live reports (Nov 18, after v58 shipped): (1) the tilt was STILL
+  happening on another photo; (2) Auto enhance changes were invisible
+  until after Apply, and then baked in with no undo; (3) the buttons
+  gave no feedback, so he did not know if they did anything. The
+  badge version was never confirmed (he tapped yes on v59 without
+  answering whether the app showed 1.57 or 1.56), so the tilt work
+  below covers both possibilities.
+- Cause of the invisible preview: the editor panel scrolls internally
+  and the photo sits at the top while the buttons and sliders sit
+  below the fold, so when he scrolled down to tap Auto enhance or
+  drag a slider, the photo scrolled off the top and he could not see
+  the change. The code did schedule a live redraw, and the render
+  did apply the adjustments, but nothing on screen showed it.
+- Cause of the tilt coming back, found in the server code: Flask's
+  static route answers with a 12h max-age, and the WebView does not
+  clear its HTTP cache when the app updates. version.json is fetched
+  with a cache buster (v38), so the badge said 1.57, but the editor
+  still ran the cached v56 app.js, which has the closeEditor leak
+  v58 fixed. The v58 fix itself was verified correct in the
+  released code (openEditorFor resets state and syncs controls
+  synchronously before the Image, closeEditor resets both, the
+  render reads state only), and the tilt sequences below re-prove it
+  through every open path. Same class of bug as the /photos/ no-cache
+  fix in v54.
+- Fix 1, preview and feedback: the preview (canvas plus status line)
+  sticks to the top of the editor panel while the controls scroll
+  beneath it, so the photo stays visible while he adjusts it. A
+  status line in plain words says what each action just did: Auto
+  enhance names the exact values it set, or that the photo was
+  already bright enough to need no lift; a failed probe says it
+  could not read the photo and changed nothing; filters, crop
+  presets, rotate, flip, sliders, and Reset each announce
+  themselves. Auto enhance and filter taps draw synchronously, not
+  only on the next animation frame, so the preview visibly changes
+  in the same moment as the tap; sliders keep the rAF path so
+  dragging stays smooth. Apply shows Saving while it works and
+  restores Apply after. Every redraw re-asserts the controls from
+  the state, so a stale slider value can never sit on screen
+  disagreeing with the render.
+- Fix 2, Undo after Apply: Apply used to replace the photo in its
+  slot with no way back. The pre-edit photo is now stashed at Apply
+  time (step 1 keeps it on the photo entry, so it moves with the
+  entry on reorder and leaves with it on delete; the draft page
+  keeps it by photo path), and an Undo edit button appears on that
+  photo on both screens until the next edit of the same photo. Undo
+  restores the exact pre-edit bytes, not a re-render, and re-saves
+  them the same way Apply does (the auto draft on step 1, the
+  replace endpoint on the draft page). A draft Apply also confirms
+  itself in the photo note ("Edit saved. Tap Undo edit on the photo
+  to put the original back."). Session only: a page reload drops
+  the stash and the button with it.
+- Fix 3, stale app.js: the page ("/") and /static/* now send
+  no-cache with max-age 0 (an after_request hook in app.py), so an
+  update always reaches the WebView. An unchanged file still
+  answers 304, so this costs nothing on a local server. API
+  responses are untouched by the hook.
+- Tests: tests/photo-editor.test.js (24 new checks: the preview
+  pixels change right away after Auto enhance, a slider move, and a
+  filter tap, and the status line names the values; Reset redraws
+  the plain photo; Apply says Saving while it works; Undo appears
+  on the edited photo, posts the original back, and restores the
+  exact pre-edit bytes on step 1 and on the draft page, and is gone
+  once used; a photo that was never edited has no Undo button; the
+  tilt sequences — edit photo 1, Apply or Cancel, open photo 2 —
+  on both screens, plus the stale-slider draft open),
+  tests/editor-math.test.js (2 new checks: the Auto enhance status
+  names the exact values, and says the photo needed no lift when it
+  did not), tests/test_static_cache_bust.py (4 new checks: the page
+  and both static files send no-cache, API responses are untouched),
+  fit_check.py check 26 (sticky preview, status line present and
+  dark on white, every action reports itself, taps draw
+  synchronously, Apply Saving, Undo stash and buttons, shell
+  revalidation). Also corrected here: the v58 section said
+  photo-editor.test.js gained 12 new checks; the actual count is 13
+  (42 total, up from 29).
+- Release note: build.gradle.kts must be bumped to 59/1.58 in the code
   commit (check 21 guards it; v55 caught the unbumped-gradle defect).

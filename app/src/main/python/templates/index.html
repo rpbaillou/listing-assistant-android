@@ -560,7 +560,14 @@
   <div class="editor-box">
     <h3>Edit photo</h3>
     <p class="hint">Drag a corner to crop. Drag inside the box to move it. Sliders adjust the photo live. Apply saves it back into the same slot.</p>
-    <canvas id="editor-canvas"></canvas>
+    <!-- v59: the preview sticks to the top of the panel while the
+         controls scroll beneath it, so the photo stays visible while
+         he adjusts it. The status line says what each button just
+         did, so a tap is never silent. -->
+    <div class="editor-preview">
+      <canvas id="editor-canvas"></canvas>
+      <p id="editor-status" class="editor-status" role="status">Photo ready to edit.</p>
+    </div>
     <div class="btnrow wrap">
       <button class="edit-filter secondary" data-filter="original" type="button" aria-pressed="true">Original</button>
       <button class="edit-filter secondary" data-filter="vivid" type="button" aria-pressed="false">Vivid</button>

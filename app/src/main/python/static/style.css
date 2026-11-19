@@ -153,6 +153,20 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: block; max-width: 100%; height: auto;
   touch-action: none; background: #222; border-radius: 8px;
 }
+/* v59: the preview sticks to the top of the editor panel while the
+   controls scroll beneath it — the photo used to scroll off-screen
+   when he went down to the buttons, so Auto enhance looked like it
+   did nothing until Apply, when the change was already baked in.
+   Full-bleed white background so the scrolling controls never show
+   through at the sides. The status line says what each button just
+   did, in plain words. */
+.editor-preview {
+  position: sticky; top: 0; z-index: 2;
+  background: #fff; margin: 0 -1rem; padding: 0 1rem 0.5rem;
+}
+.editor-status {
+  margin: 0.5rem 0 0; font-size: 0.9rem; color: #1c1c1e; min-height: 1.2em;
+}
 /* v56: full-editor controls. Range inputs are full-width with a 44px
    touch height and the brand-blue accent; the active filter chip
    reuses the verified primary pair (white on #2a63d8). */
