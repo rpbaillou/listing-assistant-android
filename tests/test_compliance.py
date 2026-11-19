@@ -231,6 +231,35 @@ class ComplianceTest(unittest.TestCase):
         listing_id, _url = self._run(fields={"condition": "USED_EXCELLENT"})
         self.assertEqual(listing_id, "999")
 
+    def test_new_other_allowed_for_category_passes(self):
+        """v62, the reported case: the category allows NEW_OTHER, the
+        dropdown offers it, the check must accept it."""
+        self.conditions = (["NEW", "NEW_OTHER", "USED_EXCELLENT"], True)
+        listing_id, _url = self._run(fields={"condition": "NEW_OTHER"})
+        self.assertEqual(listing_id, "999")
+
+    def test_new_other_not_allowed_for_category_blocked(self):
+        """v62: a condition the category truly does not allow is
+        still blocked, with the message naming the allowed ones."""
+        self.conditions = (["NEW", "USED_EXCELLENT"], True)
+        with self.assertRaises(m._PublishValidationError) as ctx:
+            self._run(fields={"condition": "NEW_OTHER"})
+        msg = str(ctx.exception)
+        self.assertIn("isn't allowed for this category", msg)
+        self.assertIn("New, Used", msg)
+        self.assertEqual(self.uploads, 0)
+
+    def test_junk_condition_names_what_the_category_takes(self):
+        """v62: a value no enum table knows still says 'Pick a
+        condition from the list.' but now names the allowed ones
+        when they are known."""
+        self.conditions = (["NEW", "USED_EXCELLENT"], True)
+        with self.assertRaises(m._PublishValidationError) as ctx:
+            self._run(fields={"condition": "BOGUS"})
+        msg = str(ctx.exception)
+        self.assertIn("Pick a condition from the list.", msg)
+        self.assertIn("This category takes: New, Used.", msg)
+
     def test_condition_check_skipped_when_fetch_fails(self):
         """Fetch failure is a note, never a block: eBay decides."""
         self.conditions = (None, None)
@@ -453,9 +482,12 @@ class CategoryConditionsTest(unittest.TestCase):
         self.assertFalse(data["available"])
         values = [c["value"] for c in data["conditions"]]
         self.assertIn("USED_EXCELLENT", values)
+        # v62: the fallback is the full static list, NEW_OTHER included.
+        self.assertIn("NEW_OTHER", values)
         labels = {c["value"]: c["label"] for c in data["conditions"]}
         self.assertEqual(labels["USED_EXCELLENT"], "Used")
         self.assertEqual(labels["USED_VERY_GOOD"], "Very Good")
+        self.assertEqual(labels["NEW_OTHER"], "New other (see details)")
 
 
 class PublishEndpointTest(unittest.TestCase):

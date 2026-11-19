@@ -64,6 +64,45 @@ class ConditionEnumsTest(unittest.TestCase):
             self.assertFalse(label.isupper(),
                              "condition label should not be ALL CAPS: " + label)
 
+    def test_conditions_cover_the_full_enum_table(self):
+        # v62: every enum the official table knows must be offerable,
+        # in official (numeric ID) order. NEW_OTHER was missing and
+        # the check rejected a pick the category fetch had offered.
+        conds = _get_constant("CONDITIONS")
+        idmap = _get_constant("CONDITION_ID_TO_ENUM")
+        self.assertEqual([v for v, _ in conds],
+                         [idmap[i] for i in sorted(idmap)])
+
+    def test_condition_labels_match_the_display_table(self):
+        conds = _get_constant("CONDITIONS")
+        display = _get_constant("CONDITION_DISPLAY")
+        self.assertEqual([v for v, _ in conds], list(display))
+        for v, label in conds:
+            self.assertEqual(label, display[v],
+                             "label drift for " + v)
+
+    def test_no_plain_used_enum(self):
+        # There is NO bare USED enum: USED_EXCELLENT (3000) IS plain
+        # "Used". A bare USED would fail at publish (25021).
+        values = [v for v, _ in _get_constant("CONDITIONS")]
+        self.assertNotIn("USED", values)
+        self.assertIn("USED_EXCELLENT", values)
+
+    def test_template_dropdown_matches_conditions(self):
+        # v62: the static dropdown, the check list, and the display
+        # table must stay one list, or the mismatch comes back.
+        import re
+        html_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "app", "src", "main", "python",
+                                 "templates", "index.html")
+        with open(html_path, encoding="utf-8") as f:
+            html = f.read()
+        m = re.search(r'<select id="f-condition">(.*?)</select>', html, re.S)
+        self.assertIsNotNone(m, "f-condition select missing from template")
+        found = re.findall(r'<option value="([^"]*)">', m.group(1))
+        values = [v for v, _ in _get_constant("CONDITIONS")]
+        self.assertEqual(found, [""] + values)
+
 
 if __name__ == "__main__":
     unittest.main()

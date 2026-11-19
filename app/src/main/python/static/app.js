@@ -1925,6 +1925,22 @@ window.LA_refreshDraft = async () => {
   $(id).addEventListener("change", scheduleSave);
 });
 
+/* v62: the condition error sat at the bottom by the List button
+   while the dropdown is at the top, so a fixed pick still looked
+   broken until List was tapped again. Changing the condition clears
+   a single condition error right away; a multi-problem list
+   ("Fix these before listing: ...") stays until the next check,
+   because it carries other problems too. */
+function clearConditionPublishError() {
+  const el = $("publish-error");
+  if (el && !el.classList.contains("hidden") &&
+      /condition/i.test(el.textContent || "") &&
+      !(el.textContent || "").startsWith("Fix these before listing:")) {
+    el.classList.add("hidden");
+  }
+}
+$("f-condition").addEventListener("change", clearConditionPublishError);
+
 function updateCount() {
   $("title-count").textContent = $("f-title").value.length + "/80";
 }
@@ -3214,7 +3230,14 @@ async function fetchCategoryConditions() {
   const cid = ($("p-category").value || "").trim();
   const sel = $("f-condition");
   const hint = $("condition-fetch-hint");
-  if (!cid || cid === lastConditionCategory) return;
+  const allowedHint = $("condition-allowed-hint");
+  if (!cid) {
+    /* v62: no category, no "takes" line — a stale one from the
+       previous category must not linger. */
+    if (allowedHint) allowedHint.classList.add("hidden");
+    return;
+  }
+  if (cid === lastConditionCategory) return;
   lastConditionCategory = cid;
   let data = null;
   try {
@@ -3225,9 +3248,17 @@ async function fetchCategoryConditions() {
   }
   if (!data || !data.available || !data.conditions || !data.conditions.length) {
     hint.classList.remove("hidden");
+    if (allowedHint) allowedHint.classList.add("hidden");
     return;
   }
   hint.classList.add("hidden");
+  /* v62: name what this category takes right where the seller picks,
+     so nobody has to scroll down to the List button to find out. */
+  if (allowedHint) {
+    allowedHint.textContent = "This category takes: " +
+      data.conditions.map((c) => c.label).join(", ") + ".";
+    allowedHint.classList.remove("hidden");
+  }
   const current = sel.value;
   let currentLabel = current;
   const currentOpt = sel.querySelector('option[value="' + current + '"]');

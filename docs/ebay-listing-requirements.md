@@ -1494,3 +1494,60 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v62: one condition list everywhere
+- The report (Nov 18, screenshots, v1.59): he picked "New other (see
+  details)" for a Plastic Tablecloth listing, but the listing page
+  showed "Pick a condition from the list." He had to scroll up and
+  down between the dropdown and the error to figure out what
+  condition to choose. They had talked about this before (the Nov 8
+  "category takes: New, Used" note — same family).
+- Cause: two different lists. The category allows NEW_OTHER (Metadata
+  API getItemConditionPolicies, via /api/ebay/category-conditions),
+  so the dropdown offered it and he picked it, and the publish path
+  would have sent the enum fine. But the app's static CONDITIONS list
+  had only six values and no NEW_OTHER, so the pre-publish check
+  rejected his pick with "Pick a condition from the list." before
+  the helpful category message ("This category takes: ...") ever ran.
+  The static template dropdown had the same six values, and the
+  category-conditions endpoint falls back to CONDITIONS when the
+  fetch fails — so the short list was the fallback list too.
+- Fix, root: CONDITIONS now carries the full ConditionEnum set in
+  official-table order (CONDITION_ID_TO_ENUM), labels from
+  CONDITION_DISPLAY — 16 values, NEW_OTHER included. The static
+  template dropdown carries the same 16, so the check, the
+  dropdown, and the fallback are one list. There is still NO bare
+  USED enum: USED_EXCELLENT (3000) IS plain "Used". A condition the
+  category truly does not allow is still blocked, with the message
+  naming the allowed ones.
+- Fix, junk values: "Pick a condition from the list." still fires
+  for a value no enum table knows, but it now names what the
+  category takes when that is known ("This category takes: New,
+  Used."), so the seller is never left scrolling to guess.
+- Fix, no more scrolling: the hint under the Condition dropdown now
+  names what THIS category takes ("This category takes: New, New
+  other (see details), Used.") as soon as the category's conditions
+  load, so he knows before he picks. The fetch-failure hint is
+  unchanged, and the takes line hides when the category is cleared
+  or the fetch fails, so a stale line never lingers.
+- Fix, live clear: changing the condition clears a single condition
+  error on the publish line right away (clearConditionPublishError,
+  wired to the dropdown's change event). A multi-problem list
+  ("Fix these before listing: ...") stays until the next check,
+  because it carries other problems too.
+- Tests: tests/test_condition.py (full enum table in official order,
+  labels match CONDITION_DISPLAY, no bare USED, template dropdown
+  matches CONDITIONS), tests/test_compliance.py (NEW_OTHER allowed
+  for its category passes — the exact reported case; NEW_OTHER not
+  allowed is still blocked naming the allowed ones; a junk value
+  names the allowed ones; endpoint fallback returns the full list),
+  tests/condition-dropdown.test.js (fallback seed is the full 16;
+  allowed hint shows/hides on success, failure, and empty category;
+  single condition errors clear on change, non-condition errors and
+  multi-problem lists stay), fit_check.py check 29 (full enum set,
+  dropdown matches, takes hint, junk message names allowed,
+  live clear wired).
+- Release note: build.gradle.kts must be bumped to 62/1.61 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

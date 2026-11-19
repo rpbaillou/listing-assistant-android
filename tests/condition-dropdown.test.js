@@ -1,5 +1,9 @@
 /* v35: node tests for the frontend category-aware Condition dropdown in
-   static/app.js. app.js is a browser script, so this stubs the DOM
+   static/app.js. v62: the static list is the full ConditionEnum set
+   (NEW_OTHER was missing and the check rejected a pick the category
+   fetch had offered), the hint under the dropdown names what the
+   category takes, and a condition error clears the moment the pick
+   changes. app.js is a browser script, so this stubs the DOM
    with STATEFUL elements: values, option children, and hidden toggles
    must persist across $() calls. The test drives the real
    fetchCategoryConditions: on a category change it fetches
@@ -114,16 +118,27 @@ function check(name, cond) {
 const $ = (id) => sandbox.document.getElementById(id);
 const hidden = (id) => $(id).classList.contains("hidden");
 
-/* Seed the template's hardcoded fallback options (v35 labels) and give
-   the f-condition stub a working option lookup, so the "current label"
-   read in fetchCategoryConditions behaves like a real select. */
+/* Seed the template's hardcoded fallback options (v35 labels, v62
+   full enum set) and give the f-condition stub a working option
+   lookup, so the "current label" read in fetchCategoryConditions
+   behaves like a real select. */
 function seedFallbackOptions() {
   const sel = $("f-condition");
   sel.innerHTML = "";
   const opts = [
     ["", "— Pick one —"],
     ["NEW", "New"],
+    ["NEW_OTHER", "New other (see details)"],
+    ["NEW_WITH_DEFECTS", "New with defects"],
+    ["CERTIFIED_REFURBISHED", "Certified Refurbished"],
+    ["EXCELLENT_REFURBISHED", "Excellent - Refurbished"],
+    ["VERY_GOOD_REFURBISHED", "Very Good - Refurbished"],
+    ["GOOD_REFURBISHED", "Good - Refurbished"],
+    ["SELLER_REFURBISHED", "Seller refurbished"],
+    ["LIKE_NEW", "Like New"],
+    ["PRE_OWNED_EXCELLENT", "Pre-owned - Excellent"],
     ["USED_EXCELLENT", "Used"],
+    ["PRE_OWNED_FAIR", "Pre-owned - Fair"],
     ["USED_VERY_GOOD", "Very Good"],
     ["USED_GOOD", "Good"],
     ["USED_ACCEPTABLE", "Acceptable"],
@@ -162,6 +177,10 @@ const optionPairs = () => $("f-condition").children.map((o) => [o.value, o.textC
     optionPairs().some(([v, t]) => v === "USED_VERY_GOOD" &&
       t === "Very Good (not allowed for this category)"));
   check("fetch hint hidden on success", hidden("condition-fetch-hint"));
+  check("v62: allowed hint names what the category takes, where he picks",
+    !hidden("condition-allowed-hint") &&
+    $("condition-allowed-hint").textContent ===
+      "This category takes: New, Used.");
 
   // Same category again: no refetch (guard on lastConditionCategory).
   const callsBefore = fetchCalls.length;
@@ -189,8 +208,12 @@ const optionPairs = () => $("f-condition").children.map((o) => [o.value, o.textC
   await sandbox.fetchCategoryConditions();
   check("unavailable fetch keeps fallback options",
     optionPairs().some(([v]) => v === "USED_VERY_GOOD") &&
-    optionPairs().some(([v]) => v === "FOR_PARTS_OR_NOT_WORKING"));
+    optionPairs().some(([v]) => v === "FOR_PARTS_OR_NOT_WORKING") &&
+    optionPairs().some(([v, t]) => v === "NEW_OTHER" &&
+      t === "New other (see details)"));
   check("unavailable fetch shows the plain hint", !hidden("condition-fetch-hint"));
+  check("v62: unavailable fetch hides the allowed hint",
+    hidden("condition-allowed-hint"));
   check("unavailable fetch keeps the current value", $("f-condition").value === "NEW");
 
   // Network failure: same fallback + hint, never a throw.
@@ -205,11 +228,37 @@ const optionPairs = () => $("f-condition").children.map((o) => [o.value, o.textC
     optionPairs().some(([v]) => v === "USED_VERY_GOOD") &&
     !hidden("condition-fetch-hint"));
 
-  // Empty category: no fetch at all.
+  // Empty category: no fetch at all, and a stale "takes" line goes away.
+  $("condition-allowed-hint").textContent = "This category takes: New, Used.";
+  $("condition-allowed-hint").classList.remove("hidden");
   $("p-category").value = "";
   const callsBeforeEmpty = fetchCalls.length;
   await sandbox.fetchCategoryConditions();
   check("empty category fetches nothing", fetchCalls.length === callsBeforeEmpty);
+  check("v62: empty category hides the allowed hint",
+    hidden("condition-allowed-hint"));
+
+  // v62: a condition error clears the moment the pick changes, so the
+  // seller never has to scroll down and re-tap List to find out.
+  const err = $("publish-error");
+  err.textContent = "Pick a condition from the list.";
+  err.classList.remove("hidden");
+  sandbox.clearConditionPublishError();
+  check("single condition error clears on change", hidden("publish-error"));
+  err.textContent = "Pick a condition first.";
+  err.classList.remove("hidden");
+  sandbox.clearConditionPublishError();
+  check("missing-condition error clears on change", hidden("publish-error"));
+  err.textContent = "Set a price above $0 before listing.";
+  err.classList.remove("hidden");
+  sandbox.clearConditionPublishError();
+  check("non-condition error stays put", !hidden("publish-error"));
+  err.textContent = "Fix these before listing: Pick a condition from the list. Material";
+  err.classList.remove("hidden");
+  sandbox.clearConditionPublishError();
+  check("multi-problem list stays until the next check", !hidden("publish-error"));
+  check("change listener on the condition dropdown clears the error",
+    src.includes('$("f-condition").addEventListener("change", clearConditionPublishError);'));
 
   if (failures) { console.log(failures + " failure(s)"); process.exit(1); }
   console.log("all condition-dropdown checks pass");

@@ -109,13 +109,24 @@
     <select id="f-condition">
       <option value="">— Pick one —</option>
       <option value="NEW">New</option>
+      <option value="NEW_OTHER">New other (see details)</option>
+      <option value="NEW_WITH_DEFECTS">New with defects</option>
+      <option value="CERTIFIED_REFURBISHED">Certified Refurbished</option>
+      <option value="EXCELLENT_REFURBISHED">Excellent - Refurbished</option>
+      <option value="VERY_GOOD_REFURBISHED">Very Good - Refurbished</option>
+      <option value="GOOD_REFURBISHED">Good - Refurbished</option>
+      <option value="SELLER_REFURBISHED">Seller refurbished</option>
+      <option value="LIKE_NEW">Like New</option>
+      <option value="PRE_OWNED_EXCELLENT">Pre-owned - Excellent</option>
       <option value="USED_EXCELLENT">Used</option>
+      <option value="PRE_OWNED_FAIR">Pre-owned - Fair</option>
       <option value="USED_VERY_GOOD">Very Good</option>
       <option value="USED_GOOD">Good</option>
       <option value="USED_ACCEPTABLE">Acceptable</option>
       <option value="FOR_PARTS_OR_NOT_WORKING">For parts or not working</option>
     </select>
     <p class="hint">You state the condition — the AI no longer guesses about it. Pick what fits, then spell out the specifics below.</p>
+    <p id="condition-allowed-hint" class="hint hidden"></p>
     <p id="condition-fetch-hint" class="hint hidden">Could not check which conditions this category takes, so the full list is shown. If eBay rejects the condition, pick a different one.</p>
 
     <label>Condition details</label>

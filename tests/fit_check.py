@@ -1033,6 +1033,51 @@ def main():
           "resetStep1AfterPublish" not in revise,
           "revise edits a live listing's photos; it must not reset step 1")
 
+    # 29. v62 condition list: one list everywhere. Nov 18 he picked
+    # "New other (see details)" — the category allows it and the
+    # dropdown offered it — but the listing check said "Pick a
+    # condition from the list." The static CONDITIONS list had only
+    # six values and no NEW_OTHER, so the check rejected a pick the
+    # app itself had offered, and the error sat at the bottom by the
+    # List button while the dropdown is at the top, so he scrolled
+    # up and down to guess. The static list, the check, and the
+    # dropdown now carry the full ConditionEnum set; the hint under
+    # the dropdown names what the category takes; a condition error
+    # clears the moment the pick changes.
+    conds = py.split("CONDITIONS = [")[1].split("]")[0]
+    check("CONDITIONS carries the full enum set, NEW_OTHER included",
+          all('"%s"' % v in conds for v in (
+              "NEW", "NEW_OTHER", "NEW_WITH_DEFECTS",
+              "CERTIFIED_REFURBISHED", "EXCELLENT_REFURBISHED",
+              "VERY_GOOD_REFURBISHED", "GOOD_REFURBISHED",
+              "SELLER_REFURBISHED", "LIKE_NEW", "PRE_OWNED_EXCELLENT",
+              "USED_EXCELLENT", "PRE_OWNED_FAIR", "USED_VERY_GOOD",
+              "USED_GOOD", "USED_ACCEPTABLE",
+              "FOR_PARTS_OR_NOT_WORKING")) and
+          '"USED"' not in conds,
+          "no bare USED: USED_EXCELLENT is plain Used")
+    select = html.split('<select id="f-condition">')[1].split("</select>")[0]
+    check("the static dropdown matches the check list",
+          select.count('<option value="') == 17 and
+          all('value="%s"' % v in select for v in (
+              "NEW_OTHER", "NEW_WITH_DEFECTS", "SELLER_REFURBISHED",
+              "LIKE_NEW", "PRE_OWNED_EXCELLENT", "PRE_OWNED_FAIR")),
+          "%d options" % select.count('<option value="'))
+    check("the hint under the dropdown names what the category takes",
+          'id="condition-allowed-hint"' in html and
+          '"This category takes: "' in js and
+          "data.conditions.map((c) => c.label).join" in js,
+          "hint element + takes line")
+    check("a junk condition still fails but names the allowed ones",
+          py.count("This category takes:") >= 2 and
+          '"Pick a condition from the list."' in py,
+          "category message + junk-value message")
+    check("a condition error clears the moment the pick changes",
+          "function clearConditionPublishError(" in js and
+          '$("f-condition").addEventListener("change", clearConditionPublishError);' in js and
+          'startsWith("Fix these before listing:")' in js,
+          "live clear, multi-problem list stays")
+
     print()
     return 1 if FAILURES else 0
 

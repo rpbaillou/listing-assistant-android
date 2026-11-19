@@ -169,8 +169,29 @@ _oauth_states = {}      # state -> created epoch (single use, 10 min)
 _app_token_cache = {}   # {"token":..., "expires_at":...} for taxonomy calls
 
 CONDITIONS = [
+    # v62: ONE list everywhere. The pre-publish check, the static
+    # dropdown, and the category-conditions fallback all read this
+    # list, so a condition the category allows and the dropdown
+    # offers can never be rejected by the check itself. Nov 18:
+    # NEW_OTHER was offered by the category fetch but missing here,
+    # so the check told the seller "Pick a condition from the list."
+    # for a pick the app itself had offered. Values are the full
+    # ConditionEnum set in official-table order
+    # (CONDITION_ID_TO_ENUM); labels come from CONDITION_DISPLAY.
+    # There is still NO plain USED enum: USED_EXCELLENT (3000) IS
+    # plain "Used".
     ("NEW", "New"),
+    ("NEW_OTHER", "New other (see details)"),
+    ("NEW_WITH_DEFECTS", "New with defects"),
+    ("CERTIFIED_REFURBISHED", "Certified Refurbished"),
+    ("EXCELLENT_REFURBISHED", "Excellent - Refurbished"),
+    ("VERY_GOOD_REFURBISHED", "Very Good - Refurbished"),
+    ("GOOD_REFURBISHED", "Good - Refurbished"),
+    ("SELLER_REFURBISHED", "Seller refurbished"),
+    ("LIKE_NEW", "Like New"),
+    ("PRE_OWNED_EXCELLENT", "Pre-owned - Excellent"),
     ("USED_EXCELLENT", "Used"),
+    ("PRE_OWNED_FAIR", "Pre-owned - Fair"),
     ("USED_VERY_GOOD", "Very Good"),
     ("USED_GOOD", "Good"),
     ("USED_ACCEPTABLE", "Acceptable"),
@@ -1824,7 +1845,18 @@ def _listing_readiness(d, f, token):
     if not condition:
         problems.append("Pick a condition first.")
     elif condition not in {v for v, _ in CONDITIONS}:
-        problems.append("Pick a condition from the list.")
+        # v62: a value no enum table knows. Name what this category
+        # takes when it is known, so the seller is never left
+        # scrolling to guess (the old bare message was the Nov 18
+        # complaint). A valid pick never reaches this branch.
+        msg = "Pick a condition from the list."
+        if category_id:
+            allowed, _req = _category_conditions(category_id)
+            if allowed:
+                labels = ", ".join(CONDITION_DISPLAY.get(e, e)
+                                   for e in allowed)
+                msg += f" This category takes: {labels}."
+        problems.append(msg)
     bo_error = f.get("bo_error")
     if bo_error:
         problems.append(str(bo_error))
