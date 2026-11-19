@@ -1,6 +1,6 @@
 {
-  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v58/ebay-listing-assistant-apk-v58.apk",
-  "notes": "Photos now open straight in the editor every time, the crop corners are easier to grab and the crop grows back when you undo straightening, and Auto enhance no longer brightens a photo that is already bright.",
-  "versionCode": 58,
-  "versionName": "1.57"
+  "apkUrl": "https://github.com/rpbaillou/listing-assistant-android/releases/download/apk-v59/ebay-listing-assistant-apk-v59.apk",
+  "notes": "The photo now stays visible while you edit it, every button says what it just did, and you can undo an edit to put the original photo back.",
+  "versionCode": 59,
+  "versionName": "1.58"
 }
