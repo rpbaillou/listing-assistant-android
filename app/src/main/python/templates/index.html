@@ -450,39 +450,24 @@
          button shows only for listed drafts (see refreshEbayStatus);
          the confirm card below is the review stop — it lists exactly
          what will change, and nothing goes to eBay until the seller
-         taps Update live listing on it. -->
-    <button id="btn-update-photos" class="primary big hidden" type="button">Update live listing photos</button>
+         taps Update live listing on it. v63: the quantity update
+         joined the same flow (same card, same review stop). v64: one
+         button, one card — the two separate update buttons (one for
+         photos, one for quantity) became a single Update live
+         listing that plans and confirms both parts together. -->
+    <button id="btn-update-listing" class="primary big hidden" type="button">Update live listing</button>
     <div id="revise-error" class="error hidden"></div>
     <div id="revise-ok" class="ok hidden"></div>
     <div id="revise-confirm" class="card hidden">
       <h3>Update the live listing?</h3>
-      <p class="hint">Only the photos change. Title, price, and shipping stay as they are.</p>
+      <p class="hint">Only the photos and quantity change. Title, price, and shipping stay as they are.</p>
       <ul id="revise-changes"></ul>
       <div class="btnrow wrap">
         <button id="btn-revise-confirm" class="primary big" type="button">Update live listing</button>
         <button id="btn-revise-cancel" class="ghost" type="button">Cancel</button>
       </div>
     </div>
-    <div id="revise-spinner" class="spinner hidden">Updating the live listing… uploading the changed photos, then checking eBay shows them.</div>
-
-    <!-- v63: quantity update for a draft that is already live. Same
-         review stop as the photos update: the button asks eBay what
-         the live listing has now, the card names the change
-         ("Quantity changes from 1 to 3."), and nothing goes to eBay
-         until the seller taps Update live listing on it. -->
-    <button id="btn-update-quantity" class="primary big hidden" type="button">Update live listing quantity</button>
-    <div id="revise-qty-error" class="error hidden"></div>
-    <div id="revise-qty-ok" class="ok hidden"></div>
-    <div id="revise-qty-confirm" class="card hidden">
-      <h3>Update the live listing quantity?</h3>
-      <p class="hint">Only the quantity changes. Title, price, photos, and shipping stay as they are.</p>
-      <ul id="revise-qty-changes"></ul>
-      <div class="btnrow wrap">
-        <button id="btn-revise-qty-confirm" class="primary big" type="button">Update live listing</button>
-        <button id="btn-revise-qty-cancel" class="ghost" type="button">Cancel</button>
-      </div>
-    </div>
-    <div id="revise-qty-spinner" class="spinner hidden">Updating the live listing quantity… then checking eBay shows it.</div>
+    <div id="revise-spinner" class="spinner hidden">Updating the live listing… then checking eBay shows it.</div>
 
     <!-- v49: Or list manually is a collapsed row (design 4). The
          summary is the plain line "Copy details and download photos";

@@ -1657,3 +1657,73 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v64: one update button for a listing that is already live
+- The report (Nov 19, v1.62, screenshot): "What's up with all these
+  update buttons? One update button and I click it updates." A listed
+  draft showed two blue buttons ("Update live listing photos" from
+  v57, "Update live listing quantity" from v63), plus each confirm
+  card's own "Update live listing" button. He was mid-flow on the
+  quantity update (the card showed "Quantity changes from 1 to 4."),
+  so the quantity logic itself worked; the complaint is the two
+  buttons, not the quantity flow.
+- Fix: one button, one card, one confirm. The listing page has a
+  single "Update live listing" button for listed drafts, and each
+  "Listed on eBay" row has a single "Update listing" button. Tapping
+  it plans both parts together (GET /api/drafts/<id>/revise, quantity
+  as a query param) and shows one confirm card listing everything
+  that will change. One confirm runs both parts. No old button label
+  or id remains anywhere (checked by fit_check 31 and by the node
+  tests).
+- Order: photos first, then quantity. Each part re-reads live state
+  before writing, so the photos PUT (which carries the whole item
+  body) runs before the quantity change exists and can never
+  overwrite it, and the quantity part then re-reads after the photos
+  PUT. The v57 photos internals and v63 quantity internals are
+  unchanged — the work moved into shared apply helpers
+  (_apply_photo_revise, _apply_quantity_revise) and the single-part
+  endpoints are thin wrappers over them with the same response
+  shapes as before, so their tests still pass unchanged.
+- Partial failure is reported honestly: a part that fails does not
+  stop the other part, the answer names each part's result (the
+  client shows the success note for the part that went through and
+  the error note with eBay's message for the part that failed, both
+  at once), and the draft record updates only for the part that
+  actually succeeded — a failed part is never claimed. Both parts
+  failing answers 502, as the single-part endpoints do. A scope
+  shortfall is the one exception to running both parts: it means the
+  sign-in itself is short a permission, so the flag answers at once.
+- Preview is per-part too: a part that cannot be planned (a photo
+  file missing from this phone, for example) is reported as that
+  part's error with a plain note on the card ("Photos could not be
+  checked: ... Only the quantity will change."), and the other part
+  still plans. When both parts fail, the first error answers 502.
+  Nothing changed sends nothing and says so plainly.
+- Tests: tests/test_revise_combined.py (19 tests: combined preview
+  with both parts changed, photos-only, quantity-only, nothing
+  changed, a missing photo not blocking the quantity part, no photos
+  at all not blocking it, both parts gone as 502, missing/unlisted/
+  bad-quantity cases; execute with both changed, photos first then
+  quantity, photos-only sending no offer PUT, quantity-only uploading
+  nothing, nothing changed sending no PUTs, quantity failing with
+  photos still completing, photos failing with quantity still
+  completing, both failing as 502 claiming nothing, unconfirmed,
+  scope flag), tests/revise-photos.test.js rewritten to the merged
+  flow (one button, combined preview card, confirm posts
+  confirmed:true with the quantity, both results shown, partial
+  failure shows both notes, bad quantity sends nothing),
+  tests/quantity.test.js revise sections updated to the merged flow,
+  fit_check.py check 31 (old buttons gone, combined endpoints exist,
+  preview merges both parts, a failed part does not block the other,
+  execute runs photos then quantity, confirmed required, per-part
+  reporting, single-part endpoints still underneath). Sections 24
+  and 30 updated to the single button; the v61 slice now splits on
+  the new button handler.
+- Live proof still outstanding, same as v57/v63: eBay's Inventory API
+  calls are production-only in this flow, so the merged update is
+  only mock-tested — he was told to try it on ONE listing first and
+  check eBay shows it.
+- Release note: build.gradle.kts must be bumped to 64/1.63 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

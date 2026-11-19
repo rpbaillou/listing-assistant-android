@@ -756,31 +756,35 @@ def main():
           str(rules.get(".edit-slider label", {})))
 
     # 24. v57 photos-only live-listing update: the Listed section rows
-    # get an Update photos button (unlisted rows keep Post), the
-    # listing page shows the Update button only for listed drafts and
-    # hides List there, the confirm card lists the changes with a
-    # Confirm + Cancel pair, and the server side is photos-only: the
-    # execute endpoint recomputes the plan, requires confirmed:true,
-    # PUTs the item back with only imageUrls swapped, reads it back to
-    # verify, and never creates an offer or re-publishes.
-    check("listed rows get an Update photos button, unlisted keep Post",
-          'class="secondary update-photos">Update photos<' in js and
+    # get an Update button (unlisted rows keep Post), the listing page
+    # shows the Update button only for listed drafts and hides List
+    # there, the confirm card lists the changes with a Confirm + Cancel
+    # pair, and the server side is photos-only: the execute endpoint
+    # recomputes the plan, requires confirmed:true, PUTs the item back
+    # with only imageUrls swapped, reads it back to verify, and never
+    # creates an offer or re-publishes. v64: the photos and quantity
+    # updates merged into one button and one card — the row button
+    # reads Update listing, the page button is Update live listing,
+    # and the card names both parts. The single-part endpoints below
+    # still exist (the merged flow reuses their apply helpers).
+    check("listed rows get an Update listing button, unlisted keep Post",
+          'class="secondary update-listing">Update listing<' in js and
           "(d.listed" in js and "Update photos" not in html,
           "row button missing from app.js")
     check("update button + confirm card exist in the page",
           all('id="%s"' % i in html for i in (
-              "btn-update-photos", "revise-confirm", "revise-changes",
+              "btn-update-listing", "revise-confirm", "revise-changes",
               "btn-revise-confirm", "btn-revise-cancel", "revise-ok",
               "revise-error", "revise-spinner")),
           "missing revise ids")
     check("update button starts hidden; List stays the default",
-          'id="btn-update-photos" class="primary big hidden"' in html and
+          'id="btn-update-listing" class="primary big hidden"' in html and
           'id="btn-publish" class="primary big"' in html)
-    check("confirm card names the photos-only scope",
-          "Only the photos change. Title, price, and shipping stay as they are." in html)
+    check("confirm card names the combined scope",
+          "Only the photos and quantity change. Title, price, and shipping stay as they are." in html)
     check("status card shows Update only for listed drafts",
-          'btn-update-photos").classList.remove("hidden")' in js and
-          js.count('btn-update-photos").classList.add("hidden")') >= 3)
+          'btn-update-listing").classList.remove("hidden")' in js and
+          js.count('btn-update-listing").classList.add("hidden")') >= 3)
     check("revise endpoints exist (preview GET + execute POST)",
           '@app.route("/api/drafts/<draft_id>/revise-photos", methods=["GET"])' in py and
           '@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])' in py)
@@ -1032,11 +1036,11 @@ def main():
           "step1BelongsToDraft(r.draft_id)" in batch and
           "r.ok &&" in batch,
           "only an ok row for the step-1 draft triggers it")
-    revise = js.split('$("btn-update-photos").addEventListener("click"')[1].split(
+    revise = js.split('$("btn-update-listing").addEventListener("click"')[1].split(
         "async function postPublish")[0]
     check("the revise flow never clears the step-1 photos",
           "resetStep1AfterPublish" not in revise,
-          "revise edits a live listing's photos; it must not reset step 1")
+          "revise updates a live listing; it must not reset step 1")
 
     # 29. v62 condition list: one list everywhere. Nov 18 he picked
     # "New other (see details)" — the category allows it and the
@@ -1120,18 +1124,75 @@ def main():
           'd.pop("ebay_offer_quantity", None)' in py,
           "snapshot record + discard + clear")
     check("live quantity update follows the v57 revise pattern",
-          '"/revise-quantity?quantity="' in js and
+          '"/revise?quantity="' in js and
           '"Quantity changes from %d to %d."' in py and
           'def _revise_quantity_plan(' in py and
           'def _offer_put_body(' in py and
-          'id="btn-update-quantity"' in html and
-          'id="revise-qty-confirm"' in html,
+          'id="btn-update-listing"' in html and
+          'id="revise-confirm"' in html,
           "preview + confirm card + plan + full offer body")
     check("live update changes both levels and proves both",
           'ship_to["quantity"] = new' in py and
           '"availableQuantity"] = quantity' in py and
           'after_qty != new or after_item_qty != new' in py,
           "item PUT + offer PUT + verify")
+
+    # 31. v64 one update button: Nov 19 he asked "What's up with all
+    # these update buttons? One update button and I click it updates."
+    # The listing page had two blue buttons (one for photos, one for
+    # quantity) plus each confirm card's own Update live listing
+    # button. Now there is one button, one preview that plans both
+    # parts, one confirm card listing everything, and one confirm
+    # that runs both parts — photos first, then quantity, each part
+    # re-reading live state before writing, so the photos PUT (whole
+    # item body) can never overwrite the quantity change. A part that
+    # fails does not stop the other part; the answer names each part's
+    # result, and the draft record updates only for the part that
+    # actually succeeded.
+    check("neither old update button survives anywhere",
+          "btn-update-photos" not in html and
+          "btn-update-photos" not in js and
+          "btn-update-quantity" not in html and
+          "btn-update-quantity" not in js and
+          "revise-qty" not in html and "revise-qty" not in js and
+          "update-photos" not in js,
+          "old button or card ids left behind")
+    check("combined revise endpoints exist (preview GET + execute POST)",
+          '@app.route("/api/drafts/<draft_id>/revise", methods=["GET"])' in py and
+          '@app.route("/api/drafts/<draft_id>/revise", methods=["POST"])' in py)
+    check("combined preview plans both parts into one change list",
+          'def api_revise_preview' in py and
+          'photos["changes"] = plan["changes"]' in py and
+          'quantity["changes"] = qplan["changes"]' in py and
+          'changes = list(photos["changes"]) + list(quantity["changes"])' in py,
+          "per-part plans + merged changes")
+    check("combined preview does not let a failed part block the other",
+          'Photos could not be checked: ' in py and
+          'Quantity could not be checked: ' in py and
+          'Only the quantity will change.' in py and
+          'Only the photos will change.' in py,
+          "per-part error notes")
+    check("combined execute runs photos first, then quantity",
+          "def api_revise_execute" in py and
+          py.split("def api_revise_execute")[1].split(
+              "\ndef ")[0].index("_apply_photo_revise") <
+          py.split("def api_revise_execute")[1].split(
+              "\ndef ")[0].index("_apply_quantity_revise"),
+          "photos before quantity")
+    check("combined execute requires confirmed:true before any eBay call",
+          'Confirm the update first.' in py)
+    check("combined execute reports each part plainly, never claims a failure",
+          '"photos": photos, "quantity": quantity' in py and
+          'the photos did not change: " + photos["error"]' in py and
+          'the quantity did not change: " + quantity["error"]' in py and
+          'Nothing changed: ' in py,
+          "per-part results + combined message")
+    check("the single-part endpoints still exist underneath",
+          '@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])' in py and
+          '@app.route("/api/drafts/<draft_id>/revise-quantity", methods=["POST"])' in py and
+          'def _apply_photo_revise(' in py and
+          'def _apply_quantity_revise(' in py,
+          "wrappers + shared apply helpers")
 
     print()
     return 1 if FAILURES else 0

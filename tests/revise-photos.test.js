@@ -1,15 +1,19 @@
-/* apk-v57 node tests for the photos-only live-listing update
- * (static/app.js). Loads the REAL app.js in a vm with a
- * REAL-browser-faithful DOM, same pattern as
- * tests/draft-sections.test.js.
- * Covers: listed rows get an "Update photos" button (unlisted rows keep
- * Post and get no Update button); the listing page shows the Update
- * live listing button only for listed drafts, and hides List there;
- * tapping it asks eBay for the preview and shows exactly what will
- * change on the confirm card; Cancel sends nothing; confirming posts
- * confirmed:true and shows the success note with the listing link; an
+/* apk-v57/v64 node tests for the live-listing update (static/app.js).
+ * Loads the REAL app.js in a vm with a REAL-browser-faithful DOM, same
+ * pattern as tests/draft-sections.test.js. v57 covered the photos-only
+ * update; v64 merged the photos and quantity updates into one button,
+ * one preview, and one confirm card. Covers: listed rows get an
+ * "Update listing" button (unlisted rows keep Post and get no Update
+ * button); the listing page shows the one Update live listing button
+ * only for listed drafts, and hides List there; tapping it asks eBay
+ * for the combined preview and shows both parts on the confirm card;
+ * Cancel sends nothing; confirming posts confirmed:true with the
+ * quantity and shows the success note with the listing link; an
  * unchanged preview says so plainly with no confirm card; a preview
- * failure shows eBay's message plainly.
+ * failure shows eBay's message plainly; a partial failure shows the
+ * success note for the part that went through and the error note for
+ * the part that failed; a bad quantity shows the plain message and
+ * sends nothing.
  * Run: node tests/revise-photos.test.js (exit 0 = pass). */
 const fs = require("fs");
 const path = require("path");
@@ -176,11 +180,27 @@ const UNLISTED = { id: "d2", title: "Working draft", listed: false,
   updated: "2026-11-08T09:00:00", thumb: "d2/1.jpg" };
 const DRAFT = { id: "d1", title: "Listed doll", photos: ["d1/1.jpg", "d1/2.jpg"],
   ebay_listing_id: "123", ebay_listing_url: "https://www.ebay.com/itm/123" };
+/* v64: one preview plans both parts. The card lists the photo change
+   and the quantity change together. */
 const PLAN = { listing_id: "123",
   listing_url: "https://www.ebay.com/itm/123", title: "Listed doll",
-  photo_count: 2, live_count: 2, uploads: [1], removed: 0,
-  reordered: false, unchanged: false,
-  changes: ["Photo 2 was edited and will be uploaded."] };
+  photos: { changes: ["Photo 2 was edited and will be uploaded."],
+    unchanged: false, error: null },
+  quantity: { changes: ["Quantity changes from 1 to 3."],
+    unchanged: false, live_quantity: 1, requested_quantity: 3,
+    error: null },
+  unchanged: false,
+  changes: ["Photo 2 was edited and will be uploaded.",
+    "Quantity changes from 1 to 3."] };
+const RESULT = { ok: true, listing_id: "123",
+  listing_url: "https://www.ebay.com/itm/123",
+  photos: { ok: true, unchanged: false,
+    message: "The live listing now shows the new photos.",
+    uploaded: 1, removed: 0 },
+  quantity: { ok: true, unchanged: false, live_quantity: 3,
+    message: "The live listing now has a quantity of 3." },
+  message: "The live listing now shows the new photos. The live " +
+    "listing now has a quantity of 3." };
 
 async function openDrafts(c, drafts) {
   c.$("btn-drafts").click();
@@ -191,7 +211,7 @@ async function openDrafts(c, drafts) {
 }
 
 async function main() {
-  console.log("== listed rows get Update photos, unlisted keep Post ==");
+  console.log("== listed rows get Update listing, unlisted keep Post ==");
   {
     const c = newContext(SRC);
     const list = await openDrafts(c, [UNLISTED, LISTED]);
@@ -201,18 +221,20 @@ async function main() {
     const listedRow = bottom.children[1].children[0].innerHTML;
     check("unlisted row keeps a Post button",
       workingRow.includes('class="primary post"'));
-    check("unlisted row has no Update photos button",
-      !workingRow.includes("Update photos"));
-    check("listed row has an Update photos button",
-      listedRow.includes("Update photos") &&
-      listedRow.includes('class="secondary update-photos"'));
+    check("unlisted row has no Update button",
+      !workingRow.includes("Update listing"));
+    check("listed row has an Update listing button",
+      listedRow.includes("Update listing") &&
+      listedRow.includes('class="secondary update-listing"'));
+    check("listed row has no old Update photos button",
+      !listedRow.includes("Update photos"));
     check("listed row still has no Post button",
       !listedRow.includes('class="primary post"'));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
 
-  console.log("== listing page shows Update only for listed drafts ==");
+  console.log("== listing page shows one Update button only for listed drafts ==");
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
@@ -222,9 +244,9 @@ async function main() {
       connected: true, runame: "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz",
       policies_configured: true });
     await p; await c.tick();
-    check("listed draft hides List, shows Update live listing photos",
+    check("listed draft hides List, shows the one Update live listing button",
       c.$("btn-publish").classList.contains("hidden") &&
-      !c.$("btn-update-photos").classList.contains("hidden"));
+      !c.$("btn-update-listing").classList.contains("hidden"));
     c.ctx("draft = { id: 'd2', title: 'Working draft', photos: ['d2/1.jpg'] };");
     const p2 = c.ctx("refreshEbayStatus();");
     await c.tick();
@@ -234,29 +256,35 @@ async function main() {
     await p2; await c.tick();
     check("unlisted draft shows List, hides Update",
       !c.$("btn-publish").classList.contains("hidden") &&
-      c.$("btn-update-photos").classList.contains("hidden"));
+      c.$("btn-update-listing").classList.contains("hidden"));
+    check("neither old button id survives in app.js",
+      !SRC.includes("btn-update-photos") &&
+      !SRC.includes("btn-update-quantity") &&
+      !SRC.includes("revise-qty"));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
 
-  console.log("== Update shows the confirm card; Cancel sends nothing ==");
+  console.log("== Update shows the one confirm card with both parts; Cancel sends nothing ==");
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
-    c.$("btn-update-photos").click();
+    c.$("f-quantity").value = "3";
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     // The handler saves the draft first (PUT), then asks for the preview.
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    check("preview is a GET on the revise endpoint",
-      c.fetchCalls.some((f) => String(f.url) === "/api/drafts/d1/revise-photos" &&
+    check("preview is a GET on the combined revise endpoint with the quantity",
+      c.fetchCalls.some((f) => String(f.url) === "/api/drafts/d1/revise?quantity=3" &&
         (f.opts.method || "GET") === "GET"));
-    c.resolveFetch("/api/drafts/d1/revise-photos", PLAN);
+    c.resolveFetch("/api/drafts/d1/revise", PLAN);
     await c.tick(); await c.tick();
-    check("confirm card opens with the change list",
+    check("confirm card opens with both changes listed",
       !c.$("revise-confirm").classList.contains("hidden") &&
-      c.$("revise-changes").children.length === 1 &&
-      c.$("revise-changes").children[0].textContent.includes("Photo 2 was edited"));
+      c.$("revise-changes").children.length === 2 &&
+      c.$("revise-changes").children[0].textContent.includes("Photo 2 was edited") &&
+      c.$("revise-changes").children[1].textContent.includes("Quantity changes from 1 to 3."));
     c.$("btn-revise-cancel").click();
     check("Cancel hides the card",
       c.$("revise-confirm").classList.contains("hidden"));
@@ -266,33 +294,35 @@ async function main() {
     c.dispose();
   }
 
-  console.log("== Confirm posts confirmed:true and shows the result ==");
+  console.log("== Confirm posts confirmed:true with the quantity and shows both results ==");
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
-    c.$("btn-update-photos").click();
+    c.$("f-quantity").value = "3";
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-photos", PLAN);
+    c.resolveFetch("/api/drafts/d1/revise", PLAN);
     await c.tick(); await c.tick();
     c.$("btn-revise-confirm").click();
     await c.tick(); await c.tick();
     const post = c.fetchCalls.find((f) => (f.opts.method || "") === "POST");
-    check("confirm posts to the revise endpoint",
-      post && String(post.url) === "/api/drafts/d1/revise-photos");
-    check("confirm sends only the agreement, never a plan",
+    check("confirm posts to the combined revise endpoint",
+      post && String(post.url) === "/api/drafts/d1/revise");
+    check("confirm sends the agreement and the quantity, never a plan",
       post && JSON.parse(post.opts.body).confirmed === true &&
-      Object.keys(JSON.parse(post.opts.body)).length === 1);
-    c.resolveFetch("/api/drafts/d1/revise-photos",
-      { ok: true, listing_id: "123",
-        listing_url: "https://www.ebay.com/itm/123", uploaded: 1,
-        removed: 0, message: "The live listing now shows the new photos." });
+      JSON.parse(post.opts.body).quantity === 3 &&
+      Object.keys(JSON.parse(post.opts.body)).length === 2);
+    c.resolveFetch("/api/drafts/d1/revise", RESULT);
     await c.tick(); await c.tick();
-    check("success note shows with the listing link",
+    check("success note names both parts with the listing link",
       !c.$("revise-ok").classList.contains("hidden") &&
       c.$("revise-ok").innerHTML.includes("now shows the new photos") &&
+      c.$("revise-ok").innerHTML.includes("quantity of 3") &&
       c.$("revise-ok").innerHTML.includes("https://www.ebay.com/itm/123"));
+    check("no error note on a full success",
+      c.$("revise-error").classList.contains("hidden"));
     check("confirm card and spinner hide after success",
       c.$("revise-confirm").classList.contains("hidden") &&
       c.$("revise-spinner").classList.contains("hidden"));
@@ -304,17 +334,24 @@ async function main() {
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
-    c.$("btn-update-photos").click();
+    c.$("f-quantity").value = "3";
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-photos",
-      Object.assign({}, PLAN, { uploads: [], unchanged: true,
-        changes: ["No photo changes. The live listing already shows these photos."] }));
+    c.resolveFetch("/api/drafts/d1/revise",
+      Object.assign({}, PLAN, { unchanged: true,
+        photos: { changes: ["No photo changes. The live listing already shows these photos."],
+          unchanged: true, error: null },
+        quantity: { changes: ["The live listing already has a quantity of 3."],
+          unchanged: true, live_quantity: 3, requested_quantity: 3, error: null },
+        changes: ["No photo changes. The live listing already shows these photos.",
+          "The live listing already has a quantity of 3."] }));
     await c.tick(); await c.tick();
     check("unchanged preview shows the plain note",
       !c.$("revise-ok").classList.contains("hidden") &&
-      c.$("revise-ok").textContent.includes("already shows these photos"));
+      c.$("revise-ok").textContent.includes("already shows these photos") &&
+      c.$("revise-ok").textContent.includes("already has a quantity of 3"));
     check("unchanged preview never opens the confirm card",
       c.$("revise-confirm").classList.contains("hidden"));
     check("no unhandled rejection", c.unhandled.length === 0);
@@ -325,17 +362,73 @@ async function main() {
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
-    c.$("btn-update-photos").click();
+    c.$("f-quantity").value = "3";
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-photos",
+    c.resolveFetch("/api/drafts/d1/revise",
       { error: "eBay no longer has this item. It may have been ended, sold, or removed on eBay's side. Check Seller Hub." }, false);
     await c.tick(); await c.tick();
     check("preview failure shows eBay's message, no confirm card",
       !c.$("revise-error").classList.contains("hidden") &&
       c.$("revise-error").textContent.includes("no longer has this item") &&
       c.$("revise-confirm").classList.contains("hidden"));
+    check("no unhandled rejection", c.unhandled.length === 0);
+    c.dispose();
+  }
+
+  console.log("== partial failure shows both notes, success and failure ==");
+  {
+    const c = newContext(SRC);
+    c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
+    c.$("f-quantity").value = "3";
+    c.$("btn-update-listing").click();
+    await c.tick(); await c.tick();
+    c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
+    await c.tick(); await c.tick();
+    c.resolveFetch("/api/drafts/d1/revise", PLAN);
+    await c.tick(); await c.tick();
+    c.$("btn-revise-confirm").click();
+    await c.tick(); await c.tick();
+    c.resolveFetch("/api/drafts/d1/revise",
+      { ok: true, listing_id: "123",
+        listing_url: "https://www.ebay.com/itm/123",
+        photos: { ok: true, unchanged: false,
+          message: "The live listing now shows the new photos.",
+          uploaded: 1, removed: 0 },
+        quantity: { ok: false,
+          error: "eBay said (error 21919302): The listing cannot be revised because it has bids." },
+        message: "The live listing now shows the new photos. But the quantity did not change: eBay said (error 21919302): The listing cannot be revised because it has bids." });
+    await c.tick(); await c.tick();
+    check("success note still names the photos that went through",
+      !c.$("revise-ok").classList.contains("hidden") &&
+      c.$("revise-ok").innerHTML.includes("now shows the new photos"));
+    check("error note names the failed quantity with eBay's message",
+      !c.$("revise-error").classList.contains("hidden") &&
+      c.$("revise-error").textContent.includes("quantity did not change") &&
+      c.$("revise-error").textContent.includes("has bids"));
+    check("confirm card and spinner hide after a partial result",
+      c.$("revise-confirm").classList.contains("hidden") &&
+      c.$("revise-spinner").classList.contains("hidden"));
+    check("no unhandled rejection", c.unhandled.length === 0);
+    c.dispose();
+  }
+
+  console.log("== bad quantity shows a plain message and sends nothing ==");
+  {
+    const c = newContext(SRC);
+    c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
+    c.$("f-quantity").value = "0";
+    c.$("btn-update-listing").click();
+    await c.tick(); await c.tick();
+    c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
+    await c.tick(); await c.tick();
+    check("bad quantity shows the plain message",
+      !c.$("revise-error").classList.contains("hidden") &&
+      c.$("revise-error").textContent.includes("whole number of 1 or more"));
+    check("bad quantity never asks eBay for a preview",
+      !c.fetchCalls.some((f) => String(f.url).includes("/revise")));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }

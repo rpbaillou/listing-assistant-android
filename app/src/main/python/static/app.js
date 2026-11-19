@@ -2162,8 +2162,10 @@ function makeDraftRow(d) {
      v24: a tick box (batch posting) and a Post button (straight to
      the listing page) join the row. Listed drafts get no Post button — they are
      already live, and the publish step refuses them anyway. v57: listed
-     drafts get an Update photos button instead — it opens the draft on
-     the listing page, where the Update live listing button lives. v49: no
+     drafts get an Update button instead — it opens the draft on
+     the listing page, where the Update live listing button lives. v64:
+     the row button reads Update listing (one button, one card on the
+     listing page — the photos and quantity updates merged). v49: no
      "Listed on eBay" pill on any row — listed rows live ONLY in the
      bottom "Listed on eBay" section, so a pill inside the Drafts
      section would be a lie; Delete is a grey button with a trash
@@ -2176,7 +2178,7 @@ function makeDraftRow(d) {
     "</div>" +
     '<div class="draft-actions"><button type="button" class="secondary">Open</button>' +
     (d.listed
-      ? '<button type="button" class="secondary update-photos">Update photos</button>'
+      ? '<button type="button" class="secondary update-listing">Update listing</button>'
       : '<button type="button" class="primary post">Post</button>') +
     '<button type="button" class="del">🗑 Delete</button></div>';
   row.querySelector(".secondary").addEventListener("click", async () => {
@@ -2211,12 +2213,14 @@ function makeDraftRow(d) {
       show("step-draft");
     });
   }
-  const updBtn = row.querySelector(".update-photos");
+  const updBtn = row.querySelector(".update-listing");
   if (updBtn) {
     updBtn.addEventListener("click", async () => {
       /* v57: a listed draft opens on the listing page, where the photo
          grid, the v56 editor and the Update live listing button live —
-         the same destination as Open, named for the job. */
+         the same destination as Open, named for the job. v64: the
+         button is Update listing (one button covers photos and
+         quantity now). */
       const { draft: full } = await api("/api/drafts/" + d.id);
       loadDraftIntoForm(full);
       await prefillListing();
@@ -2819,8 +2823,7 @@ async function refreshEbayStatus() {
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0'>Could not check eBay status.</p>";
     $("btn-publish").classList.remove("hidden");
-    $("btn-update-photos").classList.add("hidden");
-    $("btn-update-quantity").classList.add("hidden");
+    $("btn-update-listing").classList.add("hidden");
     return null;
   }
   ebayStatus = st;
@@ -2829,8 +2832,7 @@ async function refreshEbayStatus() {
       "<p class='hint'>Add your eBay App ID and Cert ID to the .env file " +
       "(setup guide: Connect eBay), then restart the app. The manual copy buttons below still work.</p>";
     $("btn-publish").classList.add("hidden");
-    $("btn-update-photos").classList.add("hidden");
-    $("btn-update-quantity").classList.add("hidden");
+    $("btn-update-listing").classList.add("hidden");
     return st;
   }
   if (!st.connected) {
@@ -2869,8 +2871,7 @@ async function refreshEbayStatus() {
       });
     }
     $("btn-publish").classList.add("hidden");
-    $("btn-update-photos").classList.add("hidden");
-    $("btn-update-quantity").classList.add("hidden");
+    $("btn-update-listing").classList.add("hidden");
     return st;
   }
   const alreadyLive = !!(draft && draft.ebay_listing_id);
@@ -2879,11 +2880,10 @@ async function refreshEbayStatus() {
       "<p class='hint'><a href='" + draft.ebay_listing_url + "' target='_blank'>View your listing</a>" +
       " · item " + esc(draft.ebay_listing_id) + "</p>";
     $("btn-publish").classList.add("hidden");
-    /* v57: a listed draft gets the photos-only update button instead
-       of List — List never updates a live listing. */
-    $("btn-update-photos").classList.remove("hidden");
-    /* v63: same for the quantity update button. */
-    $("btn-update-quantity").classList.remove("hidden");
+    /* v57: a listed draft gets the update button instead of List —
+       List never updates a live listing. v64: one button covers both
+       the photos and the quantity. */
+    $("btn-update-listing").classList.remove("hidden");
   } else {
     let statusHtml = "<p style='margin:0'><b>eBay connected.</b> Ready to list.</p>" +
       "<p class='hint runame-line'>Sign-in name in use: " + esc((st.runame || "").trim()) + "</p>";
@@ -2895,8 +2895,7 @@ async function refreshEbayStatus() {
     }
     box.innerHTML = statusHtml;
     $("btn-publish").classList.remove("hidden");
-    $("btn-update-photos").classList.add("hidden");
-    $("btn-update-quantity").classList.add("hidden");
+    $("btn-update-listing").classList.add("hidden");
   }
   return st;
 }
@@ -2921,10 +2920,6 @@ async function prefillListing(opts) {
   $("revise-error").classList.add("hidden");
   $("revise-ok").classList.add("hidden");
   $("revise-confirm").classList.add("hidden");
-  /* v63: same for the quantity revise card. */
-  $("revise-qty-error").classList.add("hidden");
-  $("revise-qty-ok").classList.add("hidden");
-  $("revise-qty-confirm").classList.add("hidden");
   /* v53: the status card is rendered by refreshEbayStatus (above), so
      a token-death failure anywhere can re-run it and flip the card to
      not-connected. Only a connected card goes on to prefill the
@@ -3442,17 +3437,30 @@ function hideReviseMsg() {
    reorder); this button asks eBay what the live listing shows now,
    shows exactly what will change on the confirm card, and only sends
    the update after the seller taps Update live listing on that card.
-   Nothing goes to eBay before that tap. */
-$("btn-update-photos").addEventListener("click", async () => {
+   Nothing goes to eBay before that tap. v63: the quantity update
+   joined the same review stop — the card names the live quantity as
+   the "from" value, so a stored number that drifted (a sale, for
+   example) can never silently change the listing. v64: one button,
+   one card — the two update buttons merged into a single Update live
+   listing that plans and confirms both parts together. */
+$("btn-update-listing").addEventListener("click", async () => {
   hideReviseMsg();
   if (!draft) return;
   /* v29 precedent: save the draft first so what updates is exactly
      what is on disk. */
   await saveDraft();
-  const btn = $("btn-update-photos");
+  const qty = parseQuantity($("f-quantity").value);
+  if (qty === null) {
+    const el = $("revise-error");
+    el.textContent = "Enter a whole number of 1 or more for the quantity.";
+    el.classList.remove("hidden");
+    return;
+  }
+  const btn = $("btn-update-listing");
   btn.disabled = true;
   try {
-    const plan = await api("/api/drafts/" + draft.id + "/revise-photos");
+    const plan = await api("/api/drafts/" + draft.id +
+                           "/revise?quantity=" + qty);
     if (plan.needs_scope_reconnect) {
       const el = $("revise-error");
       el.textContent = plan.error || "The app needs one new permission to read your shipping policies.";
@@ -3463,7 +3471,8 @@ $("btn-update-photos").addEventListener("click", async () => {
     }
     if (plan.unchanged) {
       const ok = $("revise-ok");
-      ok.textContent = "The live listing already shows these photos.";
+      ok.textContent = (plan.changes || []).join(" ") ||
+        "Nothing to change. The live listing already shows these photos.";
       ok.classList.remove("hidden");
       return;
     }
@@ -3496,16 +3505,26 @@ $("btn-revise-cancel").addEventListener("click", () => {
 
 $("btn-revise-confirm").addEventListener("click", async () => {
   if (!draft) return;
+  /* The quantity is read fresh here, not from the preview: the server
+     recomputes the plan from this value, so a change typed while the
+     card was open is still correct. */
+  const qty = parseQuantity($("f-quantity").value);
+  if (qty === null) {
+    const el = $("revise-error");
+    el.textContent = "Enter a whole number of 1 or more for the quantity.";
+    el.classList.remove("hidden");
+    return;
+  }
   $("revise-confirm").classList.add("hidden");
   $("revise-error").classList.add("hidden");
   $("revise-spinner").classList.remove("hidden");
   const btn = $("btn-revise-confirm");
   btn.disabled = true;
   try {
-    const r = await api("/api/drafts/" + draft.id + "/revise-photos", {
+    const r = await api("/api/drafts/" + draft.id + "/revise", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirmed: true }),
+      body: JSON.stringify({ confirmed: true, quantity: qty }),
     });
     if (r.needs_scope_reconnect) {
       const el = $("revise-error");
@@ -3515,10 +3534,42 @@ $("btn-revise-confirm").addEventListener("click", async () => {
       await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
       return;
     }
-    const ok = $("revise-ok");
-    ok.innerHTML = "The live listing now shows the new photos." +
-      (r.listing_url ? " <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" : "");
-    ok.classList.remove("hidden");
+    /* v64: the answer names each part's result. A part that went
+       through shows in the ok note; a part that failed shows in the
+       error note with eBay's message. Both notes can show at once
+       after a partial failure, so a failed part is never hidden
+       behind a success. */
+    const photos = r.photos || {};
+    const quantity = r.quantity || {};
+    const okLines = [];
+    const badLines = [];
+    if (photos.ok && !photos.unchanged)
+      okLines.push("The live listing now shows the new photos.");
+    if (quantity.ok && !quantity.unchanged)
+      okLines.push("The live listing now has a quantity of " +
+                   quantity.live_quantity + ".");
+    if (!photos.ok)
+      badLines.push("The photos did not change: " +
+                    (photos.error || "unknown error"));
+    if (!quantity.ok)
+      badLines.push("The quantity did not change: " +
+                    (quantity.error || "unknown error"));
+    if (okLines.length) {
+      const ok = $("revise-ok");
+      ok.innerHTML = okLines.join(" ") +
+        (r.listing_url ? " <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" : "");
+      ok.classList.remove("hidden");
+    }
+    if (badLines.length) {
+      const el = $("revise-error");
+      el.textContent = badLines.join(" ");
+      el.classList.remove("hidden");
+    }
+    if (!okLines.length && !badLines.length) {
+      const ok = $("revise-ok");
+      ok.textContent = r.message || "Nothing to change.";
+      ok.classList.remove("hidden");
+    }
   } catch (e) {
     const el = $("revise-error");
     el.textContent = e.message;
@@ -3529,130 +3580,6 @@ $("btn-revise-confirm").addEventListener("click", async () => {
     await refreshStatusIfTokenDied(e.message);
   } finally {
     $("revise-spinner").classList.add("hidden");
-    btn.disabled = false;
-  }
-});
-
-function hideReviseQtyMsg() {
-  $("revise-qty-error").classList.add("hidden");
-  $("revise-qty-ok").classList.add("hidden");
-  $("revise-qty-confirm").classList.add("hidden");
-}
-
-/* v63: quantity update for a listed draft, same review stop as the
-   photos update. The button asks eBay what the live listing has now,
-   shows exactly what will change on the confirm card ("Quantity
-   changes from 1 to 3."), and only sends the update after the seller
-   taps Update live listing on that card. Nothing goes to eBay before
-   that tap. The confirm card names the LIVE quantity as the "from"
-   value, so a stored number that drifted (a sale, for example) can
-   never silently change the listing. */
-$("btn-update-quantity").addEventListener("click", async () => {
-  hideReviseQtyMsg();
-  if (!draft) return;
-  /* v29 precedent: save the draft first so what updates is exactly
-     what is on disk. */
-  await saveDraft();
-  const qty = parseQuantity($("f-quantity").value);
-  if (qty === null) {
-    const el = $("revise-qty-error");
-    el.textContent = "Enter a whole number of 1 or more for the quantity.";
-    el.classList.remove("hidden");
-    return;
-  }
-  const btn = $("btn-update-quantity");
-  btn.disabled = true;
-  try {
-    const plan = await api("/api/drafts/" + draft.id +
-                           "/revise-quantity?quantity=" + qty);
-    if (plan.needs_scope_reconnect) {
-      const el = $("revise-qty-error");
-      el.textContent = plan.error || "The app needs one new permission to read your shipping policies.";
-      el.classList.remove("hidden");
-      $("scope-reconnect-box").classList.remove("hidden");
-      await refreshStatusIfTokenDied(plan.error || "The app needs one new permission to read your shipping policies.");
-      return;
-    }
-    if (plan.unchanged) {
-      const ok = $("revise-qty-ok");
-      ok.textContent = "The live listing already has a quantity of " +
-        plan.live_quantity + ".";
-      ok.classList.remove("hidden");
-      return;
-    }
-    const list = $("revise-qty-changes");
-    list.innerHTML = "";
-    (plan.changes || []).forEach((c) => {
-      const li = document.createElement("li");
-      li.textContent = c;
-      list.appendChild(li);
-    });
-    $("revise-qty-confirm").classList.remove("hidden");
-  } catch (e) {
-    const el = $("revise-qty-error");
-    el.textContent = e.message;
-    el.classList.remove("hidden");
-    if (isScopeReconnectText(e.message)) {
-      $("scope-reconnect-box").classList.remove("hidden");
-    }
-    /* v53: a token-death message here means the sign-in died after
-       the status card rendered — flip the card to not-connected. */
-    await refreshStatusIfTokenDied(e.message);
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-$("btn-revise-qty-cancel").addEventListener("click", () => {
-  $("revise-qty-confirm").classList.add("hidden");
-});
-
-$("btn-revise-qty-confirm").addEventListener("click", async () => {
-  if (!draft) return;
-  /* The quantity is read fresh here, not from the preview: the server
-     recomputes the plan from this value, so a change typed while the
-     card was open is still correct. */
-  const qty = parseQuantity($("f-quantity").value);
-  if (qty === null) {
-    const el = $("revise-qty-error");
-    el.textContent = "Enter a whole number of 1 or more for the quantity.";
-    el.classList.remove("hidden");
-    return;
-  }
-  $("revise-qty-confirm").classList.add("hidden");
-  $("revise-qty-error").classList.add("hidden");
-  $("revise-qty-spinner").classList.remove("hidden");
-  const btn = $("btn-revise-qty-confirm");
-  btn.disabled = true;
-  try {
-    const r = await api("/api/drafts/" + draft.id + "/revise-quantity", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ confirmed: true, quantity: qty }),
-    });
-    if (r.needs_scope_reconnect) {
-      const el = $("revise-qty-error");
-      el.textContent = r.error || "The app needs one new permission to read your shipping policies.";
-      el.classList.remove("hidden");
-      $("scope-reconnect-box").classList.remove("hidden");
-      await refreshStatusIfTokenDied(r.error || "The app needs one new permission to read your shipping policies.");
-      return;
-    }
-    const ok = $("revise-qty-ok");
-    ok.innerHTML = "The live listing now has a quantity of " +
-      r.live_quantity + "." +
-      (r.listing_url ? " <a href='" + r.listing_url + "' target='_blank'>View your eBay listing</a>" : "");
-    ok.classList.remove("hidden");
-  } catch (e) {
-    const el = $("revise-qty-error");
-    el.textContent = e.message;
-    el.classList.remove("hidden");
-    if (isScopeReconnectText(e.message)) {
-      $("scope-reconnect-box").classList.remove("hidden");
-    }
-    await refreshStatusIfTokenDied(e.message);
-  } finally {
-    $("revise-qty-spinner").classList.add("hidden");
     btn.disabled = false;
   }
 });

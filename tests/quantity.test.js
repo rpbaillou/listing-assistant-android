@@ -174,10 +174,18 @@ function check(name, cond, extra) {
 const DRAFT = { id: "d1", title: "Listed doll", photos: ["d1/1.jpg"],
   ebay_listing_id: "123", ebay_listing_url: "https://www.ebay.com/itm/123",
   ebay_offer_id: "off1", quantity: "1" };
+/* v64: the preview plans both parts. The photos are unchanged in
+   this file's scenario, so the card lists the no-photo-changes line
+   plus the quantity change. */
 const PLAN = { listing_id: "123",
   listing_url: "https://www.ebay.com/itm/123", title: "Listed doll",
-  live_quantity: 1, requested_quantity: 3, unchanged: false,
-  changes: ["Quantity changes from 1 to 3."] };
+  photos: { changes: ["No photo changes. The live listing already shows these photos."],
+    unchanged: true, error: null },
+  quantity: { changes: ["Quantity changes from 1 to 3."],
+    unchanged: false, live_quantity: 1, requested_quantity: 3, error: null },
+  unchanged: false,
+  changes: ["No photo changes. The live listing already shows these photos.",
+    "Quantity changes from 1 to 3."] };
 
 async function main() {
   console.log("== parseQuantity: whole numbers of 1 or more only ==");
@@ -225,7 +233,7 @@ async function main() {
     c.dispose();
   }
 
-  console.log("== listing page shows Update quantity only for listed drafts ==");
+  console.log("== listing page shows the one Update button only for listed drafts ==");
   {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
@@ -235,8 +243,8 @@ async function main() {
       connected: true, runame: "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz",
       policies_configured: true });
     await p; await c.tick();
-    check("listed draft shows Update live listing quantity",
-      !c.$("btn-update-quantity").classList.contains("hidden"));
+    check("listed draft shows the one Update live listing button",
+      !c.$("btn-update-listing").classList.contains("hidden"));
     c.ctx("draft = { id: 'd2', title: 'Working draft', photos: ['d2/1.jpg'] };");
     const p2 = c.ctx("refreshEbayStatus();");
     await c.tick();
@@ -244,8 +252,8 @@ async function main() {
       connected: true, runame: "Reynard_Baillou-ReynardB-Mr-PRD-eayxussz",
       policies_configured: true });
     await p2; await c.tick();
-    check("unlisted draft hides Update quantity",
-      c.$("btn-update-quantity").classList.contains("hidden"));
+    check("unlisted draft hides Update",
+      c.$("btn-update-listing").classList.contains("hidden"));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
@@ -255,23 +263,23 @@ async function main() {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
     c.$("f-quantity").value = "3";
-    c.$("btn-update-quantity").click();
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     // The handler saves the draft first (PUT), then asks for the preview.
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    check("preview is a GET on the revise-quantity endpoint with the quantity",
-      c.fetchCalls.some((f) => String(f.url) === "/api/drafts/d1/revise-quantity?quantity=3" &&
+    check("preview is a GET on the combined revise endpoint with the quantity",
+      c.fetchCalls.some((f) => String(f.url) === "/api/drafts/d1/revise?quantity=3" &&
         (f.opts.method || "GET") === "GET"));
-    c.resolveFetch("/api/drafts/d1/revise-quantity", PLAN);
+    c.resolveFetch("/api/drafts/d1/revise", PLAN);
     await c.tick(); await c.tick();
     check("confirm card opens with the change list",
-      !c.$("revise-qty-confirm").classList.contains("hidden") &&
-      c.$("revise-qty-changes").children.length === 1 &&
-      c.$("revise-qty-changes").children[0].textContent.includes("Quantity changes from 1 to 3."));
-    c.$("btn-revise-qty-cancel").click();
+      !c.$("revise-confirm").classList.contains("hidden") &&
+      c.$("revise-changes").children.length === 2 &&
+      c.$("revise-changes").children[1].textContent.includes("Quantity changes from 1 to 3."));
+    c.$("btn-revise-cancel").click();
     check("Cancel hides the card",
-      c.$("revise-qty-confirm").classList.contains("hidden"));
+      c.$("revise-confirm").classList.contains("hidden"));
     check("Cancel sent nothing to eBay",
       !c.fetchCalls.some((f) => (f.opts.method || "") === "POST"));
     check("no unhandled rejection", c.unhandled.length === 0);
@@ -283,33 +291,37 @@ async function main() {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
     c.$("f-quantity").value = "3";
-    c.$("btn-update-quantity").click();
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-quantity", PLAN);
+    c.resolveFetch("/api/drafts/d1/revise", PLAN);
     await c.tick(); await c.tick();
-    c.$("btn-revise-qty-confirm").click();
+    c.$("btn-revise-confirm").click();
     await c.tick(); await c.tick();
     const post = c.fetchCalls.find((f) => (f.opts.method || "") === "POST");
-    check("confirm posts to the revise-quantity endpoint",
-      post && String(post.url) === "/api/drafts/d1/revise-quantity");
+    check("confirm posts to the combined revise endpoint",
+      post && String(post.url) === "/api/drafts/d1/revise");
     check("confirm sends the agreement and the quantity, never a plan",
       post && JSON.parse(post.opts.body).confirmed === true &&
       JSON.parse(post.opts.body).quantity === 3 &&
       Object.keys(JSON.parse(post.opts.body)).length === 2);
-    c.resolveFetch("/api/drafts/d1/revise-quantity",
+    c.resolveFetch("/api/drafts/d1/revise",
       { ok: true, listing_id: "123",
-        listing_url: "https://www.ebay.com/itm/123", live_quantity: 3,
+        listing_url: "https://www.ebay.com/itm/123",
+        photos: { ok: true, unchanged: true,
+          message: "The live listing already shows these photos." },
+        quantity: { ok: true, unchanged: false, live_quantity: 3,
+          message: "The live listing now has a quantity of 3." },
         message: "The live listing now has a quantity of 3." });
     await c.tick(); await c.tick();
     check("success note shows the new quantity with the listing link",
-      !c.$("revise-qty-ok").classList.contains("hidden") &&
-      c.$("revise-qty-ok").innerHTML.includes("now has a quantity of 3") &&
-      c.$("revise-qty-ok").innerHTML.includes("https://www.ebay.com/itm/123"));
+      !c.$("revise-ok").classList.contains("hidden") &&
+      c.$("revise-ok").innerHTML.includes("now has a quantity of 3") &&
+      c.$("revise-ok").innerHTML.includes("https://www.ebay.com/itm/123"));
     check("confirm card and spinner hide after success",
-      c.$("revise-qty-confirm").classList.contains("hidden") &&
-      c.$("revise-qty-spinner").classList.contains("hidden"));
+      c.$("revise-confirm").classList.contains("hidden") &&
+      c.$("revise-spinner").classList.contains("hidden"));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
@@ -319,20 +331,24 @@ async function main() {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
     c.$("f-quantity").value = "1";
-    c.$("btn-update-quantity").click();
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-quantity",
-      Object.assign({}, PLAN, { live_quantity: 1, requested_quantity: 1,
-        unchanged: true,
-        changes: ["The live listing already has a quantity of 1."] }));
+    c.resolveFetch("/api/drafts/d1/revise",
+      Object.assign({}, PLAN, { unchanged: true,
+        photos: { changes: ["No photo changes. The live listing already shows these photos."],
+          unchanged: true, error: null },
+        quantity: { changes: ["The live listing already has a quantity of 1."],
+          unchanged: true, live_quantity: 1, requested_quantity: 1, error: null },
+        changes: ["No photo changes. The live listing already shows these photos.",
+          "The live listing already has a quantity of 1."] }));
     await c.tick(); await c.tick();
     check("unchanged preview shows the plain note",
-      !c.$("revise-qty-ok").classList.contains("hidden") &&
-      c.$("revise-qty-ok").textContent.includes("already has a quantity of 1"));
+      !c.$("revise-ok").classList.contains("hidden") &&
+      c.$("revise-ok").textContent.includes("already has a quantity of 1"));
     check("unchanged preview never opens the confirm card",
-      c.$("revise-qty-confirm").classList.contains("hidden"));
+      c.$("revise-confirm").classList.contains("hidden"));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
@@ -342,15 +358,15 @@ async function main() {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
     c.$("f-quantity").value = "0";
-    c.$("btn-update-quantity").click();
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
     check("bad quantity shows the plain message",
-      !c.$("revise-qty-error").classList.contains("hidden") &&
-      c.$("revise-qty-error").textContent.includes("whole number of 1 or more"));
+      !c.$("revise-error").classList.contains("hidden") &&
+      c.$("revise-error").textContent.includes("whole number of 1 or more"));
     check("bad quantity never asks eBay for a preview",
-      !c.fetchCalls.some((f) => String(f.url).includes("revise-quantity")));
+      !c.fetchCalls.some((f) => String(f.url).includes("/revise")));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }
@@ -360,17 +376,17 @@ async function main() {
     const c = newContext(SRC);
     c.ctx("draft = " + JSON.stringify(DRAFT) + ";");
     c.$("f-quantity").value = "3";
-    c.$("btn-update-quantity").click();
+    c.$("btn-update-listing").click();
     await c.tick(); await c.tick();
     c.resolveFetch("/api/drafts/d1", { draft: DRAFT });
     await c.tick(); await c.tick();
-    c.resolveFetch("/api/drafts/d1/revise-quantity",
+    c.resolveFetch("/api/drafts/d1/revise",
       { error: "eBay no longer has this listing's offer. It may have been ended or removed on eBay's side. Check Seller Hub." }, false);
     await c.tick(); await c.tick();
     check("preview failure shows eBay's message, no confirm card",
-      !c.$("revise-qty-error").classList.contains("hidden") &&
-      c.$("revise-qty-error").textContent.includes("no longer has this listing's offer") &&
-      c.$("revise-qty-confirm").classList.contains("hidden"));
+      !c.$("revise-error").classList.contains("hidden") &&
+      c.$("revise-error").textContent.includes("no longer has this listing's offer") &&
+      c.$("revise-confirm").classList.contains("hidden"));
     check("no unhandled rejection", c.unhandled.length === 0);
     c.dispose();
   }

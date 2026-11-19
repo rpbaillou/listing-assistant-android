@@ -4291,38 +4291,32 @@ def api_revise_photos_preview(draft_id):
     })
 
 
-@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])
-def api_revise_photos_execute(draft_id):
-    """v57: run the photos-only update after the confirm screen. The
-    plan is recomputed fresh here — the client sends only its agreement,
-    never the plan — so a stale preview cannot send a stale update.
-    Uploads only the changed/new photos, PUTs the item back exactly as
-    eBay returned it with only the photo list swapped, then reads the
-    item back to prove the new photos took."""
-    d = _load_draft(draft_id)
-    err = _revise_eligible(d)
-    if err:
-        return jsonify({"error": err[0]}), err[1]
-    body = request.get_json(silent=True) or {}
-    if not body.get("confirmed"):
-        return jsonify({"error": "Confirm the photo update first."}), 400
-    token, resp = _revise_token_or_response()
-    if resp is not None:
-        return resp
+def _apply_photo_revise(d, token):
+    """v64: run the photos part of a live-listing update. Recomputes
+    the plan fresh, uploads only the changed/new photos, PUTs the
+    item back exactly as eBay returned it with only the photo list
+    swapped, then reads the item back to prove the new photos took.
+    Returns a dict: ok, unchanged, message or error, uploaded,
+    removed. A failure returns ok False and leaves the draft record
+    untouched, so a retry can recompute the plan instead of trusting
+    a failed update. _NeedsScopeReconnect propagates to the caller,
+    which answers with the flag. Used by the photos-only endpoint and
+    by the combined /revise endpoint; photos runs first there,
+    before the quantity part, because each part re-reads live state
+    before writing — the photos PUT carries the whole item body, so
+    it must run before the quantity change exists, and the quantity
+    part then re-reads after the photos PUT and cannot lose them."""
     try:
         plan = _revise_photo_plan(d, token)
-    except _NeedsScopeReconnect as exc:
-        return jsonify({"needs_scope_reconnect": True,
-                        "error": str(exc)}), 200
+    except _NeedsScopeReconnect:
+        raise
     except RuntimeError as exc:
         _log_ebay_failure("revise-photos plan", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     if plan["unchanged"]:
-        return jsonify({"ok": True, "unchanged": True,
-                        "message": "The live listing already shows these "
-                                   "photos.",
-                        "listing_id": d["ebay_listing_id"],
-                        "listing_url": d.get("ebay_listing_url", "")})
+        return {"ok": True, "unchanged": True,
+                "message": "The live listing already shows these "
+                           "photos."}
     new_urls = list(plan["new_urls"])
     try:
         for i in plan["uploads"]:
@@ -4330,7 +4324,7 @@ def api_revise_photos_execute(draft_id):
             new_urls[i] = _ebay_upload_picture(full, token)
     except RuntimeError as exc:
         _log_ebay_failure("revise-photos upload", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     # PUT the item back exactly as eBay returned it, with only the
     # photo list swapped — title, price, policies, quantity and
     # everything else ride along untouched. No new offer, no re-publish.
@@ -4344,7 +4338,7 @@ def api_revise_photos_execute(draft_id):
                    token, put_body)
     except RuntimeError as exc:
         _log_ebay_failure("revise-photos put", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     try:
         after = _ebay_call(
             "GET", f"/sell/inventory/v1/inventory_item/{plan['sku']}", token)
@@ -4352,25 +4346,62 @@ def api_revise_photos_execute(draft_id):
                       ((after.get("product") or {}).get("imageUrls") or [])]
     except RuntimeError as exc:
         _log_ebay_failure("revise-photos verify", exc)
-        return jsonify({"error": "The update was sent but eBay could not "
-                                 "confirm it. Check Seller Hub before "
-                                 "trying again: " + str(exc)}), 502
+        return {"ok": False,
+                "error": "The update was sent but eBay could not "
+                         "confirm it. Check Seller Hub before "
+                         "trying again: " + str(exc)}
     if after_urls != new_urls:
         app.logger.warning(
             "revise-photos verify mismatch draft=%s sku=%s expected=%s "
             "got=%s", d["id"], plan["sku"], new_urls, after_urls)
-        return jsonify({"error": "eBay did not show the new photos. Check "
-                                 "the listing in Seller Hub before trying "
-                                 "again."}), 502
+        return {"ok": False,
+                "error": "eBay did not show the new photos. Check "
+                         "the listing in Seller Hub before trying "
+                         "again."}
     d["ebay_image_urls"] = list(new_urls)
     d["ebay_photo_hashes"] = list(plan["current_hashes"])
     _save_draft(d)
+    return {"ok": True, "unchanged": False,
+            "message": "The live listing now shows the new photos.",
+            "uploaded": len(plan["uploads"]),
+            "removed": plan["removed"]}
+
+
+@app.route("/api/drafts/<draft_id>/revise-photos", methods=["POST"])
+def api_revise_photos_execute(draft_id):
+    """v57: run the photos-only update after the confirm screen. The
+    plan is recomputed fresh here — the client sends only its agreement,
+    never the plan — so a stale preview cannot send a stale update.
+    v64: the work lives in _apply_photo_revise now; this endpoint
+    keeps the same response shape as before."""
+    d = _load_draft(draft_id)
+    err = _revise_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirmed"):
+        return jsonify({"error": "Confirm the photo update first."}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        result = _apply_photo_revise(d, token)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    if not result["ok"]:
+        return jsonify({"error": result["error"]}), 502
+    if result["unchanged"]:
+        return jsonify({"ok": True, "unchanged": True,
+                        "message": result["message"],
+                        "listing_id": d["ebay_listing_id"],
+                        "listing_url": d.get("ebay_listing_url", "")})
     return jsonify({"ok": True,
                     "listing_id": d["ebay_listing_id"],
                     "listing_url": d.get("ebay_listing_url", ""),
-                    "uploaded": len(plan["uploads"]),
-                    "removed": plan["removed"],
-                    "message": "The live listing now shows the new photos."})
+                    "uploaded": result["uploaded"],
+                    "removed": result["removed"],
+                    "message": result["message"]})
 
 
 def _revise_quantity_eligible(d):
@@ -4530,43 +4561,32 @@ def api_revise_quantity_preview(draft_id):
     })
 
 
-@app.route("/api/drafts/<draft_id>/revise-quantity", methods=["POST"])
-def api_revise_quantity_execute(draft_id):
-    """v63: run the quantity change after the confirm screen. The plan
-    is recomputed fresh here — the client sends only its agreement and
-    the wanted quantity, never the plan — so a stale preview cannot
-    send a stale update. Updates the inventory item quantity first,
-    then the offer's availableQuantity (the listing shows the smaller
-    of the two, so both must agree), then reads both back to prove the
+def _apply_quantity_revise(d, token, requested):
+    """v64: run the quantity part of a live-listing update. Recomputes
+    the plan fresh, updates the inventory item quantity first, then
+    the offer's availableQuantity (the listing shows the smaller of
+    the two, so both must agree), then reads both back to prove the
     new quantity took. Title, price, photos, policies, and everything
-    else ride along untouched. No new offer, no re-publish."""
-    d = _load_draft(draft_id)
-    err = _revise_quantity_eligible(d)
-    if err:
-        return jsonify({"error": err[0]}), err[1]
-    body = request.get_json(silent=True) or {}
-    if not body.get("confirmed"):
-        return jsonify({"error": "Confirm the quantity update first."}), 400
-    requested, qerr = _parse_quantity(body.get("quantity", ""))
-    if qerr:
-        return jsonify({"error": qerr}), 400
-    token, resp = _revise_token_or_response()
-    if resp is not None:
-        return resp
+    else ride along untouched. No new offer, no re-publish. Returns a
+    dict: ok, unchanged, message or error, live_quantity. A failure
+    returns ok False and leaves the draft record untouched, so a
+    retry can recompute the plan. _NeedsScopeReconnect propagates to
+    the caller, which answers with the flag. Used by the
+    quantity-only endpoint and by the combined /revise endpoint,
+    where it runs after the photos part (see _apply_photo_revise for
+    why that order is safe)."""
     try:
         plan = _revise_quantity_plan(d, token, requested)
-    except _NeedsScopeReconnect as exc:
-        return jsonify({"needs_scope_reconnect": True,
-                        "error": str(exc)}), 200
+    except _NeedsScopeReconnect:
+        raise
     except RuntimeError as exc:
         _log_ebay_failure("revise-quantity plan", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     if plan["unchanged"]:
-        return jsonify({"ok": True, "unchanged": True,
-                        "message": "The live listing already has a "
-                                   "quantity of %d." % plan["live_quantity"],
-                        "listing_id": d["ebay_listing_id"],
-                        "listing_url": d.get("ebay_listing_url", "")})
+        return {"ok": True, "unchanged": True,
+                "message": "The live listing already has a "
+                           "quantity of %d." % plan["live_quantity"],
+                "live_quantity": plan["live_quantity"]}
     new = plan["requested"]
     # The offer body is built (and validated) BEFORE anything is
     # sent, so a half-built offer fails here with nothing changed —
@@ -4575,7 +4595,7 @@ def api_revise_quantity_execute(draft_id):
         put_offer = _offer_put_body(plan["offer"], new)
     except RuntimeError as exc:
         _log_ebay_failure("revise-quantity offer body", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     # 1. inventory item first, exactly as eBay returned it, with only
     # the quantity swapped — the listing shows the smaller of the item
     # and offer quantities, so the item is moved before the offer.
@@ -4595,7 +4615,7 @@ def api_revise_quantity_execute(draft_id):
                    token, put_item)
     except RuntimeError as exc:
         _log_ebay_failure("revise-quantity item put", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     # 2. the offer, as a full replacement (see _offer_put_body).
     try:
         _ebay_call("PUT",
@@ -4603,7 +4623,7 @@ def api_revise_quantity_execute(draft_id):
                    token, put_offer)
     except RuntimeError as exc:
         _log_ebay_failure("revise-quantity offer put", exc)
-        return jsonify({"error": str(exc)}), 502
+        return {"ok": False, "error": str(exc)}
     # 3. read both back and prove the new quantity took.
     try:
         after_offer = _ebay_call(
@@ -4612,9 +4632,10 @@ def api_revise_quantity_execute(draft_id):
             "GET", f"/sell/inventory/v1/inventory_item/{plan['sku']}", token)
     except RuntimeError as exc:
         _log_ebay_failure("revise-quantity verify", exc)
-        return jsonify({"error": "The update was sent but eBay could not "
-                                 "confirm it. Check Seller Hub before "
-                                 "trying again: " + str(exc)}), 502
+        return {"ok": False,
+                "error": "The update was sent but eBay could not "
+                         "confirm it. Check Seller Hub before "
+                         "trying again: " + str(exc)}
     after_qty = None
     if isinstance(after_offer, dict):
         try:
@@ -4634,18 +4655,207 @@ def api_revise_quantity_execute(draft_id):
             "revise-quantity verify mismatch draft=%s sku=%s expected=%s "
             "offer=%s item=%s", d["id"], plan["sku"], new, after_qty,
             after_item_qty)
-        return jsonify({"error": "eBay did not show the new quantity. "
-                                 "Check the listing in Seller Hub before "
-                                 "trying again."}), 502
+        return {"ok": False,
+                "error": "eBay did not show the new quantity. "
+                         "Check the listing in Seller Hub before "
+                         "trying again."}
     d["quantity"] = str(new)
     d["ebay_offer_quantity"] = new
     _save_draft(d)
+    return {"ok": True, "unchanged": False,
+            "message": "The live listing now has a quantity "
+                       "of %d." % new,
+            "live_quantity": new}
+
+
+@app.route("/api/drafts/<draft_id>/revise-quantity", methods=["POST"])
+def api_revise_quantity_execute(draft_id):
+    """v63: run the quantity change after the confirm screen. The plan
+    is recomputed fresh here — the client sends only its agreement and
+    the wanted quantity, never the plan — so a stale preview cannot
+    send a stale update. v64: the work lives in _apply_quantity_revise
+    now; this endpoint keeps the same response shape as before."""
+    d = _load_draft(draft_id)
+    err = _revise_quantity_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirmed"):
+        return jsonify({"error": "Confirm the quantity update first."}), 400
+    requested, qerr = _parse_quantity(body.get("quantity", ""))
+    if qerr:
+        return jsonify({"error": qerr}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        result = _apply_quantity_revise(d, token, requested)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    if not result["ok"]:
+        return jsonify({"error": result["error"]}), 502
+    if result["unchanged"]:
+        return jsonify({"ok": True, "unchanged": True,
+                        "message": result["message"],
+                        "listing_id": d["ebay_listing_id"],
+                        "listing_url": d.get("ebay_listing_url", "")})
     return jsonify({"ok": True,
                     "listing_id": d["ebay_listing_id"],
                     "listing_url": d.get("ebay_listing_url", ""),
-                    "live_quantity": new,
-                    "message": "The live listing now has a quantity "
-                               "of %d." % new})
+                    "live_quantity": result["live_quantity"],
+                    "message": result["message"]})
+
+
+@app.route("/api/drafts/<draft_id>/revise", methods=["GET"])
+def api_revise_preview(draft_id):
+    """v64: preview the combined live-listing update — photos and
+    quantity in one plan, one confirm card. GET only: nothing is sent
+    to eBay beyond reading the live item and offer. Each part is
+    planned on its own, so a part that cannot be planned (a photo
+    file missing from this phone, for example) is reported as that
+    part's error and the other part still plans. When both parts fail,
+    the first error answers with a 502, as the single-part previews
+    do. Eligibility is the quantity check (a listed draft with an
+    offer) — the photos part needs no separate gate, since a draft
+    with no photos simply reports that instead of blocking the
+    quantity part."""
+    d = _load_draft(draft_id)
+    err = _revise_quantity_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    requested, qerr = _parse_quantity(request.args.get("quantity", ""))
+    if qerr:
+        return jsonify({"error": qerr}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    photos = {"changes": [], "unchanged": True, "error": None}
+    quantity = {"changes": [], "unchanged": True, "error": None,
+                "live_quantity": None, "requested_quantity": requested}
+    try:
+        plan = _revise_photo_plan(d, token)
+        photos["changes"] = plan["changes"]
+        photos["unchanged"] = plan["unchanged"]
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise preview photos", exc)
+        photos["error"] = str(exc)
+    try:
+        qplan = _revise_quantity_plan(d, token, requested)
+        quantity["changes"] = qplan["changes"]
+        quantity["unchanged"] = qplan["unchanged"]
+        quantity["live_quantity"] = qplan["live_quantity"]
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    except RuntimeError as exc:
+        _log_ebay_failure("revise preview quantity", exc)
+        quantity["error"] = str(exc)
+    if photos["error"] and quantity["error"]:
+        return jsonify({"error": photos["error"]}), 502
+    changes = list(photos["changes"]) + list(quantity["changes"])
+    if photos["error"]:
+        note = "Photos could not be checked: " + photos["error"]
+        if not quantity["unchanged"] and not quantity["error"]:
+            note += " Only the quantity will change."
+        changes.append(note)
+    if quantity["error"]:
+        note = "Quantity could not be checked: " + quantity["error"]
+        if not photos["unchanged"] and not photos["error"]:
+            note += " Only the photos will change."
+        changes.append(note)
+    unchanged = (photos["unchanged"] and quantity["unchanged"]
+                 and not photos["error"] and not quantity["error"])
+    return jsonify({
+        "listing_id": d["ebay_listing_id"],
+        "listing_url": d.get("ebay_listing_url", ""),
+        "title": d.get("title", ""),
+        "photos": photos,
+        "quantity": quantity,
+        "unchanged": unchanged,
+        "changes": changes,
+    })
+
+
+@app.route("/api/drafts/<draft_id>/revise", methods=["POST"])
+def api_revise_execute(draft_id):
+    """v64: run the combined live-listing update after the one confirm
+    card. The plan is recomputed fresh here — the client sends only
+    its agreement and the wanted quantity, never the plan — so a stale
+    preview cannot send a stale update. Photos run first, then
+    quantity: each part re-reads live state before writing, so the
+    photos PUT (which carries the whole item body) runs before the
+    quantity change exists and can never overwrite it, and the
+    quantity part then re-reads after the photos PUT. A part that
+    fails does not stop the other part; the answer names each part's
+    result, and the draft record updates only for the part that
+    actually succeeded — a failed part is never claimed. Title, price,
+    policies, and shipping stay untouched. No new offer, no
+    re-publish. A scope shortfall is the one exception to running
+    both parts: it means the sign-in itself is short a permission, so
+    the flag answers at once, as the single-part endpoints do."""
+    d = _load_draft(draft_id)
+    err = _revise_quantity_eligible(d)
+    if err:
+        return jsonify({"error": err[0]}), err[1]
+    body = request.get_json(silent=True) or {}
+    if not body.get("confirmed"):
+        return jsonify({"error": "Confirm the update first."}), 400
+    requested, qerr = _parse_quantity(body.get("quantity", ""))
+    if qerr:
+        return jsonify({"error": qerr}), 400
+    token, resp = _revise_token_or_response()
+    if resp is not None:
+        return resp
+    try:
+        photos = _apply_photo_revise(d, token)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    try:
+        quantity = _apply_quantity_revise(d, token, requested)
+    except _NeedsScopeReconnect as exc:
+        return jsonify({"needs_scope_reconnect": True,
+                        "error": str(exc)}), 200
+    # The combined message says plainly what went through and what
+    # did not, part by part, in full sentences.
+    done = []
+    failed = []
+    if photos["ok"]:
+        if not photos["unchanged"]:
+            done.append("The live listing now shows the new photos.")
+    else:
+        failed.append("the photos did not change: " + photos["error"])
+    if quantity["ok"]:
+        if not quantity["unchanged"]:
+            done.append("The live listing now has a quantity of %d."
+                        % quantity["live_quantity"])
+    else:
+        failed.append("the quantity did not change: " + quantity["error"])
+    if done and not failed:
+        message = " ".join(done)
+    elif done and failed:
+        message = (" ".join(done) + " But " + "; ".join(failed) + ".")
+    elif failed:
+        message = "Nothing changed: " + "; ".join(failed) + "."
+    else:
+        message = "Nothing to change. The live listing already shows " \
+                  "these photos and has a quantity of %d." \
+                  % quantity["live_quantity"]
+    result = {"photos": photos, "quantity": quantity,
+              "listing_id": d["ebay_listing_id"],
+              "listing_url": d.get("ebay_listing_url", ""),
+              "message": message}
+    if failed and not done:
+        # Both parts failed: a 502, as the single-part endpoints
+        # answer, with the per-part detail attached.
+        result["ok"] = False
+        return jsonify(dict(result, error=message)), 502
+    result["ok"] = True
+    return jsonify(result)
 
 
 @app.route("/photos/<path:rel>")
