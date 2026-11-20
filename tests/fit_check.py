@@ -1289,6 +1289,74 @@ def main():
           "wrap.appendChild(u)" in js and
           'u.className = "thumb-edit-below"' in js)
 
+    # 34. v67 prompt after a photo is added to an existing draft: he
+    # reported a photo taken after the draft was made was never taken
+    # into consideration for the listing — a photo of an item's
+    # contents added to an existing draft left the title and
+    # description stale. Reanalyze already existed ("Ask AI again")
+    # and already reads ALL the draft's photos, but it sat buried in
+    # the collapsed "Or list manually" row and nothing offered it
+    # after a photo add. Now the listing page shows a prompt right by
+    # the photos when a photo lands, with a button that runs the same
+    # reanalyze flow. It never runs on its own — reanalyze replaces
+    # the title, description, category, details, and AI notes, so it
+    # waits for his tap, and the confirm now names exactly what gets
+    # replaced and that the typed price is kept. The prompt is a plain
+    # in-flow block (v66 rule: it pushes the Title field down, nothing
+    # overlaps), it clears after a successful reanalyze, it hides on a
+    # fresh draft load, and it never appears on a failed upload or
+    # when nothing was added. The v65 condition note survives a
+    # reanalyze (proved in tests/reanalyze-prompt.test.js).
+    check("reanalyze prompt exists in the template, by the photos",
+          'id="draft-reanalyze-prompt"' in html and
+          'id="btn-draft-reanalyze"' in html and
+          "This listing does not know about the new photo yet." in html and
+          "Update the listing with AI" in html,
+          "prompt div, text, or button missing from the template")
+    check("prompt starts hidden",
+          'id="draft-reanalyze-prompt" class="note hidden"' in html,
+          "prompt must ship hidden")
+    check("prompt is a plain in-flow block, nothing positioned over it",
+          "position" not in rules.get(".note", {}) and
+          "position" not in rules.get("#draft-reanalyze-prompt", {}),
+          str(rules.get(".note", {})))
+    check("prompt text is a block and the button sits below it",
+          rules.get("#draft-reanalyze-prompt span", {}).get("display") == "block" and
+          rules.get("#draft-reanalyze-prompt button", {}).get("margin-top") == "0.6rem",
+          str(rules.get("#draft-reanalyze-prompt button", {})))
+    ratio = contrast("#1c1c1e", "#f2f6ff")
+    check("contrast prompt text on the note tint %.1f:1" % ratio,
+          ratio >= 4.5,
+          "body text #1c1c1e on .note #f2f6ff must clear 4.5:1")
+    check("prompt button reuses the verified primary pair",
+          rules.get("button.primary", {}).get("background") == "#2a63d8" and
+          rules.get("button.primary", {}).get("color") == "#fff",
+          str(rules.get("button.primary", {})))
+    check("photo add shows the prompt only when a photo actually landed",
+          'if (res.added) showReanalyzePrompt();' in js.split(
+              "async function uploadDraftPhotos")[1].split(
+              "$(\"draft-photo-input\").addEventListener")[0],
+          "showReanalyzePrompt must be gated on res.added in uploadDraftPhotos")
+    check("fresh draft load hides the prompt",
+          "hideReanalyzePrompt();" in js.split(
+              "function loadDraftIntoForm(d) {")[1].split(
+              "function renderDraftPhotos")[0],
+          "loadDraftIntoForm must hide the prompt")
+    check("both reanalyze buttons share one flow",
+          '$("btn-reanalyze").addEventListener("click", reanalyzeDraft);' in js and
+          '$("btn-draft-reanalyze").addEventListener("click", reanalyzeDraft);' in js and
+          "async function reanalyzeDraft()" in js,
+          "Ask AI again and the prompt button must call reanalyzeDraft")
+    check("reanalyze confirm names what it replaces and the kept price",
+          'The title, description, category, details, and AI notes will be replaced with the AI\'s new version. Your typed price is kept.' in js and
+          "Your typed price is kept." in js,
+          "confirm must name the five replaced fields and the kept price")
+    check("successful reanalyze clears the prompt",
+          "hideReanalyzePrompt();" in js.split(
+              "async function reanalyzeDraft()")[1].split(
+              "function esc(")[0],
+          "reanalyzeDraft must hide the prompt after loadDraftIntoForm")
+
     print()
     return 1 if FAILURES else 0
 

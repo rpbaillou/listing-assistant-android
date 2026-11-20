@@ -1578,6 +1578,10 @@ function loadDraftIntoForm(d) {
   saveDirty = false; /* v5: a fresh load is the clean baseline */
   clearTimeout(saveTimer);
   saveTimer = null;
+  /* v67: a freshly loaded draft is the current state — a prompt left
+     over from a photo added in an earlier session is gone, and it
+     only comes back when a photo is added again. */
+  hideReanalyzePrompt();
   $("f-title").value = d.title || "";
   $("f-category").value = d.category || "";
   $("f-description").value = d.description || "";
@@ -1711,6 +1715,7 @@ async function uploadDraftPhotos(files, preShrunk) {
   if (!draft || !draft.id) return;
   hideDraftPhotoError();
   $("draft-photo-note").classList.add("hidden");
+  hideReanalyzePrompt();
   const downscaled = [];
   for (const f of files) {
     /* v54: camera photos arrive already shrunk to 2048px/q85 by the
@@ -1736,6 +1741,12 @@ async function uploadDraftPhotos(files, preShrunk) {
       $("draft-photo-note").textContent = notes.join(" ");
       $("draft-photo-note").classList.remove("hidden");
     }
+    /* v67: a photo landed, so the listing text is stale until the AI
+       looks at all the photos again — the new photo's information is
+       not in the title or description yet. Offer it right here, where
+       he is looking. Only when a photo was actually added: a failed
+       upload or a 24-cap drop shows no prompt. */
+    if (res.added) showReanalyzePrompt();
   } catch (e) {
     showDraftPhotoError(e.message);
   }
@@ -2157,13 +2168,34 @@ async function useSimilarPrice(price) {
   n.classList.remove("hidden");
 }
 
-$("btn-reanalyze").addEventListener("click", async () => {
-  if (!draft || !confirm("Ask the AI to look at the photos again? Your typed price is kept.")) return;
+/* v67: the prompt after a photo is added to an existing draft. It
+   sits right by the photos, in the normal flow, so it pushes the
+   Title field and everything below it down and pulls them back up
+   when it hides. */
+function showReanalyzePrompt() { $("draft-reanalyze-prompt").classList.remove("hidden"); }
+function hideReanalyzePrompt() { $("draft-reanalyze-prompt").classList.add("hidden"); }
+
+/* v67: ask the AI to look at all the draft's photos again. Shared by
+   "Ask AI again" and the prompt after a photo is added to a draft.
+   It never runs on its own: reanalyze replaces the title,
+   description, category, details (attributes), and AI notes — that
+   is exactly what _gemini_identify returns and d.update() overwrites
+   on the server — and keeps everything else, including the typed
+   price, the condition and condition details, the quantity, and the
+   shipping and policy picks. The confirm says so plainly, so a tap
+   never wipes his typed words by surprise. On success the listing
+   is current again, so the prompt goes away. */
+async function reanalyzeDraft() {
+  if (!draft || !confirm("Ask the AI to look at all the photos again? The title, description, category, details, and AI notes will be replaced with the AI's new version. Your typed price is kept.")) return;
   try {
     const { draft: d } = await api("/api/drafts/" + draft.id + "/reanalyze", { method: "POST" });
     loadDraftIntoForm(d);
+    hideReanalyzePrompt();
   } catch (err) { alert(err.message); }
-});
+}
+
+$("btn-reanalyze").addEventListener("click", reanalyzeDraft);
+$("btn-draft-reanalyze").addEventListener("click", reanalyzeDraft);
 
 
 function esc(s) {

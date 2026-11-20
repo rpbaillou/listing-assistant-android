@@ -1852,3 +1852,68 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v67: a photo added to a draft is offered to the AI
+- The report (Nov 20): "If I take a photo after it moves to drafts,
+  that information is not taken into consideration. For the listing
+  and it should. Because I took a photo of the makeup of an item and
+  that was not considered." He added a photo of an item's contents to
+  an existing draft and the listing's title and description never
+  reflected it.
+- Cause: the capability already existed and already worked — "Ask AI
+  again" POSTs /api/drafts/<id>/reanalyze, and the server loads the
+  draft fresh and runs _gemini_identify over ALL its photos, so a
+  newly added photo is included when reanalyze runs. But the button
+  sat buried inside the collapsed "Or list manually" row at the
+  bottom of the listing page, where he would never find it after
+  adding a photo, and adding a photo only ever said "Added 1 photo."
+  with nothing about the listing text being stale. The gap was
+  discoverability at the moment it matters, not the AI.
+- Fix: after a photo is successfully added to an existing draft, a
+  prompt appears right there by the photos — "This listing does not
+  know about the new photo yet." with a button "Update the listing
+  with AI" that runs the same reanalyze flow as "Ask AI again". It
+  appears only on a successful add (not on a failed upload, not when
+  nothing was added, e.g. the 24-photo cap drop). After a successful
+  reanalyze the prompt goes away (the listing is current again); if
+  he adds another photo later it shows again. It hides when a draft
+  is freshly loaded. The same code path covers a blank Quick-post
+  draft too, which is the only way a quick-post draft gets AI text.
+- It never runs on its own: reanalyze replaces the title,
+  description, category, details (attributes), and AI notes, and his
+  typed text must never be wiped silently, so it waits for his tap.
+  Verified in code: _gemini_identify returns exactly those five
+  keys and d.update(identified) overwrites only them; the price,
+  condition, condition details, quantity, best offer settings, and
+  shipping and policy picks are kept. The confirm now says so
+  plainly: "Ask the AI to look at all the photos again? The title,
+  description, category, details, and AI notes will be replaced with
+  the AI's new version. Your typed price is kept." Both buttons share
+  one reanalyzeDraft function, so the confirm is the same either way.
+- The v65 condition note survives a reanalyze from the prompt:
+  loadDraftIntoForm re-applies it after the AI fill, proved in the
+  node tests (new AI description in the field, note still there
+  exactly once).
+- The prompt is a plain in-flow block reusing the .note look (blue
+  tint, verified primary button), so it pushes the Title field and
+  everything below it down and pulls them back up when it hides —
+  the v66 flow rule, nothing overlaps.
+- Tests: tests/test_reanalyze_new_photo.py (reanalyze receives a
+  photo appended after the first analysis, in order; reanalyze
+  replaces only the five AI fields and keeps the price, condition,
+  condition details, quantity, and best offer settings; no photos
+  is a 404), tests/reanalyze-prompt.test.js (35 checks: prompt
+  hidden on load, appears after a successful add, button runs
+  reanalyze with the honest confirm text, prompt clears after
+  success and shows again on the next add, Ask AI again runs the
+  same flow, cancel runs nothing and leaves the prompt up, no prompt
+  on a failed upload or an empty add, condition note survives a
+  reanalyze from the prompt), fit_check.py check 34 (prompt in the
+  template by the photos, starts hidden, in-flow block, contrast of
+  the text on the note tint, primary button pair, prompt gated on
+  res.added, hidden on draft load, both buttons share one flow,
+  confirm wording, prompt clears after reanalyze).
+- Release note: build.gradle.kts must be bumped to 67/1.66 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

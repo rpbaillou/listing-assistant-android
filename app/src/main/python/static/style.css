@@ -235,6 +235,13 @@ button:disabled { opacity: 0.45; cursor: default; }
 .v2note { background: #fff8e6; border-color: #ecd27a; }
 
 .note { background: #f2f6ff; border-left: 4px solid #2a63d8; padding: 0.7rem; border-radius: 0 8px 8px 0; margin: 0.9rem 0; font-size: 0.93rem; }
+/* v67: the prompt after a photo is added to an existing draft. It
+   reuses the .note look; the text is a block and the button sits
+   below it with a gap. It is a plain in-flow block, so it pushes the
+   Title field and everything below it down and pulls them back up
+   when it hides — nothing overlaps. */
+#draft-reanalyze-prompt span { display: block; }
+#draft-reanalyze-prompt button { margin-top: 0.6rem; }
 .banner { background: #fde8e8; color: #7a1010; padding: 0.8rem 1rem; font-size: 0.95rem; }
 .error { background: #fde8e8; color: #7a1010; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; white-space: pre-wrap; }
 .ok { background: #e6f7e6; color: #145214; padding: 0.8rem; border-radius: 8px; margin: 0.7rem 0; }

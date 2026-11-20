@@ -97,6 +97,16 @@
     <input id="draft-photo-input" type="file" accept="image/*" multiple>
     <p id="draft-photo-count" class="hint"></p>
     <p id="draft-photo-note" class="hint hidden"></p>
+    <!-- v67: the listing does not know about a newly added photo until
+         the AI looks at the photos again. This prompt appears right
+         here after a photo is added to an existing draft (never on a
+         failed upload or when nothing was added); the button runs the
+         same reanalyze flow as "Ask AI again". It is a plain in-flow
+         block, so it pushes the content below it down. -->
+    <div id="draft-reanalyze-prompt" class="note hidden">
+      <span>This listing does not know about the new photo yet.</span>
+      <button id="btn-draft-reanalyze" class="primary" type="button">Update the listing with AI</button>
+    </div>
     <div id="draft-photo-error" class="error hidden"></div>
 
     <label>Title <span id="title-count" class="count">0/80</span></label>
