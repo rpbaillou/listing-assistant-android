@@ -1194,6 +1194,51 @@ def main():
           'def _apply_quantity_revise(' in py,
           "wrappers + shared apply helpers")
 
+    # 32. v65 condition note in the description: the Condition details
+    # ride in the Description field as a trailing "Condition: ..."
+    # note, so the same words reach Poshmark and Mercari when he copies
+    # the description there. The note is kept in step live in the
+    # field (syncConditionNote on details input/change and on draft
+    # load, so the AI draft never wipes it); the publish paths send the
+    # field as-is, and a server backstop (_with_condition_note in
+    # _do_publish) covers a draft published without ever opening the
+    # listing page. The inventory item's conditionDescription still
+    # carries the details separately. A live character count sits under
+    # the Description (Mercari 1,000, Poshmark 2,500), display only.
+    check("description carries a live character count + limits hint",
+          'id="description-count"' in html and
+          "Mercari allows 1,000 characters, Poshmark 2,500." in html,
+          "count span or hint missing from the template")
+    check("condition note sync exists and is wired to the details field",
+          "function syncConditionNote()" in js and
+          "function splitConditionNote(" in js and
+          "function removeConditionNote(" in js and
+          '$("f-condition-details").addEventListener("input", syncConditionNote)' in js and
+          '$("f-condition-details").addEventListener("change", syncConditionNote)' in js,
+          "sync helpers or details wiring missing")
+    check("draft load re-applies the note after the AI fill",
+          "syncConditionNote();" in js.split(
+              "function loadDraftIntoForm(d) {")[1].split(
+              "function renderDraftPhotos")[0],
+          "loadDraftIntoForm must call syncConditionNote")
+    check("character count follows the description field",
+          '"description-count"' in js and
+          '+ " characters"' in js,
+          "updateCount must write the description count")
+    check("server backstop appends the note at publish, never duplicates",
+          "def _with_condition_note(" in py and
+          '_with_condition_note(f.get("description")' in py and
+          'if note in desc:' in py,
+          "backstop missing from _do_publish")
+    check("publish still sends conditionDescription separately",
+          'inventory_item["conditionDescription"] = condition_details' in py,
+          "eBay condition field must be untouched")
+    check("copy-everything does not repeat the details line",
+          'if (d.condition_details &&' in js and
+          'Condition details: " + d.condition_details' in js and
+          '!(d.description || "").includes("Condition: " + d.condition_details)' in js,
+          "fullListingText must skip the line when the note is already there")
+
     print()
     return 1 if FAILURES else 0
 

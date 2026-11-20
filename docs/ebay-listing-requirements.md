@@ -1727,3 +1727,61 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v65: the Condition details ride in the Description
+- The request (Nov 19, 21:01): "I would like the condition comments
+  that I make in the listing show up in the description as well so
+  Poshmark and Mercari have that information as well so easiest way
+  to do it is just to take that and put it into the description. I'll
+  try to keep it as short as possible so we're not going over any
+  character limits." The batch (one item) was read back and confirmed
+  Nov 19 22:58 ("That's everything, build it") per the
+  app_quality_gate skill, then built as v65.
+- Fix: the Condition details appear at the end of the Description
+  field, live, as a trailing "Condition: <details>" note, so the note
+  is visible in the field, copyable with Copy description, and
+  published to eBay that way. Editing the details replaces the note in
+  place (never two copies); clearing the details removes it; deleting
+  the note by hand brings it back on the next details edit. The note
+  is found by its "Condition: " marker, and the strip only ever
+  removes a block that is the note we wrote (its words equal the
+  details, or the exact note tracked this session) — a "Condition: "
+  line he wrote in his own words is never eaten. The sync never runs
+  on description input, so his own description edits are never
+  fought, and text typed after the note stays put when the details
+  change. The AI draft fills the Description through the draft record,
+  and the note is re-applied on draft load, so the AI fill never wipes
+  it. The AI rule (never guess at condition in the description) still
+  stands — the note is his own words, never an AI guess.
+- Publish: both publish paths send the Description field as-is, so
+  they carry the note automatically (product description and offer
+  listingDescription). A server backstop (_with_condition_note in
+  _do_publish) appends the note when it is missing, which covers a
+  draft published without ever opening the listing page (a batch
+  publish of a pre-v65 draft); it never duplicates a note that is
+  already there. The inventory item's conditionDescription still
+  carries the details separately, exactly as before.
+- Character count: a live count under the Description ("312
+  characters"), updating as he types. Display only, never blocking.
+  The hint names the limits he is watching: Mercari 1,000 characters,
+  Poshmark 2,500.
+- Copy everything no longer repeats the details: fullListingText used
+  to add its own "Condition details: ..." line, which would now
+  duplicate the note in the description. It skips that line when the
+  description already carries the note, and keeps it for a description
+  that never got one.
+- Tests: tests/test_description_condition_note.py (10 tests: the
+  backstop helper, publish carrying the note on both levels, no
+  duplicate, no details means no note, conditionDescription still
+  sent separately, batch passing description + details through),
+  tests/description-condition-note.test.js (split/remove/sync pure
+  behavior, draft load keeping the note, pre-v65 draft gaining it on
+  open, character count, collectForm carrying the note, Copy
+  everything not repeating the details line), fit_check.py check 32
+  (count + hint, sync helpers and wiring, load re-applying the note,
+  count following the field, server backstop, conditionDescription
+  untouched, copy-everything dedup).
+- Release note: build.gradle.kts must be bumped to 65/1.64 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

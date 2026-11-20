@@ -1966,6 +1966,30 @@ def _listing_readiness(d, f, token):
     return problems, notes
 
 
+# v65: the Condition details ride in the Description so the same words
+# reach Poshmark and Mercari when he copies the description there. The
+# live field behavior (app.js syncConditionNote) keeps the note in the
+# Description field itself; this is the backstop for a draft published
+# without ever opening the listing page (a batch publish of a pre-v65
+# draft, whose stored description has no note yet). It appends
+# "Condition: <details>" once, and never duplicates a note that is
+# already there. The AI rule (leave condition out of the description)
+# still stands — the note is the seller's own words, never an AI guess.
+# The inventory item's conditionDescription still carries the details
+# separately, exactly as before.
+def _with_condition_note(description, condition_details):
+    desc = str(description or "")
+    details = str(condition_details or "").strip()
+    if not details:
+        return desc
+    note = "Condition: " + details
+    if note in desc:
+        return desc
+    if desc.strip():
+        return desc.rstrip() + "\n\n" + note
+    return note
+
+
 def _do_publish(d, f, ship_from=None):
     """Create the live eBay listing for draft d. Shared by single publish
     and batch publish so both paths behave identically.
@@ -2058,7 +2082,13 @@ def _do_publish(d, f, ship_from=None):
         raise RuntimeError("No photos could be uploaded. Try again.")
 
     # 2. inventory item
-    desc_html = html.escape(f.get("description") or "").replace("\n", "<br>")
+    # v65: the published description carries the seller's Condition
+    # details as a trailing "Condition: ..." note (see
+    # _with_condition_note) — the same note the listing page keeps in
+    # the Description field, so Poshmark and Mercari get it too.
+    desc_html = html.escape(
+        _with_condition_note(f.get("description") or "",
+                             condition_details)).replace("\n", "<br>")
     # v8: normalize aspect names to eBay's exact spelling (case-insensitive
     # match) and enforce the category's required aspects. When eBay's
     # aspects lookup fails we skip validation and send what we have —

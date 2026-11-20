@@ -1587,6 +1587,10 @@ function loadDraftIntoForm(d) {
   /* v63: quantity. An old draft has none and starts at 1. */
   $("f-quantity").value = d.quantity || "1";
   updateCount();
+  /* v65: the AI draft fills the Description through the draft record,
+     and the condition note is re-applied right after, so the AI fill
+     never wipes it. A pre-v65 draft gets its note here too. */
+  syncConditionNote();
   renderDraftPhotos(d);
   renderAttrs(d.attributes || {});
   const notes = $("ai-notes");
@@ -1862,6 +1866,85 @@ function parseQuantity(raw) {
   return n >= 1 ? n : null;
 }
 
+/* v65: the Condition details ride in the Description so the same words
+   reach Poshmark and Mercari when he copies the description there
+   (Copy description copies this field). The note is one trailing
+   block, "Condition: <details>", found by its marker. The strip only
+   ever removes a block that is the note we wrote — its words equal the
+   details now, or the exact note tracked this session — so a
+   "Condition: " line he wrote in his own words is never eaten. A
+   hand-deleted note comes back on the next details edit; a note he
+   edited by hand keeps his edit (the fresh note is appended beside
+   it rather than guessing which words are his). Pure functions,
+   tested. */
+let lastConditionNote = "";
+
+function splitConditionNote(desc) {
+  const s = String(desc == null ? "" : desc);
+  const marker = "\n\nCondition: ";
+  let i = s.lastIndexOf(marker);
+  let markerLen = marker.length;
+  if (i === -1 && s.indexOf("Condition: ") === 0) {
+    i = 0;
+    markerLen = "Condition: ".length;
+  }
+  if (i === -1) return { base: s, note: "" };
+  return { base: s.slice(0, i).replace(/\s+$/, ""),
+           note: s.slice(i + markerLen) };
+}
+
+/* Remove the exact note we last wrote, wherever it sits — he may have
+   typed more description after it, and that text stays put. */
+function removeConditionNote(desc, known) {
+  const s = String(desc == null ? "" : desc);
+  const k = String(known == null ? "" : known).trim();
+  if (!k) return s;
+  const needle = "Condition: " + k;
+  const i = s.lastIndexOf(needle);
+  if (i === -1) return s;
+  let start = i;
+  let end = i + needle.length;
+  if (i >= 2 && s.slice(i - 2, i) === "\n\n") {
+    start = i - 2;
+  } else if (s.slice(end, end + 2) === "\n\n") {
+    end += 2;
+  }
+  return (s.slice(0, start) + s.slice(end)).replace(/\s+$/, "");
+}
+
+/* Keep the note in the Description in step with the Condition
+   details: editing the details replaces the note in place, clearing
+   them removes it. Runs on details input/change and on draft load (so
+   the AI draft never wipes it — the AI description arrives through
+   the draft, and the note is re-applied right after). It never runs
+   on description input, so his own description edits are never
+   fought. */
+function syncConditionNote() {
+  const details = $("f-condition-details").value.trim();
+  const el = $("f-description");
+  let base = removeConditionNote(el.value, lastConditionNote);
+  if (base === el.value && details) {
+    /* Fresh load: the saved description carries the last session's
+       note, and its words are the details (description and details
+       save together). A trailing "Condition: " block with different
+       words is his own writing and stays put — a hand-edited note is
+       replaced only by the exact removal above, never by guessing. */
+    const split = splitConditionNote(base);
+    if (split.note !== "" && split.note.trim() === details) base = split.base;
+  }
+  const next = details
+    ? (base ? base + "\n\nCondition: " + details : "Condition: " + details)
+    : base;
+  lastConditionNote = details;
+  if (next !== el.value) {
+    el.value = next;
+    updateCount();
+    scheduleSave();
+  } else {
+    updateCount();
+  }
+}
+
 /* v6: plain-words label for a condition value (reads the step-2 dropdown). */
 function conditionLabel(value) {
   if (!value) return "";
@@ -1938,6 +2021,11 @@ window.LA_refreshDraft = async () => {
   $(id).addEventListener("input", scheduleSave);
   $(id).addEventListener("change", scheduleSave);
 });
+/* v65: typing the Condition details keeps the note in the Description
+   in step (see syncConditionNote). The Description field itself never
+   triggers a sync, so his own description edits are never fought. */
+$("f-condition-details").addEventListener("input", syncConditionNote);
+$("f-condition-details").addEventListener("change", syncConditionNote);
 
 /* v62: the condition error sat at the bottom by the List button
    while the dropdown is at the top, so a fixed pick still looked
@@ -1957,6 +2045,10 @@ $("f-condition").addEventListener("change", clearConditionPublishError);
 
 function updateCount() {
   $("title-count").textContent = $("f-title").value.length + "/80";
+  /* v65: live character count under the Description — Mercari allows
+     1,000 characters, Poshmark 2,500. Display only, never blocking. */
+  $("description-count").textContent =
+    $("f-description").value.length + " characters";
 }
 
 /* v51: "Check sold prices" opens one results screen with two halves.
@@ -2103,7 +2195,13 @@ function fullListingText() {
   let t = d.title + "\n\n" + d.description;
   const cond = conditionLabel(d.condition);
   if (cond) t += "\n\nCondition: " + cond;
-  if (d.condition_details) t += "\nCondition details: " + d.condition_details;
+  /* v65: the Description already carries the condition note (see
+     syncConditionNote), so the separate details line would repeat it.
+     It stays only for a description that never got the note. */
+  if (d.condition_details &&
+      !(d.description || "").includes("Condition: " + d.condition_details)) {
+    t += "\nCondition details: " + d.condition_details;
+  }
   const keys = Object.keys(d.attributes || {});
   if (keys.length) {
     t += "\n\nItem specifics:\n";
