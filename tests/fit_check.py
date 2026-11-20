@@ -363,8 +363,9 @@ def main():
           rules.get(".thumbs.photo-grid", {}).get("grid-template-columns") == "1fr 1fr",
           str(rules.get(".thumbs.photo-grid", {})))
     check("photo grid cells are square",
-          rules.get(".thumbs.photo-grid .thumb-wrap", {}).get("aspect-ratio") == "1 / 1",
-          str(rules.get(".thumbs.photo-grid .thumb-wrap", {})))
+          rules.get(".thumbs.photo-grid .thumb-img", {}).get("aspect-ratio") == "1 / 1" and
+          "aspect-ratio" not in rules.get(".thumbs.photo-grid .thumb-wrap", {}),
+          str(rules.get(".thumbs.photo-grid .thumb-img", {})))
     check("collapsed row summary is a 48px tap target",
           rules.get(".collapse-row summary", {}).get("min-height") == "48px",
           str(rules.get(".collapse-row summary", {})))
@@ -592,9 +593,10 @@ def main():
     check("photo grid gap clears both button overhangs",
           gap is not None and gap > overhang,
           "gap %.0fpx > overhang %.0fpx" % (gap or -1, overhang))
-    check("photo grid stays 2 columns, square cells",
+    check("photo grid stays 2 columns, square frames",
           rules.get(".thumbs.photo-grid", {}).get("grid-template-columns") == "1fr 1fr" and
-          rules.get(".thumbs.photo-grid .thumb-wrap", {}).get("aspect-ratio") == "1 / 1",
+          rules.get(".thumbs.photo-grid .thumb-img", {}).get("aspect-ratio") == "1 / 1" and
+          "aspect-ratio" not in rules.get(".thumbs.photo-grid .thumb-wrap", {}),
           str(rules.get(".thumbs.photo-grid", {})))
     check("drag indicators survive the gap change",
           "box-shadow" in rules.get(".thumb-wrap.drop-before", {}) and
@@ -1238,6 +1240,54 @@ def main():
           'Condition details: " + d.condition_details' in js and
           '!(d.description || "").includes("Condition: " + d.condition_details)' in js,
           "fullListingText must skip the line when the note is already there")
+
+    # 33. v66 layout must flow, nothing overlaps (standing rule, Nov 20):
+    # he reported the step-1 photo grid overlapping the elements below
+    # it — the photo-count line and Take/Choose buttons covered, the
+    # bottom row of photos sitting on the Draft button — with 6 Barbie
+    # photos. The wrap carried aspect-ratio 1/1, so its height was
+    # locked to its width while its content (frame + an Undo edit
+    # button, ~31px) was taller: the rows spilled ~31px each,
+    # accumulating to ~92px below the grid box, and the locked height
+    # transferred back into width, widening the columns ~31px so the
+    # grid ran off the right edge of the screen (sideways scroll). The
+    # square lives on the frame now; the wrap is height:auto, so it
+    # grows with its content and the grid — and everything below it —
+    # flows. The same pattern was checked on the listing-page draft
+    # strip (flex .thumbs, no aspect-ratio on the wrap): it grows
+    # already, no change needed there; the drafts-list and batch rows
+    # are plain imgs. The geometric proof (grid box contains its
+    # content, Analyze sits below the grid, no sideways scroll) lives
+    # in tests/test_photo_grid_flow.py, measured in a real Chromium.
+    check("grid wrap has no aspect-ratio and no fixed height",
+          "aspect-ratio" not in rules.get(".thumbs.photo-grid .thumb-wrap", {}) and
+          "height" not in rules.get(".thumbs.photo-grid .thumb-wrap", {}),
+          str(rules.get(".thumbs.photo-grid .thumb-wrap", {})))
+    check("grid frame is the square (aspect-ratio 1/1, height auto)",
+          rules.get(".thumbs.photo-grid .thumb-img", {}).get("aspect-ratio") == "1 / 1" and
+          rules.get(".thumbs.photo-grid .thumb-img", {}).get("height") == "auto",
+          str(rules.get(".thumbs.photo-grid .thumb-img", {})))
+    check("grid itself has no fixed height",
+          "height" not in rules.get(".thumbs.photo-grid", {}) and
+          "max-height" not in rules.get(".thumbs.photo-grid", {}))
+    check("base wrap (draft strip) has no aspect-ratio either",
+          "aspect-ratio" not in rules.get(".thumb-wrap", {}))
+    # The hanging Edit pill (bottom -8px) must clear the Undo button
+    # below the frame: the Undo button's top margin has to beat 8px.
+    # (neg_px is defined in section 19; px() uses the 16px root, so
+    # 0.6rem reads 9.6px here against a true 10.2px at the 17px root —
+    # either way it beats 8px.)
+    undo_margin = px(rules.get(".thumb-edit-below", {}).get("margin-top"))
+    pill = abs(neg_px(rules.get(".thumb-edit", {}).get("bottom")) or 0)
+    check("Undo button top margin clears the Edit pill overhang",
+          undo_margin is not None and pill == 8 and undo_margin > pill,
+          "margin-top %s vs pill overhang 8px"
+          % rules.get(".thumb-edit-below", {}).get("margin-top"))
+    # renderThumbs still appends the Undo button inside the wrap after
+    # the frame — the feature survives the fix.
+    check("Undo edit button still lives inside the wrap, after the frame",
+          "wrap.appendChild(u)" in js and
+          'u.className = "thumb-edit-below"' in js)
 
     print()
     return 1 if FAILURES else 0

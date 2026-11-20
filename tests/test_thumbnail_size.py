@@ -18,6 +18,13 @@ shared variable, and the batch rows (new in v49) read it too.
 The grid exception is pinned by test_photo_grid_exception below:
 exactly the .thumbs.photo-grid selectors may use 100% + aspect
 ratio, and nowhere else.
+v66 correction: the square lives on the FRAME now, not the wrap.
+The wrap used to carry aspect-ratio 1/1, so its height was locked
+to its width while its content (frame + an Undo edit button, ~31px)
+was taller — the rows spilled past the grid box and the columns
+widened off the screen (Nov 20). The wrap is height:auto now; the
+frame keeps aspect-ratio 1/1, so the photos stay square and the
+grid flows.
 """
 
 import os
@@ -127,15 +134,33 @@ class ThumbnailSizeTest(unittest.TestCase):
         # square (aspect-ratio 1/1), so the grid thumbs are uniform
         # with each other at any phone width. No other thumbnail
         # selector may use 100% or an aspect ratio.
+        # v66: the square lives on the FRAME, not the wrap. The wrap
+        # used to carry aspect-ratio 1/1, which locked its height to
+        # its width while its content (frame + Undo button) was
+        # taller — the rows spilled past the grid box and the columns
+        # widened off the screen. The wrap is height:auto now, so it
+        # grows with its content and the grid flows.
         for sel in GRID_RULES:
             props = self.rules.get(sel, {})
             self.assertEqual(
                 props.get("width"), "100%",
                 "%s must fill its grid cell: %r" % (sel, props))
             if sel == ".thumbs.photo-grid .thumb-wrap":
+                self.assertNotIn(
+                    "aspect-ratio", props,
+                    "%s must not lock its height: the Undo button "
+                    "below the frame is taller than the square: %r"
+                    % (sel, props))
+                self.assertNotIn(
+                    "height", props,
+                    "%s must grow with its content: %r" % (sel, props))
+            elif sel == ".thumbs.photo-grid .thumb-img":
                 self.assertEqual(
                     props.get("aspect-ratio"), "1 / 1",
                     "%s must stay square: %r" % (sel, props))
+                self.assertEqual(
+                    props.get("height"), "auto",
+                    "%s must size from its aspect ratio: %r" % (sel, props))
             elif sel == ".thumbs.photo-grid .thumb-skip":
                 self.assertEqual(
                     props.get("aspect-ratio"), "1 / 1",

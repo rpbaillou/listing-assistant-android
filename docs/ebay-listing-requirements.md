@@ -1785,3 +1785,70 @@ remembers the open draft.
   code commit (check 21 guards it). Release order is the v59 order
   (tag first, wait for CI to publish the asset, only then commit
   version.json).
+
+## v66: the photo grid flows — layout must flow, nothing overlaps
+- The report (Nov 20, 00:06, screenshot, 6 Barbie photos on step 1):
+  the photo grid overlapped the elements below it — the photo-count
+  line and the Take photo / Choose photos buttons were covered, and
+  the bottom row of photos sat on top of the "Draft my listing with
+  AI" button. His words: "Why are not the elements moving down and
+  the images are overlapping them? We've had this issue before why is
+  this not a standing rule that things adjust as things increase the
+  things around it adjust. Or decrease. The things around it
+  adjust." This is now a standing rule in AGENTS.md (layout must
+  flow, nothing overlaps) and it applies to everything built, not
+  just the editor. The Analyze button being covered makes this a
+  broken core flow, so it got its own fast build, not a batch.
+- Root cause, proven in a real Chromium layout (Playwright) against
+  the shipped CSS: the grid item (.thumb-wrap) carried aspect-ratio
+  1/1, so its height was locked to its width while its content
+  (frame + an Undo edit button, ~31px) was taller. The grid's rows
+  were sized from the locked height, so every row's content spilled
+  ~31px past its row — accumulating to ~92px below the grid box for
+  3 rows, which is why the photo-count, Take/Choose, and Draft
+  button were all covered. And the locked height transferred back
+  into width through the ratio, widening the columns ~31px (162px
+  to 193px), so the grid ran off the right edge of the screen:
+  sideways scroll (scrollWidth 448 against a 412px viewport) and the
+  right-column X buttons half off-screen, both visible in his
+  screenshot. The Undo button alone does not explain the size of the
+  overlap — the accumulation across rows does. Drag transforms were
+  ruled out: attachThumbDrag only toggles classes, never a
+  transform.
+- Fix: the square moved from the wrap to the frame. The wrap is
+  height:auto now, so it grows with its content (frame + Undo
+  button) and the grid — and everything below it — flows; the frame
+  keeps aspect-ratio 1/1, so the photos stay square. The Undo
+  button's top margin went from 0.3rem to 0.6rem (10px at the 17px
+  root) so the hanging Edit pill (8px below the frame) clears it
+  instead of overlapping its top by ~3px. Nothing else about the
+  grid changed: 2 columns, 1.25rem gap, drag to reorder, Edit/X
+  buttons, Undo button, square photos.
+- Same pattern checked everywhere .thumbs is used: the listing-page
+  draft strip (#draft-photos, flex .thumbs) never had aspect-ratio
+  on the wrap, so it already grows with its content — verified in
+  the same Chromium run (strip contains its wraps exactly, no X
+  overlaps any Edit/Undo button, no sideways scroll), no change
+  needed there. The drafts-list rows and batch rows are plain imgs
+  with no wrap, buttons, or aspect-ratio, so the pattern cannot
+  occur there.
+- Tests: tests/test_photo_grid_flow.py (6 static CSS assertions
+  pinning the sizing contract, plus 4 real-layout tests in Chromium:
+  the reported state — 6 photos, Undo on all, 412px — 24 photos
+  with Undo on all, no-Undo plus 360px and 320px widths, and the
+  draft strip with Edit+Undo; each asserts the grid box grows to
+  contain its content, the Analyze button sits below the grid, no
+  photo or button overlaps the controls below, frames stay square,
+  and the page never scrolls sideways),
+  tests/photo-grid-flow.test.js (14 checks: the real renderThumbs
+  with 6 photos, 3 edited — Undo button inside the wrap after the
+  frame, frame with img + X + Edit pill — plus the CSS contract),
+  fit_check.py check 33 (wrap/frame/grid have no locked height,
+  frame is the square, base wrap has no aspect-ratio, Undo margin
+  clears the pill, Undo button still in the wrap). The section 14
+  and section 19 "square cells" checks were updated to the new
+  structure (square on the frame, not the wrap).
+- Release note: build.gradle.kts must be bumped to 66/1.65 in the
+  code commit (check 21 guards it). Release order is the v59 order
+  (tag first, wait for CI to publish the asset, only then commit
+  version.json).

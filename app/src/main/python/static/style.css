@@ -315,9 +315,23 @@ details summary { font-weight: 700; cursor: pointer; }
    buttons touched the next photo. 20px clears both overhangs with
    room to spare. The 2-column square grid and the drag indicators
    are unchanged. */
+/* v66: the square lives on the FRAME now, not the wrap. The wrap used
+   to carry aspect-ratio 1/1, so its height was locked to its width
+   while its content (frame + an Undo edit button, ~31px) was taller:
+   the grid's rows were sized from the locked height, so every row's
+   content spilled ~31px past its row — and the spill accumulated,
+   one row's worth per row, until the last row sat ~92px below the
+   grid box, covering the photo-count line and the Take/Choose
+   buttons and reaching the Draft button (Nov 20, 6 Barbie photos).
+   Worse, the locked height transferred back into width through the
+   ratio, so the columns widened ~31px and the grid ran off the
+   right edge of the screen (sideways scroll, right-column X buttons
+   half off-screen). The wrap is height:auto now, so it grows with
+   its content and the grid — and everything below it — flows; the
+   frame keeps aspect-ratio 1/1, so the photos stay square. */
 .thumbs.photo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
-.thumbs.photo-grid .thumb-wrap { width: 100%; aspect-ratio: 1 / 1; }
-.thumbs.photo-grid .thumb-img { width: 100%; height: 100%; }
+.thumbs.photo-grid .thumb-wrap { width: 100%; }
+.thumbs.photo-grid .thumb-img { width: 100%; height: auto; aspect-ratio: 1 / 1; }
 .thumbs.photo-grid img { width: 100%; height: 100%; }
 .thumbs.photo-grid .thumb-skip { width: 100%; height: auto; aspect-ratio: 1 / 1; }
 
@@ -326,7 +340,12 @@ details summary { font-weight: 700; cursor: pointer; }
    button with min-height 26px, the v44 Edit sizing, never a tiny
    text link. The frame stays the drag handle; taps on Edit never
    start a drag. */
-.thumb-edit-below { display: block; width: 100%; min-height: 26px; margin-top: 0.3rem; padding: 0.15rem 0.5rem; background: none; border: none; color: #2a63d8; font-size: 14px; font-weight: 600; cursor: pointer; text-align: center; }
+/* v66: margin-top 0.6rem (10px at the 17px root). The step-1 Edit pill
+   hangs 8px below the photo frame, so the old 0.3rem (5px) let the
+   pill overlap the top of this button by ~3px. 10px clears the pill
+   with room to spare; the draft strip (whose Edit sits under the
+   photo with no overlaid pill) just gets a little more air. */
+.thumb-edit-below { display: block; width: 100%; min-height: 26px; margin-top: 0.6rem; padding: 0.15rem 0.5rem; background: none; border: none; color: #2a63d8; font-size: 14px; font-weight: 600; cursor: pointer; text-align: center; }
 
 /* Collapsed listing rows (design 4 + streamline): icon, title,
    live summary line, chevron. The body holds the full section —
